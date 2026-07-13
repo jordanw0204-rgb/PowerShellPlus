@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
 
@@ -57,8 +58,9 @@ public sealed class CommandSnippet
     [JsonIgnore] public string Subtitle => $"{Category} · {Command}";
 }
 
-public sealed class AutomationRule
+public sealed class AutomationRule : INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Automation";
     public string Command { get; set; } = string.Empty;
@@ -77,6 +79,15 @@ public sealed class AutomationRule
         _ => $"Every {IntervalMinutes} min"
     };
     [JsonIgnore] public string Countdown => GetCountdownText(DateTime.UtcNow, DateTime.Now);
+
+    public void NotifyCountdownChanged() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Countdown)));
+
+    public void NotifyDisplayChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Subtitle)));
+        NotifyCountdownChanged();
+    }
 
     public bool IsDue(DateTime utcNow, DateTime localNow)
     {

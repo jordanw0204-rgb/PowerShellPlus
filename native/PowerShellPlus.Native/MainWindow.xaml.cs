@@ -50,7 +50,7 @@ public partial class MainWindow : Window
         saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         saveTimer.Tick += (_, _) => { saveTimer.Stop(); SaveNow(); };
         automationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        automationTimer.Tick += async (_, _) => { AutomationList.Items.Refresh(); await CheckAutomationsAsync(); };
+        automationTimer.Tick += async (_, _) => { RefreshAutomationCountdowns(); await CheckAutomationsAsync(); };
         automationTimer.Start();
         recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         recoveryTimer.Tick += (_, _) => CaptureRecoverySnapshot();
@@ -510,7 +510,7 @@ public partial class MainWindow : Window
                     value.HasRun = false;
                 }
             }
-            if (editingValue is null) state.Automations.Add(value); else AutomationList.Items.Refresh();
+            if (editingValue is null) state.Automations.Add(value); else value.NotifyDisplayChanged();
         }
         HideEditor(); ScheduleSave(); UpdateCounts();
     }
@@ -538,7 +538,7 @@ public partial class MainWindow : Window
         {
             rule.LastRunUtc = DateTime.UtcNow;
             if (rule.ScheduleType == "Once") { rule.HasRun = true; rule.Enabled = false; }
-            AutomationList.Items.Refresh();
+            rule.NotifyDisplayChanged();
             ScheduleSave();
         }
         UpdateStatus($"{(recordRun ? "Ran" : "Tested")} {rule.Name} in {accepted} terminal(s){(recordRun ? string.Empty : " - schedule unchanged")}");
@@ -556,6 +556,11 @@ public partial class MainWindow : Window
             foreach (var rule in state.Automations.Where(value => value.IsDue(utcNow, localNow)).ToList()) await RunAutomationAsync(rule, true);
         }
         finally { automationCheckRunning = false; }
+    }
+
+    private void RefreshAutomationCountdowns()
+    {
+        foreach (var rule in state.Automations) rule.NotifyCountdownChanged();
     }
 
     private void ScheduleSave() { saveTimer.Stop(); saveTimer.Start(); }
@@ -905,6 +910,7 @@ public partial class MainWindow : Window
     {
         var originalLayout = state.Layout;
         var added = new List<SessionProfile>();
+        AutomationRule? countdownRefreshFixture = null;
         // The gate must pass regardless of how many sessions the user's saved
         // workspace already contains.
         var expectedPanes = panes.Count + 3;
@@ -960,13 +966,27 @@ public partial class MainWindow : Window
                 && AutomationRule.FormatCountdown(TimeSpan.FromHours(23) + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(10)) == "23h 1m 10s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(30)) == "1d 2h";
 
-            var success = inputReady && outputReady && scrollbarsHidden && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded && rows && columns && focus && grid && scheduleLogic && countdownLogic;
+            countdownRefreshFixture = new AutomationRule { Name = "Countdown refresh fixture", Enabled = false };
+            state.Automations.Add(countdownRefreshFixture);
+            ShowSection(AutomationPanel);
+            AutomationList.UpdateLayout();
+            var automationContainerBefore = AutomationList.ItemContainerGenerator.ContainerFromItem(countdownRefreshFixture);
+            var countdownNotified = false;
+            countdownRefreshFixture.PropertyChanged += (_, args) => countdownNotified |= args.PropertyName == nameof(AutomationRule.Countdown);
+            RefreshAutomationCountdowns();
+            AutomationList.UpdateLayout();
+            var automationContainerAfter = AutomationList.ItemContainerGenerator.ContainerFromItem(countdownRefreshFixture);
+            var automationHoverContainerStable = countdownNotified && automationContainerBefore is not null && ReferenceEquals(automationContainerBefore, automationContainerAfter);
+            ShowSection(SessionsPanel);
+
+            var success = inputReady && outputReady && scrollbarsHidden && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded && rows && columns && focus && grid && scheduleLogic && countdownLogic && automationHoverContainerStable;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes activated and took keyboard focus from terminal-surface clicks, the application icon loaded, commands executed, scrollbars stayed hidden, every layout resized, and exact schedules/countdowns were valid.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes activated and took keyboard focus from terminal-surface clicks, the application icon loaded, commands executed, scrollbars stayed hidden, every layout resized, and exact schedules/countdowns were valid.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             return success;
         }
         finally
         {
+            if (countdownRefreshFixture is not null) state.Automations.Remove(countdownRefreshFixture);
             foreach (var profile in added) { panes[profile.Id].Stop(); TerminalHost.Children.Remove(panes[profile.Id]); panes.Remove(profile.Id); state.Sessions.Remove(profile); }
             state.Layout = originalLayout; activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout();
         }
@@ -1056,7 +1076,7 @@ public partial class MainWindow : Window
     private void EditAutomationClick(object sender, RoutedEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) OpenAutomationEditor(value); }
     private void DeleteAutomationClick(object sender, RoutedEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) { state.Automations.Remove(value); ScheduleSave(); } }
     private void ToggleAutomationClick(object sender, RoutedEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) ToggleAutomation(value); }
-    private void ToggleAutomation(AutomationRule value) { value.Enabled = !value.Enabled; if (value.Enabled && value.ScheduleType == "Once") value.HasRun = false; AutomationList.Items.Refresh(); ScheduleSave(); UpdateStatus(value.Enabled ? $"Enabled {value.Name}" : $"Paused {value.Name}"); }
+    private void ToggleAutomation(AutomationRule value) { value.Enabled = !value.Enabled; if (value.Enabled && value.ScheduleType == "Once") value.HasRun = false; value.NotifyDisplayChanged(); ScheduleSave(); UpdateStatus(value.Enabled ? $"Enabled {value.Name}" : $"Paused {value.Name}"); }
     private async void AutomationDoubleClick(object sender, MouseButtonEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) await RunAutomationAsync(value, true); }
     private async void RunAutomationClick(object sender, RoutedEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) await RunAutomationAsync(value, true); }
     private async void TestAutomationClick(object sender, RoutedEventArgs e) { if (AutomationList.SelectedItem is AutomationRule value) await RunAutomationAsync(value, false); }
