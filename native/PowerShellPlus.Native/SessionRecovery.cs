@@ -421,6 +421,8 @@ public static class CodexSessionLocator
                 model = settings.TryGetProperty("model", out var settingsModel) ? settingsModel.GetString() : null;
                 approvalPolicy = settings.TryGetProperty("approval_policy", out var settingsApproval) ? settingsApproval.GetString() : null;
                 if (settings.TryGetProperty("sandbox_policy", out var settingsSandbox)) sandboxMode = ReadSandboxMode(settingsSandbox);
+                if (sandboxMode is null && settings.TryGetProperty("active_permission_profile", out var activeProfile))
+                    sandboxMode = ReadPermissionProfileSandboxMode(activeProfile);
             }
             var updated = root.TryGetProperty("timestamp", out var timestampValue)
                 && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)
@@ -439,6 +441,18 @@ public static class CodexSessionLocator
         return sandboxPolicy.ValueKind == JsonValueKind.Object && sandboxPolicy.TryGetProperty("type", out var type)
             ? type.GetString()
             : null;
+    }
+
+    private static string? ReadPermissionProfileSandboxMode(JsonElement activeProfile)
+    {
+        if (activeProfile.ValueKind != JsonValueKind.Object || !activeProfile.TryGetProperty("id", out var id)) return null;
+        return id.GetString() switch
+        {
+            ":read-only" => "read-only",
+            ":workspace" => "workspace-write",
+            ":danger-full-access" => "danger-full-access",
+            _ => null
+        };
     }
 
     private sealed class ModelFileCursor(string sessionId)
