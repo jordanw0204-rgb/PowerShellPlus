@@ -10,10 +10,19 @@
 
     <Border Grid.Row="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,0,1" MouseLeftButtonDown="TitleBarMouseDown">
       <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="184"/></Grid.ColumnDefinitions>
-        <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-        <TextBlock Grid.Column="1" Text="PowerShellPlus" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center"/>
-        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+        <Grid HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+          <TextBlock Grid.Column="1" Text="PowerShellPlus" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center"/>
+        </Grid>
+        <Border x:Name="TerminalToolbar" HorizontalAlignment="Center" VerticalAlignment="Center" Background="#181825" BorderBrush="#313244" BorderThickness="1" CornerRadius="7" Padding="3" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <StackPanel Orientation="Horizontal">
+            <Button Content="&#x25A6;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="GridLayoutClick" ToolTip="Grid layout"/>
+            <Button Content="&#x25A5;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="ColumnsLayoutClick" ToolTip="Column layout"/>
+            <Button Content="&#x2630;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="RowsLayoutClick" ToolTip="Row layout"/>
+            <Button Content="&#x25A3;" Width="34" Height="30" Padding="0" Click="FocusLayoutClick" ToolTip="Focus selected terminal"/>
+          </StackPanel>
+        </Border>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
           <Button x:Name="TitleBarOpenWindowsTerminalButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenWindowsTerminalClick" ToolTip="Open this profile in Windows Terminal">
             <Border Width="20" Height="15" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="2">
               <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
@@ -186,15 +195,7 @@
       </Border>
 
       <Grid Grid.Column="2">
-        <Grid.RowDefinitions><RowDefinition/><RowDefinition Height="50"/></Grid.RowDefinitions>
-        <Grid x:Name="TerminalHost" Grid.Row="0" Background="#11111B"/>
-        <Border x:Name="TerminalToolbar" Grid.Row="1" Background="#11111B" BorderBrush="#313244" BorderThickness="0,1,0,0">
-          <Grid Margin="10,7"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <StackPanel Orientation="Horizontal"><Button Content="⊞" Width="34" Padding="0" Margin="0,0,3,0" Click="GridLayoutClick" ToolTip="Grid"/><Button Content="▥" Width="34" Padding="0" Margin="0,0,3,0" Click="ColumnsLayoutClick" ToolTip="Columns"/><Button Content="☰" Width="34" Padding="0" Margin="0,0,3,0" Click="RowsLayoutClick" ToolTip="Rows"/><Button Content="▣" Width="34" Padding="0" Click="FocusLayoutClick" ToolTip="Focus"/></StackPanel>
-            <Grid Grid.Column="1" Margin="18,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="QuickCommand" VerticalContentAlignment="Center" FontFamily="Cascadia Mono" KeyDown="QuickCommandKeyDown"/><Button Grid.Column="1" Content="Run" Margin="6,0,0,0" Click="RunQuickClick"/><Button Grid.Column="2" Content="Run all" Margin="5,0,0,0" Click="RunQuickAllClick"/></Grid>
-            <TextBlock Grid.Column="2" x:Name="ProfileSummary" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center"/>
-          </Grid>
-        </Border>
+        <Grid x:Name="TerminalHost" Background="#11111B"/>
       </Grid>
     </Grid>
 
@@ -206,7 +207,12 @@
           <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,18"/>
           <Grid Grid.Row="1">
             <StackPanel x:Name="SessionEditor"><TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/><TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/><TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid><CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/></StackPanel>
-            <StackPanel x:Name="SnippetEditor" Visibility="Collapsed"><TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/><TextBlock Text="Category" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/><TextBlock Text="PowerShell input" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCommandEdit" Height="150" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" VerticalScrollBarVisibility="Auto"/></StackPanel>
+            <StackPanel x:Name="SnippetEditor" Visibility="Collapsed">
+              <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/>
+              <TextBlock Text="Category" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/>
+              <TextBlock Text="PowerShell input" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCommandEdit" Height="150" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" VerticalScrollBarVisibility="Auto"/>
+              <CheckBox x:Name="SnippetQuickAccessEdit" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0"><TextBlock Text="Show in terminal quick access" TextWrapping="Wrap"/></CheckBox>
+            </StackPanel>
             <StackPanel x:Name="AutomationEditor" Visibility="Collapsed">
               <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
               <TextBox x:Name="AutomationNameEdit"/>

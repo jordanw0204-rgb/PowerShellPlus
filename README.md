@@ -12,8 +12,9 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 - Arrange terminals as a grid, rows, columns, or a focused pane.
 - Resize panes by dragging the dividers; nearby panes adjust automatically.
 - Save session names, working directories, and shell commands.
-- Keep a reusable command library and run a command in one or every terminal.
-- Keep layout and quick-run controls in a dedicated bar beneath the terminal workspace, with one-click Windows Terminal access in the title bar.
+- Keep a reusable command library and mark selected entries for quick access inside every terminal.
+- Use a compact command bar and saved command queue independently in each terminal pane.
+- Keep the layout controls centered in the title bar as the window resizes, with one-click Windows Terminal access beside the window controls.
 - Schedule commands by interval, once at an exact date and time, or every day at an exact time.
 - Test an automation without moving its next scheduled run.
 - See a live countdown until an automation runs.
@@ -100,6 +101,10 @@ The app is currently unsigned. Windows SmartScreen may show a warning the first 
 
 Double-clicking a saved command runs it in the selected terminal. Double-clicking an automation runs it immediately. You can also click the `⋯` button or right-click any card to see every action available for that item.
 
+Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command. Click **+** to place the current text at the end of that pane's queue; after a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Queue contents and the expanded or collapsed state are saved with the session. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
+
+To put a saved command in the lightning-bolt menu, open **Commands**, edit that command, and enable **Show in terminal quick access**. Selecting it from a terminal's quick-access menu fills that pane's input so you can review, edit, queue, or run it.
+
 Scheduled commands are real PowerShell commands. Test a new automation first, especially if it changes files, installs software, or stops processes.
 
 ## How session recovery works
@@ -169,7 +174,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted queues, queue navigation, and quick-access filtering, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

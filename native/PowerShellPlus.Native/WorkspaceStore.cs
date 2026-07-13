@@ -16,10 +16,12 @@ public static class WorkspaceStore
             if (File.Exists(FilePath))
             {
                 var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(FilePath), JsonOptions);
-                if (loaded is not null && loaded.Version == 3)
+                if (loaded is not null && loaded.Version is 3 or 4)
                 {
+                    loaded.Version = 4;
                     loaded.Settings ??= new WorkspaceSettings();
                     loaded.LayoutSizes ??= [];
+                    foreach (var session in loaded.Sessions) session.PendingCommands ??= [];
                     return loaded;
                 }
             }
@@ -28,7 +30,7 @@ public static class WorkspaceStore
 
         var state = new WorkspaceState();
         state.Sessions.Add(new SessionProfile { Name = terminalProfile.ProfileName, CommandLine = terminalProfile.CommandLine });
-        state.Snippets.Add(new CommandSnippet { Name = "Git status", Category = "Development", Command = "git status --short --branch" });
+        state.Snippets.Add(new CommandSnippet { Name = "Git status", Category = "Development", Command = "git status --short --branch", ShowInQuickAccess = true });
         state.Snippets.Add(new CommandSnippet { Name = "Top processes", Category = "System", Command = "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15" });
         state.ActiveSessionId = state.Sessions[0].Id;
         return state;

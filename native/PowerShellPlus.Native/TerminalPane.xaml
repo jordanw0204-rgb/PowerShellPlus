@@ -5,7 +5,7 @@
              MinWidth="180" MinHeight="130" Focusable="True">
   <Border x:Name="PaneBorder" Background="#11111B" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4" PreviewMouseLeftButtonDown="ActivatePane">
     <Grid>
-      <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/></Grid.RowDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <Border Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1">
         <Grid Margin="10,0,5,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -25,6 +25,27 @@
         </Grid>
       </Border>
       <term:EasyTerminalControl x:Name="Terminal" Grid.Row="1" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys"/>
+      <Border x:Name="CommandBarContainer" Grid.Row="2" Height="36" Background="#151520" BorderBrush="#313244" BorderThickness="0,1,0,0" Opacity="1" ClipToBounds="True">
+        <Grid x:Name="CommandBarContent" Margin="6,4">
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Border Background="#11111B" BorderBrush="#45475A" BorderThickness="1" CornerRadius="5" ClipToBounds="True">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="32"/></Grid.ColumnDefinitions>
+              <Button x:Name="QuickAccessButton" Content="&#x26A1;" Width="30" Padding="0" Background="Transparent" BorderBrush="#313244" BorderThickness="0,0,1,0" Click="QuickAccessClick" ToolTip="Quick access commands"/>
+              <TextBox x:Name="CommandInput" Grid.Column="1" Padding="7,2" BorderThickness="0" Background="Transparent" FontFamily="Cascadia Mono" FontSize="11" VerticalContentAlignment="Center" PreviewKeyDown="CommandInputPreviewKeyDown" ToolTip="Enter runs · Up/Down browses queued commands"/>
+              <Button x:Name="QueueCommandButton" Grid.Column="2" Width="32" Padding="0" Background="Transparent" BorderBrush="#313244" BorderThickness="1,0,0,0" Click="QueueCommandClick" ToolTip="Add this command to the queue">
+                <Grid><TextBlock Text="+" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="#89B4FA" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-2,-2,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
+              </Button>
+            </Grid>
+          </Border>
+          <Button x:Name="RunCommandButton" Grid.Column="1" Content="&#x25B6;" Width="30" Padding="0" Margin="4,0,0,0" Click="RunCommandClick" ToolTip="Run command (Enter)"/>
+        </Grid>
+      </Border>
+      <Border x:Name="BottomCommandReveal" Grid.Row="2" Panel.ZIndex="5" Width="62" Height="16" Background="#01000000" HorizontalAlignment="Center" VerticalAlignment="Bottom">
+        <Button x:Name="CommandBarToggle" Content="&#x2304;" Width="34" Height="16" Padding="0" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="#DD242438" BorderBrush="#585B70" Click="ToggleCommandBarClick" ToolTip="Hide command bar">
+          <Button.Style><Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Opacity" Value="0"/><Style.Triggers><DataTrigger Binding="{Binding IsMouseOver, ElementName=BottomCommandReveal}" Value="True"><Setter Property="Opacity" Value="1"/></DataTrigger><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="Opacity" Value="1"/></Trigger></Style.Triggers></Style></Button.Style>
+        </Button>
+      </Border>
       <Border x:Name="RecoveryOverlay" Grid.Row="1" Panel.ZIndex="2" Background="#FA11111B" Visibility="Collapsed">
         <Grid Margin="12">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>

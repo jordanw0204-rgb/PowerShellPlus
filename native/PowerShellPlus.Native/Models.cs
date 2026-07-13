@@ -7,7 +7,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class WorkspaceState
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
     public string Name { get; set; } = "Main workspace";
     public string Layout { get; set; } = "Grid";
     public string? ActiveSessionId { get; set; }
@@ -46,6 +46,8 @@ public sealed class SessionProfile
     public string CommandLine { get; set; } = "powershell.exe";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
+    public bool CommandBarExpanded { get; set; } = true;
+    public List<string> PendingCommands { get; set; } = [];
     [JsonIgnore] public string Subtitle => WorkingDirectory;
 }
 
@@ -55,6 +57,7 @@ public sealed class CommandSnippet
     public string Name { get; set; } = "Command";
     public string Category { get; set; } = "General";
     public string Command { get; set; } = string.Empty;
+    public bool ShowInQuickAccess { get; set; }
     [JsonIgnore] public string Subtitle => $"{Category} · {Command}";
 }
 
