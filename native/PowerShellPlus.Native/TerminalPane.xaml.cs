@@ -5,18 +5,23 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Text;
+using System.Runtime.InteropServices;
 using EasyWindowsTerminalControl;
+using Microsoft.Terminal.Wpf;
 
 namespace PowerShellPlus.Native;
 
 public partial class TerminalPane : UserControl
 {
+    private const int WmLeftButtonDown = 0x0201;
+    private const int WmLeftButtonUp = 0x0202;
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
     public event EventHandler? EditRequested;
     private SessionRecoveryEntry? startupRecovery;
     private string previousOutput = string.Empty;
+    private TerminalContainer? terminalContainer;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null)
     {
@@ -24,6 +29,7 @@ public partial class TerminalPane : UserControl
         startupRecovery = recovery;
         previousOutput = recoveredOutput ?? string.Empty;
         InitializeComponent();
+        AttachTerminalActivationHook();
         TitleText.Text = profile.Name;
         Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
@@ -31,6 +37,7 @@ public partial class TerminalPane : UserControl
         Terminal.Theme = appearance.Theme;
         Loaded += async (_, _) =>
         {
+            AttachTerminalActivationHook();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
             HideNativeScrollbar();
             StateText.Text = $"  {appearance.ProfileName} · native renderer";
@@ -60,6 +67,17 @@ public partial class TerminalPane : UserControl
     {
         PaneBorder.BorderBrush = new SolidColorBrush(active ? Color.FromRgb(137, 180, 250) : Color.FromRgb(49, 50, 68));
         PaneBorder.BorderThickness = active ? new Thickness(1.5) : new Thickness(1);
+    }
+
+    public bool HasTerminalSurfaceActivationHook => terminalContainer is not null;
+
+    public bool SimulateTerminalSurfaceClickForTest()
+    {
+        AttachTerminalActivationHook();
+        if (terminalContainer?.Handle is not { } hwnd || hwnd == IntPtr.Zero) return false;
+        SendMessage(hwnd, WmLeftButtonDown, new IntPtr(1), IntPtr.Zero);
+        SendMessage(hwnd, WmLeftButtonUp, IntPtr.Zero, IntPtr.Zero);
+        return true;
     }
 
     public async void SendCommand(string command) => await SendCommandAsync(command);
@@ -178,6 +196,22 @@ public partial class TerminalPane : UserControl
         }
         return null;
     }
+
+    private void AttachTerminalActivationHook()
+    {
+        if (terminalContainer is not null) return;
+        terminalContainer = FindVisualChild<TerminalContainer>(Terminal.Terminal);
+        if (terminalContainer is not null) terminalContainer.MessageHook += TerminalMessageHook;
+    }
+
+    private IntPtr TerminalMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmLeftButtonDown) Activated?.Invoke(this, EventArgs.Empty);
+        return IntPtr.Zero;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
 
     public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
     {

@@ -834,6 +834,12 @@ public partial class MainWindow : Window
             SetLayout("Grid");
             await Task.Delay(2600);
             var scrollbarsHidden = panes.Values.All(pane => pane.IsNativeScrollbarHidden());
+            var activationTarget = panes.Values.Skip(1).First();
+            SelectPane(panes.Values.First().Profile.Id, false);
+            var terminalSurfaceHooked = activationTarget.HasTerminalSurfaceActivationHook;
+            var terminalClickSent = activationTarget.SimulateTerminalSurfaceClickForTest();
+            var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
+                && ReferenceEquals(SessionList.SelectedItem, activationTarget.Profile);
             var inputReady = true;
             var indexValue = 1;
             foreach (var pane in panes.Values) inputReady &= await pane.SendCommandAsync($"Write-Output 'NATIVE_PANE_{indexValue++}_READY'");
@@ -860,9 +866,9 @@ public partial class MainWindow : Window
                 && AutomationRule.FormatCountdown(TimeSpan.FromHours(23) + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(10)) == "23h 1m 10s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(30)) == "1d 2h";
 
-            var success = inputReady && outputReady && scrollbarsHidden && rows && columns && focus && grid && scheduleLogic && countdownLogic;
+            var success = inputReady && outputReady && scrollbarsHidden && terminalSurfaceHooked && terminalSurfaceActivatesPane && rows && columns && focus && grid && scheduleLogic && countdownLogic;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes executed commands, hid scrollbars, resized every layout, and validated exact schedules/countdowns.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes activated from terminal-surface clicks, executed commands, hid scrollbars, resized every layout, and validated exact schedules/countdowns.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}");
             return success;
         }
         finally
