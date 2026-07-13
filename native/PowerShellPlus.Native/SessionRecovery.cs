@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -18,11 +18,13 @@ public sealed class SessionRecoveryEntry
     public string? TranscriptFile { get; set; }
     public bool CodexWasActive { get; set; }
     public string? CodexSessionId { get; set; }
+    public string? CodexModel { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 
 public readonly record struct CodexProcessState(bool IsActive, DateTime? StartedUtc);
-public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc);
+public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc, string? Model = null);
+public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
 
 public sealed class CodexLaunchMarker
 {
@@ -32,6 +34,7 @@ public sealed class CodexLaunchMarker
     public string WorkingDirectory { get; set; } = string.Empty;
     public string? ExplicitSessionId { get; set; }
     public string? SessionId { get; set; }
+    public string? Model { get; set; }
     public DateTime? EndedUtc { get; set; }
     public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
 }
@@ -68,6 +71,7 @@ public static class CodexLaunchStore
     {
         marker.SessionId = match.SessionId;
         marker.WorkingDirectory = match.WorkingDirectory;
+        marker.Model = match.Model ?? marker.Model;
         Save(marker, directoryPath);
     }
 
@@ -80,9 +84,10 @@ public static class CodexLaunchStore
         var escapedMarkerPath = EscapePowerShell(markerPath);
         return "$global:__PowerShellPlusCodexCommand = (Get-Command codex -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1).Source; "
             + "if ($global:__PowerShellPlusCodexCommand) { function global:codex { "
-            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; "
+            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; "
             + "if ($__pspArgs.Count -ge 2 -and [string]$__pspArgs[0] -eq 'resume' -and [string]$__pspArgs[1] -match '^[A-Za-z0-9_-]{8,128}$') { $__pspExplicit = [string]$__pspArgs[1] }; "
-            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; EndedUtc = $null }; "
+            + "for ($__pspIndex = 0; $__pspIndex -lt $__pspArgs.Count - 1; $__pspIndex++) { if ([string]$__pspArgs[$__pspIndex] -in @('-m', '--model')) { $__pspModel = [string]$__pspArgs[$__pspIndex + 1] } }; "
+            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; EndedUtc = $null }; "
             + "$__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8; "
             + "try { & $global:__PowerShellPlusCodexCommand @__pspArgs } finally { $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O'); $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8 } "
             + "} }";
@@ -108,7 +113,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is >= 1 and <= 3)
+            if (value is not null && value.Version is >= 1 and <= 4)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -117,9 +122,9 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 3;
+                    value.Version = 4;
                 }
-                if (value.Version == 2) value.Version = 3;
+                if (value.Version is 2 or 3) value.Version = 4;
                 return value;
             }
         }
@@ -193,6 +198,10 @@ public static class SessionRecoveryStore
 
 public static class CodexSessionLocator
 {
+    private const long ModelScanOverlapBytes = 64 * 1024;
+    private static readonly object ModelCacheLock = new();
+    private static readonly Dictionary<string, ModelFileCursor> ModelFileCache = new(StringComparer.OrdinalIgnoreCase);
+
     public static string? FindSessionId(string workingDirectory, DateTime? processStartedUtc, string? sessionsRoot = null)
         => FindBestSession(processStartedUtc, workingDirectory, null, sessionsRoot)?.SessionId;
 
@@ -211,31 +220,128 @@ public static class CodexSessionLocator
             CodexSessionMatch? best = null;
             foreach (var file in candidates)
             {
-                using var reader = new StreamReader(file.FullName);
-                var line = reader.ReadLine();
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                using var document = JsonDocument.Parse(line);
-                var rootElement = document.RootElement;
-                if (!rootElement.TryGetProperty("type", out var type) || type.GetString() != "session_meta" || !rootElement.TryGetProperty("payload", out var payload)) continue;
-                if (!payload.TryGetProperty("cwd", out var cwd)) continue;
-                var actualDirectory = cwd.GetString() ?? string.Empty;
-                if (expectedDirectory is not null && NormalizePath(actualDirectory) != expectedDirectory) continue;
-                if (!payload.TryGetProperty("timestamp", out var timestampValue) || !DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)) continue;
-                var id = payload.TryGetProperty("session_id", out var sessionId) ? sessionId.GetString() : null;
-                id ??= payload.TryGetProperty("id", out var rolloutId) ? rolloutId.GetString() : null;
-                if (!IsSafeCodexId(id) || excludedSessionIds?.Contains(id!) == true) continue;
-                var distance = (timestamp.ToUniversalTime() - processStartedUtc.Value).Duration();
-                if (distance > TimeSpan.FromMinutes(30)) continue;
-                var match = new CodexSessionMatch(id!, actualDirectory, timestamp.ToUniversalTime(), distance, file.LastWriteTimeUtc);
-                if (best is null || distance < best.ProcessStartDistance || distance == best.ProcessStartDistance && file.LastWriteTimeUtc > best.FileModifiedUtc)
-                    best = match;
+                try
+                {
+                    using var reader = new StreamReader(file.FullName);
+                    var line = reader.ReadLine();
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    using var document = JsonDocument.Parse(line);
+                    var rootElement = document.RootElement;
+                    if (!rootElement.TryGetProperty("type", out var type) || type.GetString() != "session_meta" || !rootElement.TryGetProperty("payload", out var payload)) continue;
+                    if (!payload.TryGetProperty("cwd", out var cwd)) continue;
+                    var actualDirectory = cwd.GetString() ?? string.Empty;
+                    if (expectedDirectory is not null && NormalizePath(actualDirectory) != expectedDirectory) continue;
+                    if (!payload.TryGetProperty("timestamp", out var timestampValue) || !DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)) continue;
+                    var id = payload.TryGetProperty("session_id", out var sessionId) ? sessionId.GetString() : null;
+                    id ??= payload.TryGetProperty("id", out var rolloutId) ? rolloutId.GetString() : null;
+                    if (!IsSafeCodexId(id) || excludedSessionIds?.Contains(id!) == true) continue;
+                    var distance = (timestamp.ToUniversalTime() - processStartedUtc.Value).Duration();
+                    if (distance > TimeSpan.FromMinutes(30)) continue;
+                    var match = new CodexSessionMatch(id!, actualDirectory, timestamp.ToUniversalTime(), distance, file.LastWriteTimeUtc);
+                    if (best is null || distance < best.ProcessStartDistance || distance == best.ProcessStartDistance && file.LastWriteTimeUtc > best.FileModifiedUtc)
+                        best = match;
+                }
+                catch { }
             }
-            return best;
+            if (best is null) return null;
+            var model = FindLatestModel(best.SessionId, root);
+            return best with { Model = model?.Model };
         }
         catch { return null; }
     }
 
     public static bool IsSafeCodexId(string? value) => value is { Length: >= 8 and <= 128 } && value.All(character => char.IsLetterOrDigit(character) || character is '-' or '_');
+
+    public static bool IsSafeCodexModel(string? value) => value is { Length: >= 1 and <= 128 }
+        && value.All(character => char.IsLetterOrDigit(character) || character is '-' or '_' or '.' or '/' or ':');
+
+    public static CodexSessionModel? FindLatestModel(string? sessionId, string? sessionsRoot = null)
+    {
+        if (!IsSafeCodexId(sessionId)) return null;
+        var root = sessionsRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+        if (!Directory.Exists(root)) return null;
+        try
+        {
+            var files = Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Take(500)
+                .ToList();
+            lock (ModelCacheLock)
+            {
+                CodexSessionModel? latest = null;
+                foreach (var file in files)
+                {
+                    try
+                    {
+                        ModelFileCache.TryGetValue(file.FullName, out var cursor);
+                        if (cursor is null || !string.Equals(cursor.SessionId, sessionId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            using var metadataReader = new StreamReader(file.FullName);
+                            var firstLine = metadataReader.ReadLine();
+                            if (string.IsNullOrWhiteSpace(firstLine)) continue;
+                            using var metadata = JsonDocument.Parse(firstLine);
+                            if (!metadata.RootElement.TryGetProperty("payload", out var payload)) continue;
+                            var id = payload.TryGetProperty("session_id", out var sessionIdValue) ? sessionIdValue.GetString() : null;
+                            if (!string.Equals(id, sessionId, StringComparison.OrdinalIgnoreCase)) continue;
+                            cursor = new ModelFileCursor(sessionId!);
+                            ModelFileCache[file.FullName] = cursor;
+                        }
+
+                        file.Refresh();
+                        if (file.Length != cursor.Length)
+                        {
+                            var scanStart = file.Length < cursor.Length ? 0 : Math.Max(0, cursor.Length - ModelScanOverlapBytes);
+                            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                            stream.Seek(scanStart, SeekOrigin.Begin);
+                            using var reader = new StreamReader(stream);
+                            if (scanStart > 0) _ = reader.ReadLine();
+                            var fileLatest = cursor.Latest;
+                            string? line;
+                            while ((line = reader.ReadLine()) is not null) ConsiderModelRecord(line, ref fileLatest);
+                            cursor.Latest = fileLatest;
+                            cursor.Length = stream.Length;
+                        }
+                        if (cursor.Latest is not null && (latest is null || cursor.Latest.UpdatedUtc >= latest.UpdatedUtc)) latest = cursor.Latest;
+                    }
+                    catch { }
+                }
+                return latest;
+            }
+        }
+        catch { return null; }
+    }
+
+    private static void ConsiderModelRecord(string line, ref CodexSessionModel? latest)
+    {
+        if (!line.Contains("model", StringComparison.OrdinalIgnoreCase)) return;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("payload", out var payload)) return;
+            string? model = null;
+            if (root.TryGetProperty("type", out var type) && type.GetString() == "turn_context")
+                model = payload.TryGetProperty("model", out var turnModel) ? turnModel.GetString() : null;
+            else if (payload.TryGetProperty("type", out var payloadType) && payloadType.GetString() == "thread_settings_applied"
+                && payload.TryGetProperty("thread_settings", out var settings))
+                model = settings.TryGetProperty("model", out var settingsModel) ? settingsModel.GetString() : null;
+            if (!IsSafeCodexModel(model)) return;
+            var updated = root.TryGetProperty("timestamp", out var timestampValue)
+                && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)
+                    ? timestamp.ToUniversalTime()
+                    : DateTime.MinValue;
+            if (latest is null || updated >= latest.UpdatedUtc) latest = new CodexSessionModel(model!, updated);
+        }
+        catch { }
+    }
+
+    private sealed class ModelFileCursor(string sessionId)
+    {
+        public string SessionId { get; } = sessionId;
+        public long Length { get; set; }
+        public CodexSessionModel? Latest { get; set; }
+    }
 
     private static string NormalizePath(string value)
     {

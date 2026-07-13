@@ -167,18 +167,26 @@ public partial class MainWindow : Window
                 codexMatch ??= codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
                 var codexSessionId = codexMatch?.SessionId;
                 var codexDirectory = codexMatch?.WorkingDirectory;
+                var codexModel = codexMatch?.Model;
                 if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
                 {
                     codexSessionId = launch.SessionId;
                     codexDirectory = launch.WorkingDirectory;
+                    codexModel = launch.Model;
                 }
                 if (codexSessionId is null && codexIsActive && launch is null && oldEntry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(oldEntry.CodexSessionId))
                 {
                     codexSessionId = oldEntry.CodexSessionId;
                     codexDirectory = oldEntry.WorkingDirectory;
+                    codexModel = oldEntry.CodexModel;
                 }
                 if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
-                if (codexSessionId is not null) usedCodexSessionIds.Add(codexSessionId);
+                if (codexSessionId is not null)
+                {
+                    usedCodexSessionIds.Add(codexSessionId);
+                    codexModel = (codexMatch is null ? CodexSessionLocator.FindLatestModel(codexSessionId)?.Model : codexMatch.Model)
+                        ?? codexModel ?? oldEntry?.CodexModel;
+                }
                 snapshot.Sessions[pane.Profile.Id] = new SessionRecoveryEntry
                 {
                     SessionId = pane.Profile.Id,
@@ -186,6 +194,7 @@ public partial class MainWindow : Window
                     TranscriptFile = transcriptFile,
                     CodexWasActive = codexIsActive,
                     CodexSessionId = codexSessionId,
+                    CodexModel = CodexSessionLocator.IsSafeCodexModel(codexModel) ? codexModel : null,
                     CapturedUtc = DateTime.UtcNow
                 };
             }
@@ -210,7 +219,15 @@ public partial class MainWindow : Window
         {
             loadedRecovery.Sessions.TryGetValue(profile.Id, out var entry);
             if (entry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(entry.CodexSessionId))
+            {
                 usedCodexSessionIds.Add(entry.CodexSessionId!);
+                var latestModel = CodexSessionLocator.FindLatestModel(entry.CodexSessionId);
+                if (latestModel is not null && !string.Equals(entry.CodexModel, latestModel.Model, StringComparison.Ordinal))
+                {
+                    entry.CodexModel = latestModel.Model;
+                    changed = true;
+                }
+            }
 
             var launch = CodexLaunchStore.Load(profile.Id);
             if (launch?.IsActive != true) continue;
@@ -228,6 +245,7 @@ public partial class MainWindow : Window
             entry ??= new SessionRecoveryEntry { SessionId = profile.Id };
             entry.CodexWasActive = true;
             entry.CodexSessionId = sessionId;
+            entry.CodexModel = CodexSessionLocator.FindLatestModel(sessionId)?.Model ?? match?.Model ?? launch.Model ?? entry.CodexModel;
             entry.WorkingDirectory = match?.WorkingDirectory ?? launch.WorkingDirectory;
             entry.CapturedUtc = DateTime.UtcNow;
             loadedRecovery.Sessions[profile.Id] = entry;
@@ -692,10 +710,15 @@ public partial class MainWindow : Window
             && !Path.GetFullPath(WorkspaceStore.DirectoryPath).Equals(Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus")), StringComparison.OrdinalIgnoreCase);
         var profile = new SessionProfile { CommandLine = "powershell.exe", WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
         var normalScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = false }));
-        var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555" }));
+        const string savedModel = "gpt-5.3-codex-spark";
+        var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel }));
         var pickerScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true }));
+        var unsafeModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = "gpt'; Write-Output unsafe; #" }));
         var normalDoesNotResumeCodex = !normalScript.Contains("codex resume", StringComparison.OrdinalIgnoreCase);
         var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
+        var codexResumesSavedModel = codexScript.Contains($"--model '{savedModel}'", StringComparison.Ordinal);
+        var unsafeModelRejected = !unsafeModelScript.Contains("codex resume '11111111-2222-3333-4444-555555555555' --model", StringComparison.OrdinalIgnoreCase)
+            && !unsafeModelScript.Contains("Write-Output unsafe", StringComparison.Ordinal);
         var ambiguousCodexUsesPicker = pickerScript.Contains("codex resume --all", StringComparison.OrdinalIgnoreCase) && !pickerScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
         var powershellWrapperInstalled = normalScript.Contains("function global:codex", StringComparison.OrdinalIgnoreCase)
             && normalScript.Contains(profile.Id, StringComparison.Ordinal);
@@ -705,9 +728,20 @@ public partial class MainWindow : Window
         var fixtureStarted = DateTime.UtcNow;
         var actualCodexDirectory = Path.GetDirectoryName(reportPath)!;
         var fixture = new { timestamp = fixtureStarted.ToString("O"), type = "session_meta", payload = new { session_id = fixtureId, id = Guid.NewGuid().ToString(), timestamp = fixtureStarted.ToString("O"), cwd = actualCodexDirectory } };
-        File.WriteAllText(Path.Combine(fixtureRoot, "rollout-test.jsonl"), System.Text.Json.JsonSerializer.Serialize(fixture) + Environment.NewLine);
+        var earlierTurn = new { timestamp = fixtureStarted.AddSeconds(1).ToString("O"), type = "turn_context", payload = new { model = "gpt-5.2-codex" } };
+        var modelChange = new { timestamp = fixtureStarted.AddSeconds(2).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = savedModel } } };
+        var unsafeModelChange = new { timestamp = fixtureStarted.AddSeconds(3).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = "gpt'; Write-Output unsafe; #" } } };
+        File.WriteAllLines(Path.Combine(fixtureRoot, "rollout-test.jsonl"), [
+            System.Text.Json.JsonSerializer.Serialize(fixture),
+            System.Text.Json.JsonSerializer.Serialize(earlierTurn),
+            System.Text.Json.JsonSerializer.Serialize(modelChange),
+            System.Text.Json.JsonSerializer.Serialize(unsafeModelChange)
+        ]);
+        File.WriteAllText(Path.Combine(fixtureRoot, "rollout-partially-written.jsonl"), "{not-complete-json");
         var mappedSession = CodexSessionLocator.FindBestSession(fixtureStarted, null, null, fixtureRoot);
         var codexSessionMapped = mappedSession?.SessionId == fixtureId && string.Equals(mappedSession.WorkingDirectory, actualCodexDirectory, StringComparison.OrdinalIgnoreCase);
+        var latestModelMapped = mappedSession?.Model == savedModel && CodexSessionLocator.FindLatestModel(fixtureId, fixtureRoot)?.Model == savedModel;
+        var partialRolloutIgnored = codexSessionMapped && latestModelMapped;
         var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
         try { Directory.Delete(fixtureRoot, true); } catch { }
@@ -716,7 +750,7 @@ public partial class MainWindow : Window
         CodexLaunchStore.Save(launchMarker, launchRoot);
         if (mappedSession is not null) CodexLaunchStore.Confirm(launchMarker, mappedSession, launchRoot);
         var confirmedLaunch = CodexLaunchStore.Load(profile.Id, launchRoot);
-        var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory;
+        var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory && confirmedLaunch.Model == savedModel;
         if (confirmedLaunch is not null)
         {
             confirmedLaunch.EndedUtc = DateTime.UtcNow;
@@ -726,16 +760,17 @@ public partial class MainWindow : Window
         var wrapperScript = CodexLaunchStore.BuildPowerShellWrapper(profile.Id, launchRoot);
         var wrapperRecordsPaneAndLifecycle = wrapperScript.Contains(profile.Id, StringComparison.Ordinal)
             && wrapperScript.Contains("StartedUtc", StringComparison.Ordinal)
+            && wrapperScript.Contains("Model", StringComparison.Ordinal)
             && wrapperScript.Contains("EndedUtc", StringComparison.Ordinal);
         try { Directory.Delete(launchRoot, true); } catch { }
         var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
         var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
         var recoveryFixture = new SessionRecoverySnapshot();
-        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId };
+        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId, CodexModel = savedModel };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
         var recoveryRoundTrip = reloadedFixture.Sessions.TryGetValue("test-session", out var reloadedEntry)
-            && reloadedEntry.CodexWasActive && reloadedEntry.CodexSessionId == fixtureId
+            && reloadedEntry.CodexWasActive && reloadedEntry.CodexSessionId == fixtureId && reloadedEntry.CodexModel == savedModel
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -743,7 +778,7 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 3 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 4 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
 
         HideToTray();
@@ -755,9 +790,9 @@ public partial class MainWindow : Window
         var restored = IsVisible;
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
-        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && changedDirectoryRestored && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
+        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && unsafeModelRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && latestModelMapped && partialRolloutIgnored && changedDirectoryRestored && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex only for a Codex-marked session.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nChangedDirectoryRestored={changedDirectoryRestored}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex with its exact thread and saved model.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nUnsafeModelRejected={unsafeModelRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
         return success;
     }
 

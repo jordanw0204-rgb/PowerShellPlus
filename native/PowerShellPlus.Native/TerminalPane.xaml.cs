@@ -189,17 +189,18 @@ public partial class TerminalPane : UserControl
         var validDirectory = !string.IsNullOrWhiteSpace(startupDirectory) && Directory.Exists(startupDirectory);
         var escaped = validDirectory ? startupDirectory.Replace("'", "''") : string.Empty;
         var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $" '{recovery!.CodexSessionId}'" : " --all";
+        var modelArgument = resumeCodex && CodexSessionLocator.IsSafeCodexModel(recovery?.CodexModel) ? $" --model '{recovery!.CodexModel}'" : string.Empty;
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
-            if (resumeCodex) script += $"; & codex resume{resumeArgument}";
+            if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}";
             if (script.Length == 0) return command;
             var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             return $"{command} -NoExit -EncodedCommand {encoded}";
         }
         if (resumeCodex && Path.GetFileNameWithoutExtension(command.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).Equals("codex", StringComparison.OrdinalIgnoreCase))
-            return $"codex resume{resumeArgument}";
+            return $"codex resume{resumeArgument}{modelArgument}";
         return command;
     }
 
