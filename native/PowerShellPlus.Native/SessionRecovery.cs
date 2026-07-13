@@ -223,7 +223,7 @@ public static class CodexSessionLocator
             {
                 try
                 {
-                    using var reader = new StreamReader(file.FullName);
+                    using var reader = OpenSharedReader(file.FullName);
                     var line = reader.ReadLine();
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     using var document = JsonDocument.Parse(line);
@@ -265,7 +265,7 @@ public static class CodexSessionLocator
             {
                 try
                 {
-                    using var reader = new StreamReader(file.FullName);
+                    using var reader = OpenSharedReader(file.FullName);
                     var line = reader.ReadLine();
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     using var document = JsonDocument.Parse(line);
@@ -320,7 +320,7 @@ public static class CodexSessionLocator
                         ModelFileCache.TryGetValue(file.FullName, out var cursor);
                         if (cursor is null || !string.Equals(cursor.SessionId, sessionId, StringComparison.OrdinalIgnoreCase))
                         {
-                            using var metadataReader = new StreamReader(file.FullName);
+                            using var metadataReader = OpenSharedReader(file.FullName);
                             var firstLine = metadataReader.ReadLine();
                             if (string.IsNullOrWhiteSpace(firstLine)) continue;
                             using var metadata = JsonDocument.Parse(firstLine);
@@ -385,6 +385,9 @@ public static class CodexSessionLocator
         public long Length { get; set; }
         public CodexSessionModel? Latest { get; set; }
     }
+
+    private static StreamReader OpenSharedReader(string path)
+        => new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
 
     private static string NormalizePath(string value)
     {
