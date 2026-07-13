@@ -176,17 +176,23 @@ public partial class MainWindow : Window
                 var codexSessionId = codexMatch?.SessionId;
                 var codexDirectory = codexMatch?.WorkingDirectory;
                 var codexModel = codexMatch?.Model;
+                var codexSandboxMode = codexMatch?.SandboxMode;
+                var codexApprovalPolicy = codexMatch?.ApprovalPolicy;
                 if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
                 {
                     codexSessionId = launch.SessionId;
                     codexDirectory = launch.WorkingDirectory;
                     codexModel = launch.Model;
+                    codexSandboxMode = launch.SandboxMode;
+                    codexApprovalPolicy = launch.ApprovalPolicy;
                 }
                 if (codexSessionId is null && codexIsActive && launch is null && oldEntry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(oldEntry.CodexSessionId))
                 {
                     codexSessionId = oldEntry.CodexSessionId;
                     codexDirectory = oldEntry.WorkingDirectory;
                     codexModel = oldEntry.CodexModel;
+                    codexSandboxMode = oldEntry.CodexSandboxMode;
+                    codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
                 }
                 if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
                 if (codexSessionId is not null)
@@ -194,6 +200,20 @@ public partial class MainWindow : Window
                     usedCodexSessionIds.Add(codexSessionId);
                     codexModel = (codexMatch is null ? CodexSessionLocator.FindLatestModel(codexSessionId)?.Model : codexMatch.Model)
                         ?? codexModel ?? oldEntry?.CodexModel;
+                    var latestPermissions = codexMatch is not null && CodexSessionLocator.IsSafeCodexPermissions(codexMatch.SandboxMode, codexMatch.ApprovalPolicy)
+                        ? new CodexSessionPermissions(codexMatch.SandboxMode!, codexMatch.ApprovalPolicy!, codexMatch.FileModifiedUtc)
+                        : CodexSessionLocator.FindLatestPermissions(codexSessionId);
+                    if (latestPermissions is not null)
+                    {
+                        codexSandboxMode = latestPermissions.SandboxMode;
+                        codexApprovalPolicy = latestPermissions.ApprovalPolicy;
+                    }
+                    else if (!CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy)
+                        && CodexSessionLocator.IsSafeCodexPermissions(oldEntry?.CodexSandboxMode, oldEntry?.CodexApprovalPolicy))
+                    {
+                        codexSandboxMode = oldEntry!.CodexSandboxMode;
+                        codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
+                    }
                 }
                 snapshot.Sessions[pane.Profile.Id] = new SessionRecoveryEntry
                 {
@@ -203,6 +223,8 @@ public partial class MainWindow : Window
                     CodexWasActive = codexIsActive,
                     CodexSessionId = codexSessionId,
                     CodexModel = CodexSessionLocator.IsSafeCodexModel(codexModel) ? codexModel : null,
+                    CodexSandboxMode = CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy) ? codexSandboxMode : null,
+                    CodexApprovalPolicy = CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy) ? codexApprovalPolicy : null,
                     CapturedUtc = DateTime.UtcNow
                 };
             }
@@ -235,6 +257,14 @@ public partial class MainWindow : Window
                     entry.CodexModel = latestModel.Model;
                     changed = true;
                 }
+                var latestPermissions = CodexSessionLocator.FindLatestPermissions(entry.CodexSessionId);
+                if (latestPermissions is not null && (!string.Equals(entry.CodexSandboxMode, latestPermissions.SandboxMode, StringComparison.Ordinal)
+                    || !string.Equals(entry.CodexApprovalPolicy, latestPermissions.ApprovalPolicy, StringComparison.Ordinal)))
+                {
+                    entry.CodexSandboxMode = latestPermissions.SandboxMode;
+                    entry.CodexApprovalPolicy = latestPermissions.ApprovalPolicy;
+                    changed = true;
+                }
             }
 
             var launch = CodexLaunchStore.Load(profile.Id);
@@ -254,6 +284,22 @@ public partial class MainWindow : Window
             entry.CodexWasActive = true;
             entry.CodexSessionId = sessionId;
             entry.CodexModel = CodexSessionLocator.FindLatestModel(sessionId)?.Model ?? match?.Model ?? launch.Model ?? entry.CodexModel;
+            var permissions = CodexSessionLocator.FindLatestPermissions(sessionId);
+            if (permissions is not null)
+            {
+                entry.CodexSandboxMode = permissions.SandboxMode;
+                entry.CodexApprovalPolicy = permissions.ApprovalPolicy;
+            }
+            else if (CodexSessionLocator.IsSafeCodexPermissions(match?.SandboxMode, match?.ApprovalPolicy))
+            {
+                entry.CodexSandboxMode = match!.SandboxMode;
+                entry.CodexApprovalPolicy = match.ApprovalPolicy;
+            }
+            else if (CodexSessionLocator.IsSafeCodexPermissions(launch.SandboxMode, launch.ApprovalPolicy))
+            {
+                entry.CodexSandboxMode = launch.SandboxMode;
+                entry.CodexApprovalPolicy = launch.ApprovalPolicy;
+            }
             entry.WorkingDirectory = match?.WorkingDirectory ?? launch.WorkingDirectory;
             entry.CapturedUtc = DateTime.UtcNow;
             loadedRecovery.Sessions[profile.Id] = entry;
@@ -750,14 +796,23 @@ public partial class MainWindow : Window
         var profile = new SessionProfile { CommandLine = "powershell.exe", WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
         var normalScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = false }));
         const string savedModel = "gpt-5.3-codex-spark";
-        var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel }));
+        const string savedSandboxMode = "danger-full-access";
+        const string savedApprovalPolicy = "never";
+        var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy }));
         var pickerScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true }));
         var unsafeModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = "gpt'; Write-Output unsafe; #" }));
+        var unsafePermissionsScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexSandboxMode = "danger-full-access'; Write-Output unsafe; #", CodexApprovalPolicy = savedApprovalPolicy }));
         var normalDoesNotResumeCodex = !normalScript.Contains("codex resume", StringComparison.OrdinalIgnoreCase);
         var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
         var codexResumesSavedModel = codexScript.Contains($"--model '{savedModel}'", StringComparison.Ordinal);
+        var codexResumesSavedPermissions = codexScript.Contains($"--sandbox '{savedSandboxMode}' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal);
         var unsafeModelRejected = !unsafeModelScript.Contains("codex resume '11111111-2222-3333-4444-555555555555' --model", StringComparison.OrdinalIgnoreCase)
             && !unsafeModelScript.Contains("Write-Output unsafe", StringComparison.Ordinal);
+        var unsafeResumeStart = unsafePermissionsScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
+        var unsafeResumeCommand = unsafeResumeStart >= 0 ? unsafePermissionsScript[unsafeResumeStart..] : unsafePermissionsScript;
+        var unsafePermissionsRejected = !unsafeResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase)
+            && !unsafeResumeCommand.Contains("--ask-for-approval", StringComparison.OrdinalIgnoreCase)
+            && !unsafeResumeCommand.Contains("Write-Output unsafe", StringComparison.Ordinal);
         var ambiguousCodexUsesPicker = pickerScript.Contains("codex resume --all", StringComparison.OrdinalIgnoreCase) && !pickerScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
         var powershellWrapperInstalled = normalScript.Contains("function global:codex", StringComparison.OrdinalIgnoreCase)
             && normalScript.Contains(profile.Id, StringComparison.Ordinal);
@@ -767,20 +822,25 @@ public partial class MainWindow : Window
         var fixtureStarted = DateTime.UtcNow;
         var actualCodexDirectory = Path.GetDirectoryName(reportPath)!;
         var fixture = new { timestamp = fixtureStarted.ToString("O"), type = "session_meta", payload = new { session_id = fixtureId, id = Guid.NewGuid().ToString(), timestamp = fixtureStarted.ToString("O"), cwd = actualCodexDirectory } };
-        var earlierTurn = new { timestamp = fixtureStarted.AddSeconds(1).ToString("O"), type = "turn_context", payload = new { model = "gpt-5.2-codex" } };
+        var earlierTurn = new { timestamp = fixtureStarted.AddSeconds(1).ToString("O"), type = "turn_context", payload = new { model = "gpt-5.2-codex", approval_policy = "on-request", sandbox_policy = new { type = "workspace-write", network_access = false } } };
         var modelChange = new { timestamp = fixtureStarted.AddSeconds(2).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = savedModel } } };
-        var unsafeModelChange = new { timestamp = fixtureStarted.AddSeconds(3).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = "gpt'; Write-Output unsafe; #" } } };
+        var permissionsChange = new { timestamp = fixtureStarted.AddSeconds(3).ToString("O"), type = "turn_context", payload = new { model = savedModel, approval_policy = savedApprovalPolicy, sandbox_policy = new { type = savedSandboxMode } } };
+        var unsafeModelChange = new { timestamp = fixtureStarted.AddSeconds(4).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = "gpt'; Write-Output unsafe; #" } } };
         File.WriteAllLines(Path.Combine(fixtureRoot, "rollout-test.jsonl"), [
             System.Text.Json.JsonSerializer.Serialize(fixture),
             System.Text.Json.JsonSerializer.Serialize(earlierTurn),
             System.Text.Json.JsonSerializer.Serialize(modelChange),
+            System.Text.Json.JsonSerializer.Serialize(permissionsChange),
             System.Text.Json.JsonSerializer.Serialize(unsafeModelChange)
         ]);
         File.WriteAllText(Path.Combine(fixtureRoot, "rollout-partially-written.jsonl"), "{not-complete-json");
         var mappedSession = CodexSessionLocator.FindBestSession(fixtureStarted, null, null, fixtureRoot);
         var codexSessionMapped = mappedSession?.SessionId == fixtureId && string.Equals(mappedSession.WorkingDirectory, actualCodexDirectory, StringComparison.OrdinalIgnoreCase);
         var latestModelMapped = mappedSession?.Model == savedModel && CodexSessionLocator.FindLatestModel(fixtureId, fixtureRoot)?.Model == savedModel;
-        var partialRolloutIgnored = codexSessionMapped && latestModelMapped;
+        var latestPermissions = CodexSessionLocator.FindLatestPermissions(fixtureId, fixtureRoot);
+        var latestPermissionsMapped = mappedSession?.SandboxMode == savedSandboxMode && mappedSession.ApprovalPolicy == savedApprovalPolicy
+            && latestPermissions?.SandboxMode == savedSandboxMode && latestPermissions.ApprovalPolicy == savedApprovalPolicy;
+        var partialRolloutIgnored = codexSessionMapped && latestModelMapped && latestPermissionsMapped;
         var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
         const int fixtureProcessId = 42420;
@@ -790,7 +850,7 @@ public partial class MainWindow : Window
         var resumedMetadataTime = fixtureStarted.AddDays(-7);
         var launcherMetadata = new { timestamp = fixtureStarted.ToString("O"), type = "session_meta", payload = new { session_id = launcherThreadId, timestamp = fixtureStarted.ToString("O"), cwd = actualCodexDirectory, source = "cli" } };
         var resumedMetadata = new { timestamp = resumedMetadataTime.ToString("O"), type = "session_meta", payload = new { session_id = resumedThreadId, timestamp = resumedMetadataTime.ToString("O"), cwd = actualCodexDirectory, source = "cli" } };
-        var resumedModel = new { timestamp = fixtureStarted.AddSeconds(20).ToString("O"), type = "turn_context", payload = new { model = savedModel } };
+        var resumedModel = new { timestamp = fixtureStarted.AddSeconds(20).ToString("O"), type = "turn_context", payload = new { model = savedModel, approval_policy = savedApprovalPolicy, sandbox_policy = new { type = savedSandboxMode } } };
         var subagentMetadata = new { timestamp = fixtureStarted.AddSeconds(21).ToString("O"), type = "session_meta", payload = new { session_id = subagentThreadId, timestamp = fixtureStarted.AddSeconds(21).ToString("O"), cwd = actualCodexDirectory, source = new { subagent = new { thread_spawn = new { parent_thread_id = resumedThreadId } } } } };
         File.WriteAllText(Path.Combine(fixtureRoot, "rollout-launcher.jsonl"), System.Text.Json.JsonSerializer.Serialize(launcherMetadata));
         var resumedRolloutPath = Path.Combine(fixtureRoot, "rollout-resumed.jsonl");
@@ -810,7 +870,8 @@ public partial class MainWindow : Window
                 ? CodexActivityStore.FindActiveCliSession(fixtureProcessId, fixtureStarted, null, logsFixturePath, fixtureRoot)
                 : null;
         }
-        var inTuiResumeRebound = activeResumedSession?.SessionId == resumedThreadId && activeResumedSession.Model == savedModel;
+        var inTuiResumeRebound = activeResumedSession?.SessionId == resumedThreadId && activeResumedSession.Model == savedModel
+            && activeResumedSession.SandboxMode == savedSandboxMode && activeResumedSession.ApprovalPolicy == savedApprovalPolicy;
         var liveRolloutSharedRead = inTuiResumeRebound;
         var launchTimeFallbackRebound = false;
         Process? fallbackProbe = null;
@@ -839,7 +900,8 @@ public partial class MainWindow : Window
                 var launchMatchedSession = fallbackFixtureCreated
                     ? CodexActivityStore.FindActiveCliSessionNearLaunch(probeLaunchStarted, null, fallbackLogsPath, fixtureRoot)
                     : null;
-                launchTimeFallbackRebound = launchMatchedSession?.SessionId == resumedThreadId && launchMatchedSession.Model == savedModel;
+                launchTimeFallbackRebound = launchMatchedSession?.SessionId == resumedThreadId && launchMatchedSession.Model == savedModel
+                    && launchMatchedSession.SandboxMode == savedSandboxMode && launchMatchedSession.ApprovalPolicy == savedApprovalPolicy;
             }
         }
         catch { launchTimeFallbackRebound = false; }
@@ -859,7 +921,8 @@ public partial class MainWindow : Window
         CodexLaunchStore.Save(launchMarker, launchRoot);
         if (mappedSession is not null) CodexLaunchStore.Confirm(launchMarker, mappedSession, launchRoot);
         var confirmedLaunch = CodexLaunchStore.Load(profile.Id, launchRoot);
-        var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.ShellProcessId == fixtureProcessId && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory && confirmedLaunch.Model == savedModel;
+        var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.ShellProcessId == fixtureProcessId && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory && confirmedLaunch.Model == savedModel
+            && confirmedLaunch.SandboxMode == savedSandboxMode && confirmedLaunch.ApprovalPolicy == savedApprovalPolicy;
         if (confirmedLaunch is not null)
         {
             confirmedLaunch.EndedUtc = DateTime.UtcNow;
@@ -871,16 +934,19 @@ public partial class MainWindow : Window
             && wrapperScript.Contains("StartedUtc", StringComparison.Ordinal)
             && wrapperScript.Contains("ShellProcessId = $PID", StringComparison.Ordinal)
             && wrapperScript.Contains("Model", StringComparison.Ordinal)
+            && wrapperScript.Contains("SandboxMode", StringComparison.Ordinal)
+            && wrapperScript.Contains("ApprovalPolicy", StringComparison.Ordinal)
             && wrapperScript.Contains("EndedUtc", StringComparison.Ordinal);
         try { Directory.Delete(launchRoot, true); } catch { }
         var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
         var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
         var recoveryFixture = new SessionRecoverySnapshot();
-        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId, CodexModel = savedModel };
+        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId, CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
         var recoveryRoundTrip = reloadedFixture.Sessions.TryGetValue("test-session", out var reloadedEntry)
             && reloadedEntry.CodexWasActive && reloadedEntry.CodexSessionId == fixtureId && reloadedEntry.CodexModel == savedModel
+            && reloadedEntry.CodexSandboxMode == savedSandboxMode && reloadedEntry.CodexApprovalPolicy == savedApprovalPolicy
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -888,7 +954,7 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 4 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 5 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
 
         HideToTray();
@@ -900,9 +966,9 @@ public partial class MainWindow : Window
         var restored = IsVisible;
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
-        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && unsafeModelRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && latestModelMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
+        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex with its exact thread and saved model.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nUnsafeModelRejected={unsafeModelRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex with its exact thread, saved model, and saved permission level.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
         return success;
     }
 

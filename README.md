@@ -20,7 +20,7 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 - Right-click a session, command, or automation card for its available actions.
 - Inherit the font and color scheme from your Windows Terminal profile, with optional overrides in Settings.
 - Keep the real PowerShell, Codex, SSH, job, and native-program processes alive when the window is closed.
-- Recover pane output after a full app or Windows restart, including the exact Codex thread selected through an in-session `/resume`.
+- Recover pane output after a full app or Windows restart, including the exact Codex thread selected through an in-session `/resume`, its model, and its last permission level.
 
 PowerShellPlus stores its workspace locally under `%APPDATA%\PowerShellPlus`. It does not require an account, an API key, or a cloud service.
 
@@ -116,9 +116,9 @@ If PowerShellPlus is terminated, crashes, updates, or Windows restarts, the orig
 2. Starts normal shells in their configured working directory and restored Codex panes in the directory where that Codex chat actually started.
 3. Makes the previous terminal output available from the history icon in the pane header.
 4. Installs a small pane-local PowerShell wrapper around the existing `codex` command. Before Codex starts, the wrapper records that pane's shell process, real working directory, and launch time; it also records when Codex exits normally.
-5. Correlates the pane's live Codex process with Codex's local activity and rollout metadata, including rollout files Codex still has open for writing, then saves the durable thread ID plus that thread's most recently applied model. It can resolve the process through either the terminal pane or its launch marker, with launch-time correlation as a final fallback. If `/resume` switches threads inside Codex, the pane binding follows the selected top-level thread while ignoring background subagent activity. After an app crash, update, or Windows restart, recovery calls `codex resume <thread-id> --model <saved-model>` directly rather than inheriting whichever chat or model another terminal changed most recently.
+5. Correlates the pane's live Codex process with Codex's local activity and rollout metadata, including rollout files Codex still has open for writing, then saves the durable thread ID plus that thread's most recently applied model and `/permissions` level. It can resolve the process through either the terminal pane or its launch marker, with launch-time correlation as a final fallback. If `/resume` switches threads inside Codex, the pane binding follows the selected top-level thread while ignoring background subagent activity. After an app crash, update, or Windows restart, recovery calls `codex resume <thread-id> --model <saved-model> --sandbox <saved-sandbox> --ask-for-approval <saved-policy>` directly rather than inheriting settings another terminal changed most recently.
 
-PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree and its own launch marker. Model selection comes from Codex's structured `thread_settings_applied` and `turn_context` records, not terminal text. A normal PowerShell pane will therefore never be changed into a Codex session during recovery. These marker files contain session identifiers, model names, timestamps, and local folder paths—not chat contents or API credentials—and remain under `%APPDATA%\PowerShellPlus\session-recovery`.
+PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree and its own launch marker. Model and permission recovery comes from Codex's structured session records, not terminal text. Only Codex-supported sandbox modes and approval policies are accepted; an incomplete or unknown pair is left out of the resume command so Codex can use its normal defaults. A normal PowerShell pane will therefore never be changed into a Codex session during recovery. These marker files contain session identifiers, model names, permission mode names, timestamps, and local folder paths—not chat contents or API credentials—and remain under `%APPDATA%\PowerShellPlus\session-recovery`.
 
 Recovery options are available under **Settings → Session recovery**. Saved terminal output is limited to the most recent 500,000 characters per pane and remains local in the PowerShellPlus data folder. Terminal output can contain private commands or tokens, so transcript saving can be disabled independently.
 
@@ -169,7 +169,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, and model binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

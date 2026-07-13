@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -19,12 +19,16 @@ public sealed class SessionRecoveryEntry
     public bool CodexWasActive { get; set; }
     public string? CodexSessionId { get; set; }
     public string? CodexModel { get; set; }
+    public string? CodexSandboxMode { get; set; }
+    public string? CodexApprovalPolicy { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 
 public readonly record struct CodexProcessState(bool IsActive, int? ProcessId, DateTime? StartedUtc);
-public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc, string? Model = null);
+public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc,
+    string? Model = null, string? SandboxMode = null, string? ApprovalPolicy = null);
 public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
+public sealed record CodexSessionPermissions(string SandboxMode, string ApprovalPolicy, DateTime UpdatedUtc);
 
 public sealed class CodexLaunchMarker
 {
@@ -36,6 +40,8 @@ public sealed class CodexLaunchMarker
     public string? ExplicitSessionId { get; set; }
     public string? SessionId { get; set; }
     public string? Model { get; set; }
+    public string? SandboxMode { get; set; }
+    public string? ApprovalPolicy { get; set; }
     public DateTime? EndedUtc { get; set; }
     public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
 }
@@ -73,6 +79,8 @@ public static class CodexLaunchStore
         marker.SessionId = match.SessionId;
         marker.WorkingDirectory = match.WorkingDirectory;
         marker.Model = match.Model ?? marker.Model;
+        marker.SandboxMode = match.SandboxMode ?? marker.SandboxMode;
+        marker.ApprovalPolicy = match.ApprovalPolicy ?? marker.ApprovalPolicy;
         Save(marker, directoryPath);
     }
 
@@ -85,10 +93,15 @@ public static class CodexLaunchStore
         var escapedMarkerPath = EscapePowerShell(markerPath);
         return "$global:__PowerShellPlusCodexCommand = (Get-Command codex -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1).Source; "
             + "if ($global:__PowerShellPlusCodexCommand) { function global:codex { "
-            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; "
+            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; $__pspSandbox = $null; $__pspApproval = $null; "
             + "if ($__pspArgs.Count -ge 2 -and [string]$__pspArgs[0] -eq 'resume' -and [string]$__pspArgs[1] -match '^[A-Za-z0-9_-]{8,128}$') { $__pspExplicit = [string]$__pspArgs[1] }; "
-            + "for ($__pspIndex = 0; $__pspIndex -lt $__pspArgs.Count - 1; $__pspIndex++) { if ([string]$__pspArgs[$__pspIndex] -in @('-m', '--model')) { $__pspModel = [string]$__pspArgs[$__pspIndex + 1] } }; "
-            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); ShellProcessId = $PID; WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; EndedUtc = $null }; "
+            + "for ($__pspIndex = 0; $__pspIndex -lt $__pspArgs.Count; $__pspIndex++) { $__pspArg = [string]$__pspArgs[$__pspIndex]; "
+            + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-m', '--model')) { $__pspModel = [string]$__pspArgs[$__pspIndex + 1] }; "
+            + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-s', '--sandbox')) { $__pspSandbox = [string]$__pspArgs[$__pspIndex + 1] }; "
+            + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-a', '--ask-for-approval')) { $__pspApproval = [string]$__pspArgs[$__pspIndex + 1] }; "
+            + "if ($__pspArg -like '--sandbox=*') { $__pspSandbox = $__pspArg.Substring(10) }; if ($__pspArg -like '--ask-for-approval=*') { $__pspApproval = $__pspArg.Substring(19) }; "
+            + "if ($__pspArg -eq '--dangerously-bypass-approvals-and-sandbox') { $__pspSandbox = 'danger-full-access'; $__pspApproval = 'never' } }; "
+            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); ShellProcessId = $PID; WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; SandboxMode = $__pspSandbox; ApprovalPolicy = $__pspApproval; EndedUtc = $null }; "
             + "$__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8; "
             + "try { & $global:__PowerShellPlusCodexCommand @__pspArgs } finally { $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O'); $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8 } "
             + "} }";
@@ -114,7 +127,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is >= 1 and <= 4)
+            if (value is not null && value.Version is >= 1 and <= 5)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -123,9 +136,9 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 4;
+                    value.Version = 5;
                 }
-                if (value.Version is 2 or 3) value.Version = 4;
+                if (value.Version is 2 or 3 or 4) value.Version = 5;
                 return value;
             }
         }
@@ -245,8 +258,13 @@ public static class CodexSessionLocator
                 catch { }
             }
             if (best is null) return null;
-            var model = FindLatestModel(best.SessionId, root);
-            return best with { Model = model?.Model };
+            var settings = FindLatestSettings(best.SessionId, root);
+            return best with
+            {
+                Model = settings.Model?.Model,
+                SandboxMode = settings.Permissions?.SandboxMode,
+                ApprovalPolicy = settings.Permissions?.ApprovalPolicy
+            };
         }
         catch { return null; }
     }
@@ -284,7 +302,13 @@ public static class CodexSessionLocator
                             ? timestamp.ToUniversalTime()
                             : file.CreationTimeUtc;
                     var match = new CodexSessionMatch(sessionId!, workingDirectory, metadataUtc, TimeSpan.Zero, file.LastWriteTimeUtc);
-                    return match with { Model = FindLatestModel(sessionId, root)?.Model };
+                    var settings = FindLatestSettings(sessionId, root);
+                    return match with
+                    {
+                        Model = settings.Model?.Model,
+                        SandboxMode = settings.Permissions?.SandboxMode,
+                        ApprovalPolicy = settings.Permissions?.ApprovalPolicy
+                    };
                 }
                 catch { }
             }
@@ -298,11 +322,24 @@ public static class CodexSessionLocator
     public static bool IsSafeCodexModel(string? value) => value is { Length: >= 1 and <= 128 }
         && value.All(character => char.IsLetterOrDigit(character) || character is '-' or '_' or '.' or '/' or ':');
 
+    public static bool IsSafeCodexSandboxMode(string? value) => value is "read-only" or "workspace-write" or "danger-full-access";
+
+    public static bool IsSafeCodexApprovalPolicy(string? value) => value is "untrusted" or "on-request" or "never";
+
+    public static bool IsSafeCodexPermissions(string? sandboxMode, string? approvalPolicy)
+        => IsSafeCodexSandboxMode(sandboxMode) && IsSafeCodexApprovalPolicy(approvalPolicy);
+
     public static CodexSessionModel? FindLatestModel(string? sessionId, string? sessionsRoot = null)
+        => FindLatestSettings(sessionId, sessionsRoot).Model;
+
+    public static CodexSessionPermissions? FindLatestPermissions(string? sessionId, string? sessionsRoot = null)
+        => FindLatestSettings(sessionId, sessionsRoot).Permissions;
+
+    private static CodexSessionSettings FindLatestSettings(string? sessionId, string? sessionsRoot = null)
     {
-        if (!IsSafeCodexId(sessionId)) return null;
+        if (!IsSafeCodexId(sessionId)) return default;
         var root = sessionsRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
-        if (!Directory.Exists(root)) return null;
+        if (!Directory.Exists(root)) return default;
         try
         {
             var files = Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories)
@@ -313,6 +350,7 @@ public static class CodexSessionLocator
             lock (ModelCacheLock)
             {
                 CodexSessionModel? latest = null;
+                CodexSessionPermissions? latestPermissions = null;
                 foreach (var file in files)
                 {
                     try
@@ -340,43 +378,67 @@ public static class CodexSessionLocator
                             using var reader = new StreamReader(stream);
                             if (scanStart > 0) _ = reader.ReadLine();
                             var fileLatest = cursor.Latest;
+                            var filePermissions = cursor.LatestPermissions;
                             string? line;
-                            while ((line = reader.ReadLine()) is not null) ConsiderModelRecord(line, ref fileLatest);
+                            while ((line = reader.ReadLine()) is not null) ConsiderSettingsRecord(line, ref fileLatest, ref filePermissions);
                             cursor.Latest = fileLatest;
+                            cursor.LatestPermissions = filePermissions;
                             cursor.Length = stream.Length;
                         }
                         if (cursor.Latest is not null && (latest is null || cursor.Latest.UpdatedUtc >= latest.UpdatedUtc)) latest = cursor.Latest;
+                        if (cursor.LatestPermissions is not null && (latestPermissions is null || cursor.LatestPermissions.UpdatedUtc >= latestPermissions.UpdatedUtc)) latestPermissions = cursor.LatestPermissions;
                     }
                     catch { }
                 }
-                return latest;
+                return new CodexSessionSettings(latest, latestPermissions);
             }
         }
-        catch { return null; }
+        catch { return default; }
     }
 
-    private static void ConsiderModelRecord(string line, ref CodexSessionModel? latest)
+    private static void ConsiderSettingsRecord(string line, ref CodexSessionModel? latest, ref CodexSessionPermissions? latestPermissions)
     {
-        if (!line.Contains("model", StringComparison.OrdinalIgnoreCase)) return;
+        if (!line.Contains("model", StringComparison.OrdinalIgnoreCase)
+            && !line.Contains("approval_policy", StringComparison.OrdinalIgnoreCase)
+            && !line.Contains("sandbox_policy", StringComparison.OrdinalIgnoreCase)) return;
         try
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
             if (!root.TryGetProperty("payload", out var payload)) return;
             string? model = null;
+            string? sandboxMode = null;
+            string? approvalPolicy = null;
             if (root.TryGetProperty("type", out var type) && type.GetString() == "turn_context")
+            {
                 model = payload.TryGetProperty("model", out var turnModel) ? turnModel.GetString() : null;
+                approvalPolicy = payload.TryGetProperty("approval_policy", out var turnApproval) ? turnApproval.GetString() : null;
+                if (payload.TryGetProperty("sandbox_policy", out var sandboxPolicy)) sandboxMode = ReadSandboxMode(sandboxPolicy);
+            }
             else if (payload.TryGetProperty("type", out var payloadType) && payloadType.GetString() == "thread_settings_applied"
                 && payload.TryGetProperty("thread_settings", out var settings))
+            {
                 model = settings.TryGetProperty("model", out var settingsModel) ? settingsModel.GetString() : null;
-            if (!IsSafeCodexModel(model)) return;
+                approvalPolicy = settings.TryGetProperty("approval_policy", out var settingsApproval) ? settingsApproval.GetString() : null;
+                if (settings.TryGetProperty("sandbox_policy", out var settingsSandbox)) sandboxMode = ReadSandboxMode(settingsSandbox);
+            }
             var updated = root.TryGetProperty("timestamp", out var timestampValue)
                 && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)
                     ? timestamp.ToUniversalTime()
                     : DateTime.MinValue;
-            if (latest is null || updated >= latest.UpdatedUtc) latest = new CodexSessionModel(model!, updated);
+            if (IsSafeCodexModel(model) && (latest is null || updated >= latest.UpdatedUtc)) latest = new CodexSessionModel(model!, updated);
+            if (IsSafeCodexPermissions(sandboxMode, approvalPolicy) && (latestPermissions is null || updated >= latestPermissions.UpdatedUtc))
+                latestPermissions = new CodexSessionPermissions(sandboxMode!, approvalPolicy!, updated);
         }
         catch { }
+    }
+
+    private static string? ReadSandboxMode(JsonElement sandboxPolicy)
+    {
+        if (sandboxPolicy.ValueKind == JsonValueKind.String) return sandboxPolicy.GetString();
+        return sandboxPolicy.ValueKind == JsonValueKind.Object && sandboxPolicy.TryGetProperty("type", out var type)
+            ? type.GetString()
+            : null;
     }
 
     private sealed class ModelFileCursor(string sessionId)
@@ -384,7 +446,10 @@ public static class CodexSessionLocator
         public string SessionId { get; } = sessionId;
         public long Length { get; set; }
         public CodexSessionModel? Latest { get; set; }
+        public CodexSessionPermissions? LatestPermissions { get; set; }
     }
+
+    private readonly record struct CodexSessionSettings(CodexSessionModel? Model, CodexSessionPermissions? Permissions);
 
     private static StreamReader OpenSharedReader(string path)
         => new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
