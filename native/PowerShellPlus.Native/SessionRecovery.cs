@@ -31,6 +31,7 @@ public sealed class CodexLaunchMarker
     public int Version { get; set; } = 1;
     public string PaneId { get; set; } = string.Empty;
     public DateTime StartedUtc { get; set; }
+    public int? ShellProcessId { get; set; }
     public string WorkingDirectory { get; set; } = string.Empty;
     public string? ExplicitSessionId { get; set; }
     public string? SessionId { get; set; }
@@ -87,7 +88,7 @@ public static class CodexLaunchStore
             + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; "
             + "if ($__pspArgs.Count -ge 2 -and [string]$__pspArgs[0] -eq 'resume' -and [string]$__pspArgs[1] -match '^[A-Za-z0-9_-]{8,128}$') { $__pspExplicit = [string]$__pspArgs[1] }; "
             + "for ($__pspIndex = 0; $__pspIndex -lt $__pspArgs.Count - 1; $__pspIndex++) { if ([string]$__pspArgs[$__pspIndex] -in @('-m', '--model')) { $__pspModel = [string]$__pspArgs[$__pspIndex + 1] } }; "
-            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; EndedUtc = $null }; "
+            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); ShellProcessId = $PID; WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; EndedUtc = $null }; "
             + "$__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8; "
             + "try { & $global:__PowerShellPlusCodexCommand @__pspArgs } finally { $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O'); $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8 } "
             + "} }";
@@ -414,6 +415,29 @@ public static class CodexActivityStore
         return null;
     }
 
+    public static CodexSessionMatch? FindActiveCliSessionNearLaunch(DateTime launchStartedUtc,
+        ISet<string>? excludedSessionIds = null, string? logsDatabasePath = null, string? sessionsRoot = null)
+    {
+        var path = logsDatabasePath ?? FindLogsDatabasePath();
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var candidates = new List<(TimeSpan Distance, CodexSessionMatch Match)>();
+        foreach (var processId in ReadCandidateProcessIds(launchStartedUtc, path))
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                if (process.HasExited || !ProcessTreeInspector.IsCodexExecutable(process.ProcessName)) continue;
+                var processStartedUtc = process.StartTime.ToUniversalTime();
+                var distance = (processStartedUtc - launchStartedUtc).Duration();
+                if (distance > TimeSpan.FromSeconds(30)) continue;
+                var match = FindActiveCliSession(processId, processStartedUtc, excludedSessionIds, path, sessionsRoot);
+                if (match is not null) candidates.Add((distance, match));
+            }
+            catch { }
+        }
+        return candidates.OrderBy(candidate => candidate.Distance).Select(candidate => candidate.Match).FirstOrDefault();
+    }
+
     internal static bool CreateFixtureForTest(string path, int processId, IEnumerable<(string ThreadId, long Timestamp)> rows)
     {
         try
@@ -465,6 +489,37 @@ public static class CodexActivityStore
             if (database != IntPtr.Zero) sqlite3_close(database);
         }
         return result;
+    }
+
+    private static List<int> ReadCandidateProcessIds(DateTime launchStartedUtc, string databasePath)
+    {
+        var result = new HashSet<int>();
+        if (!File.Exists(databasePath)) return [];
+        IntPtr database = IntPtr.Zero;
+        IntPtr statement = IntPtr.Zero;
+        try
+        {
+            if (sqlite3_open_v2(databasePath, out database, SqliteOpenReadOnly, IntPtr.Zero) != SqliteOk) return [];
+            const string sql = "SELECT DISTINCT process_uuid FROM logs WHERE ts BETWEEN ?1 AND ?2 AND process_uuid GLOB 'pid:*';";
+            if (sqlite3_prepare_v2(database, sql, -1, out statement, IntPtr.Zero) != SqliteOk) return [];
+            var startedEpoch = new DateTimeOffset(launchStartedUtc).ToUnixTimeSeconds();
+            if (sqlite3_bind_int64(statement, 1, startedEpoch - 2) != SqliteOk
+                || sqlite3_bind_int64(statement, 2, startedEpoch + 30) != SqliteOk) return [];
+            while (sqlite3_step(statement) == SqliteRow)
+            {
+                var value = Marshal.PtrToStringUTF8(sqlite3_column_text(statement, 0));
+                if (value is null) continue;
+                var parts = value.Split(':', 3);
+                if (parts.Length == 3 && parts[0] == "pid" && int.TryParse(parts[1], out var processId) && processId > 0) result.Add(processId);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (statement != IntPtr.Zero) sqlite3_finalize(statement);
+            if (database != IntPtr.Zero) sqlite3_close(database);
+        }
+        return [.. result];
     }
 
     private static string? FindLogsDatabasePath()
@@ -544,7 +599,7 @@ public static class ProcessTreeInspector
         return new CodexProcessState(earliest is not null, earliestProcessId, earliest);
     }
 
-    private static bool IsCodexExecutable(string value)
+    internal static bool IsCodexExecutable(string value)
     {
         var name = Path.GetFileNameWithoutExtension(value);
         return name.Equals("codex", StringComparison.OrdinalIgnoreCase)
