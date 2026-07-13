@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PowerShellPlus</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="brand-mark" aria-hidden="true">›_</div>
+      <div class="titlebar-copy">
+        <strong>PowerShellPlus</strong>
+        <span id="workspaceTitle">Main workspace</span>
+      </div>
+      <div class="titlebar-drag"></div>
+      <div class="window-actions">
+        <button id="minimizeWindow" title="Minimize" aria-label="Minimize">—</button>
+        <button id="maximizeWindow" title="Maximize" aria-label="Maximize">□</button>
+        <button id="closeWindow" class="close-window" title="Close" aria-label="Close">×</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <nav class="activity-rail" aria-label="Workspace sections">
+        <button class="rail-button active" data-section="sessions" title="Sessions"><span>▣</span><small>Sessions</small></button>
+        <button class="rail-button" data-section="commands" title="Commands"><span>⌘</span><small>Commands</small></button>
+        <button class="rail-button" data-section="automations" title="Automations"><span>↻</span><small>Automate</small></button>
+        <div class="rail-spacer"></div>
+        <button class="rail-button" id="openPalette" title="Command palette (Ctrl+K)"><span>⌕</span><small>Search</small></button>
+        <button class="rail-button" id="openSettings" title="Settings"><span>⚙</span><small>Settings</small></button>
+      </nav>
+
+      <aside class="sidebar">
+        <section class="side-section active" data-panel="sessions">
+          <div class="side-heading"><div><span class="eyebrow">WORKSPACE</span><h2>Sessions</h2></div><button class="icon-button accent" id="newSession" title="New session (Ctrl+N)">＋</button></div>
+          <div class="side-search"><span>⌕</span><input id="sessionSearch" type="search" placeholder="Filter sessions"></div>
+          <div id="sessionList" class="item-list"></div>
+          <div class="sidebar-footer">
+            <button id="importWorkspace">Import</button>
+            <button id="exportWorkspace">Export</button>
+          </div>
+        </section>
+
+        <section class="side-section" data-panel="commands">
+          <div class="side-heading"><div><span class="eyebrow">LIBRARY</span><h2>Commands</h2></div><button class="icon-button accent" id="newSnippet" title="New saved command">＋</button></div>
+          <p class="section-intro">Save commands once, then send them to one pane or your entire workspace.</p>
+          <div class="side-search"><span>⌕</span><input id="snippetSearch" type="search" placeholder="Filter commands"></div>
+          <div id="snippetList" class="item-list"></div>
+        </section>
+
+        <section class="side-section" data-panel="automations">
+          <div class="side-heading"><div><span class="eyebrow">SCHEDULER</span><h2>Automations</h2></div><button class="icon-button accent" id="newAutomation" title="New automation">＋</button></div>
+          <p class="section-intro">Run commands on an interval or once daily while the workspace is open.</p>
+          <div id="automationList" class="item-list"></div>
+        </section>
+
+        <section class="side-section" data-panel="settings">
+          <div class="side-heading"><div><span class="eyebrow">PREFERENCES</span><h2>Settings</h2></div></div>
+          <div class="settings-stack">
+            <label>Terminal font size <output id="fontSizeValue">14px</output><input id="fontSize" type="range" min="10" max="24" step="1"></label>
+            <label>Terminal font family <input id="fontFamily" type="text"></label>
+            <button id="openDataFolder" class="wide-button">Open workspace data folder</button>
+          </div>
+          <div class="keyboard-card"><strong>Quick keys</strong><span><kbd>Ctrl</kbd><kbd>N</kbd> New session</span><span><kbd>Ctrl</kbd><kbd>K</kbd> Command palette</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Enter</kbd> Send to all</span></div>
+        </section>
+      </aside>
+
+      <main class="main-area">
+        <div class="workspace-toolbar">
+          <div class="toolbar-group layout-switcher" aria-label="Terminal layout">
+            <button data-layout="grid" class="active" title="Grid layout">⊞</button>
+            <button data-layout="columns" title="Column layout">▥</button>
+            <button data-layout="rows" title="Row layout">☰</button>
+            <button data-layout="focus" title="Focus selected terminal">▣</button>
+          </div>
+          <div class="quick-command">
+            <span>›</span>
+            <input id="quickCommand" type="text" placeholder="Send a PowerShell command…">
+            <button id="sendSelected" title="Send to selected session">Run</button>
+            <button id="sendAll" title="Send to all running sessions">Run all</button>
+          </div>
+          <div class="toolbar-group">
+            <button id="decreaseFont" title="Decrease font">A−</button>
+            <button id="increaseFont" title="Increase font">A＋</button>
+          </div>
+        </div>
+
+        <div id="terminalWorkspace" class="terminal-workspace layout-grid"></div>
+
+        <footer class="statusbar">
+          <span class="status-dot"></span><span id="statusMessage">Ready</span>
+          <span class="status-spacer"></span>
+          <span id="sessionCount">0 sessions</span>
+          <span class="status-divider"></span>
+          <span>ConPTY</span>
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <section class="modal" id="sessionModal" aria-modal="true" role="dialog">
+      <header><div><span class="eyebrow">TERMINAL PROFILE</span><h2 id="sessionModalTitle">New session</h2></div><button class="modal-close" data-close-modal>×</button></header>
+      <form id="sessionForm">
+        <input id="sessionId" type="hidden">
+        <div class="form-row"><label>Session name<input id="sessionName" required maxlength="80" placeholder="Development"></label><label class="color-field">Accent color<input id="sessionAccent" type="color" value="#a1a1aa"></label></div>
+        <label>PowerShell executable<select id="sessionShell"></select></label>
+        <label>Working directory<div class="input-action"><input id="sessionCwd" required><button type="button" id="chooseCwd">Browse</button></div></label>
+        <label>Startup command <span class="optional">optional</span><textarea id="sessionStartup" rows="3" placeholder="e.g. . .\scripts\profile.ps1"></textarea></label>
+        <label class="check-row"><input id="sessionAutoStart" type="checkbox" checked><span>Start automatically with this workspace</span></label>
+        <div class="modal-actions"><button type="button" class="secondary" data-close-modal>Cancel</button><button type="submit" class="primary">Save session</button></div>
+      </form>
+    </section>
+
+    <section class="modal" id="snippetModal" aria-modal="true" role="dialog">
+      <header><div><span class="eyebrow">COMMAND LIBRARY</span><h2 id="snippetModalTitle">Save command</h2></div><button class="modal-close" data-close-modal>×</button></header>
+      <form id="snippetForm">
+        <input id="snippetId" type="hidden">
+        <div class="form-row"><label>Display name<input id="snippetName" required maxlength="80"></label><label>Category<input id="snippetCategory" maxlength="40" placeholder="General"></label></div>
+        <label>PowerShell command<textarea id="snippetCommand" class="code-input" rows="7" required></textarea></label>
+        <div class="modal-actions"><button type="button" class="secondary" data-close-modal>Cancel</button><button type="submit" class="primary">Save command</button></div>
+      </form>
+    </section>
+
+    <section class="modal" id="automationModal" aria-modal="true" role="dialog">
+      <header><div><span class="eyebrow">AUTOMATION</span><h2 id="automationModalTitle">New automation</h2></div><button class="modal-close" data-close-modal>×</button></header>
+      <form id="automationForm">
+        <input id="automationId" type="hidden">
+        <label>Name<input id="automationName" required maxlength="80"></label>
+        <label>PowerShell command<textarea id="automationCommand" class="code-input" rows="5" required></textarea></label>
+        <div class="form-row"><label>Target<select id="automationTarget"></select></label><label>Schedule<select id="automationType"><option value="interval">Interval</option><option value="daily">Daily</option></select></label></div>
+        <div class="form-row"><label id="intervalField">Minutes between runs<input id="automationInterval" type="number" min="1" max="10080" value="60"></label><label id="dailyField" class="hidden">Run each day at<input id="automationDaily" type="time" value="09:00"></label></div>
+        <label class="check-row"><input id="automationEnabled" type="checkbox" checked><span>Automation enabled</span></label>
+        <div class="modal-actions"><button type="button" class="secondary" data-close-modal>Cancel</button><button type="submit" class="primary">Save automation</button></div>
+      </form>
+    </section>
+
+    <section class="modal command-palette" id="paletteModal" aria-modal="true" role="dialog">
+      <div class="palette-search"><span>⌕</span><input id="paletteSearch" placeholder="Search sessions, commands, and actions…"><kbd>Esc</kbd></div>
+      <div id="paletteResults" class="palette-results"></div>
+    </section>
+  </div>
+
+  <template id="terminalCardTemplate">
+    <article class="terminal-card">
+      <header class="terminal-header">
+        <div class="terminal-identity"><span class="terminal-accent"></span><strong class="terminal-name"></strong><span class="terminal-state">Starting…</span></div>
+        <div class="terminal-actions">
+          <button data-terminal-action="clear" title="Clear">⌫</button>
+          <button data-terminal-action="export" title="Export output">⇩</button>
+          <button data-terminal-action="stop" title="Stop session">■</button>
+          <button data-terminal-action="restart" title="Restart">↻</button>
+          <button data-terminal-action="edit" title="Edit session">•••</button>
+          <button data-terminal-action="close" class="danger-hover" title="Close session">×</button>
+        </div>
+      </header>
+      <div class="terminal-host"></div>
+    </article>
+  </template>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

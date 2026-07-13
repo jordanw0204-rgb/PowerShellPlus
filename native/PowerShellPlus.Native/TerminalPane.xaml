@@ -1,0 +1,29 @@
+<UserControl x:Class="PowerShellPlus.Native.TerminalPane"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:term="clr-namespace:EasyWindowsTerminalControl;assembly=EasyWindowsTerminalControl"
+             MinWidth="180" MinHeight="130" Focusable="True">
+  <Border x:Name="PaneBorder" Background="#11111B" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4">
+    <Grid>
+      <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/></Grid.RowDefinitions>
+      <Border Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1" MouseLeftButtonDown="ActivatePane">
+        <Grid Margin="10,0,5,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Ellipse x:Name="StateDot" Width="7" Height="7" Fill="#89B4FA" Margin="0,0,9,0"/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock x:Name="TitleText" FontSize="11" FontWeight="SemiBold"/>
+            <TextBlock x:Name="StateText" Text="  Windows Terminal control" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
+          </StackPanel>
+          <StackPanel Grid.Column="2" Orientation="Horizontal">
+            <Button Content="⌫" ToolTip="Clear" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="ClearClick"/>
+            <Button Content="■" ToolTip="Stop" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="StopClick"/>
+            <Button Content="↻" ToolTip="Restart" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="RestartClick"/>
+            <Button Content="•••" ToolTip="Edit" Width="32" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="EditClick"/>
+            <Button Content="×" ToolTip="Close" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#F38BA8" Click="CloseClick"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+      <term:EasyTerminalControl x:Name="Terminal" Grid.Row="1" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" MouseLeftButtonDown="ActivatePane"/>
+    </Grid>
+  </Border>
+</UserControl>

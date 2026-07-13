@@ -1,0 +1,54 @@
+{
+  "name": "powershell-plus",
+  "version": "2.0.0",
+  "description": "A modern multi-session PowerShell workspace powered by Windows ConPTY",
+  "main": "electron/main.js",
+  "author": "PowerShellPlus",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test:pty": "electron . --pty-smoke=build/pty-smoke.txt",
+    "test:ui": "electron . --ui-smoke=build/ui-smoke.png",
+    "test": "npm run test:pty && npm run test:ui",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win portable zip",
+    "build": "npm test && npm run dist"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "electron": "40.10.2",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.powershellplus.app",
+    "productName": "PowerShellPlus",
+    "artifactName": "PowerShellPlus-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/node-pty/build/Release/**",
+      "node_modules/node-pty/prebuilds/**"
+    ],
+    "win": {
+      "target": [
+        "portable",
+        "zip"
+      ]
+    },
+    "portable": {
+      "artifactName": "PowerShellPlus-${version}-portable.exe"
+    }
+  }
+}
