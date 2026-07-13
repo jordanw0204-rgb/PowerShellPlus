@@ -288,7 +288,9 @@ public partial class MainWindow : Window
         loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery);
         var previousOutput = state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty;
         var pane = new TerminalPane(profile, EffectiveAppearance(), recovery, previousOutput);
-        pane.Activated += (_, _) => SelectPane(profile.Id);
+        // A native terminal click already gives its HWND keyboard focus. Only
+        // update application selection here so WPF does not steal that focus.
+        pane.Activated += (_, _) => SelectPane(profile.Id, false);
         pane.CloseRequested += (_, _) => RemoveSession(profile);
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
         panes[profile.Id] = pane;
@@ -836,10 +838,20 @@ public partial class MainWindow : Window
             var scrollbarsHidden = panes.Values.All(pane => pane.IsNativeScrollbarHidden());
             var activationTarget = panes.Values.Skip(1).First();
             SelectPane(panes.Values.First().Profile.Id, false);
+            QuickCommand.Focus();
             var terminalSurfaceHooked = activationTarget.HasTerminalSurfaceActivationHook;
             var terminalClickSent = activationTarget.SimulateTerminalSurfaceClickForTest();
             var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
                 && ReferenceEquals(SessionList.SelectedItem, activationTarget.Profile);
+            var terminalSurfaceTakesKeyboardFocus = activationTarget.HasNativeKeyboardFocus();
+            var windowIconLoaded = Icon is not null;
+            var executableIconEmbedded = false;
+            try
+            {
+                using var executableIcon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
+                executableIconEmbedded = executableIcon is { Width: >= 16, Height: >= 16 };
+            }
+            catch { }
             var inputReady = true;
             var indexValue = 1;
             foreach (var pane in panes.Values) inputReady &= await pane.SendCommandAsync($"Write-Output 'NATIVE_PANE_{indexValue++}_READY'");
@@ -866,9 +878,9 @@ public partial class MainWindow : Window
                 && AutomationRule.FormatCountdown(TimeSpan.FromHours(23) + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(10)) == "23h 1m 10s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(30)) == "1d 2h";
 
-            var success = inputReady && outputReady && scrollbarsHidden && terminalSurfaceHooked && terminalSurfaceActivatesPane && rows && columns && focus && grid && scheduleLogic && countdownLogic;
+            var success = inputReady && outputReady && scrollbarsHidden && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded && rows && columns && focus && grid && scheduleLogic && countdownLogic;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes activated from terminal-surface clicks, executed commands, hid scrollbars, resized every layout, and validated exact schedules/countdowns.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes activated and took keyboard focus from terminal-surface clicks, the application icon loaded, commands executed, scrollbars stayed hidden, every layout resized, and exact schedules/countdowns were valid.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}");
             return success;
         }
         finally

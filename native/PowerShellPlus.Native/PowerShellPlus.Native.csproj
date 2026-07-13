@@ -10,12 +10,17 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>PowerShellPlus</AssemblyName>
     <RootNamespace>PowerShellPlus.Native</RootNamespace>
-    <Version>3.4.1</Version>
+    <Version>3.4.2</Version>
+    <ApplicationIcon>Assets\PowerShellPlus.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="EasyWindowsTerminalControl" Version="1.0.36" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\PowerShellPlus.ico" />
+    <Resource Include="Assets\PowerShellPlus.png" />
   </ItemGroup>
   <ItemGroup>
     <None Include="$(NuGetPackageRoot)ci.microsoft.windows.console.conpty\1.22.250314001\runtimes\win10-x64\native\conpty.dll"

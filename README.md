@@ -8,6 +8,7 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 
 - Run several interactive PowerShell terminals in one window.
 - Activate a session by clicking anywhere inside its terminal pane, including the native terminal surface.
+- Use a dedicated PowerShellPlus icon in the executable, taskbar, window switcher, and notification tray.
 - Arrange terminals as a grid, rows, columns, or a focused pane.
 - Resize panes by dragging the dividers; nearby panes adjust automatically.
 - Save session names, working directories, and shell commands.

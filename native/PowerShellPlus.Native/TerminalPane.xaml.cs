@@ -71,6 +71,14 @@ public partial class TerminalPane : UserControl
 
     public bool HasTerminalSurfaceActivationHook => terminalContainer is not null;
 
+    public bool HasNativeKeyboardFocus()
+    {
+        AttachTerminalActivationHook();
+        if (terminalContainer?.Handle is not { } hwnd || hwnd == IntPtr.Zero) return false;
+        var focused = GetFocus();
+        return focused != IntPtr.Zero && (focused == hwnd || IsChild(hwnd, focused));
+    }
+
     public bool SimulateTerminalSurfaceClickForTest()
     {
         AttachTerminalActivationHook();
@@ -206,12 +214,26 @@ public partial class TerminalPane : UserControl
 
     private IntPtr TerminalMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message == WmLeftButtonDown) Activated?.Invoke(this, EventArgs.Empty);
+        if (message == WmLeftButtonDown)
+        {
+            Activated?.Invoke(this, EventArgs.Empty);
+            SetFocus(hwnd);
+        }
         return IntPtr.Zero;
     }
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
 
     public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
     {
@@ -265,7 +287,11 @@ public partial class TerminalPane : UserControl
         if (show || startupRecovery?.CodexWasActive != true) RecoveryOverlay.Visibility = Visibility.Visible;
     }
 
-    private void ActivatePane(object sender, MouseButtonEventArgs e) => Activated?.Invoke(this, EventArgs.Empty);
+    private void ActivatePane(object sender, MouseButtonEventArgs e)
+    {
+        Activated?.Invoke(this, EventArgs.Empty);
+        Terminal.Focus();
+    }
     private void PreviousOutputClick(object sender, RoutedEventArgs e) { ConfigureRecoveryView(true); RecoveryOverlay.Visibility = Visibility.Visible; }
     private void CloseRecoveryClick(object sender, RoutedEventArgs e) { RecoveryOverlay.Visibility = Visibility.Collapsed; Terminal.Focus(); }
     private void ClearClick(object sender, RoutedEventArgs e) { Terminal.ConPTYTerm?.ClearUITerminal(); Terminal.Focus(); }
