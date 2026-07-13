@@ -11,6 +11,7 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 - Resize panes by dragging the dividers; nearby panes adjust automatically.
 - Save session names, working directories, and shell commands.
 - Keep a reusable command library and run a command in one or every terminal.
+- Keep layout and quick-run controls in a dedicated bar beneath the terminal workspace, with one-click Windows Terminal access in the title bar.
 - Schedule commands by interval, once at an exact date and time, or every day at an exact time.
 - Test an automation without moving its next scheduled run.
 - See a live countdown until an automation runs.

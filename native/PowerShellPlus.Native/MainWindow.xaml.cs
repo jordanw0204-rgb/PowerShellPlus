@@ -556,6 +556,17 @@ public partial class MainWindow : Window
     public async Task<bool> RunUiSnapshotAsync(string outputDirectory)
     {
         Directory.CreateDirectory(outputDirectory);
+        if (state.Automations.Count == 0)
+        {
+            state.Automations.Add(new AutomationRule
+            {
+                Name = "Daily workspace check",
+                Command = "Get-Date",
+                ScheduleType = "Daily",
+                DailyTime = DateTime.Now.AddHours(2).ToString("HH:mm", CultureInfo.InvariantCulture),
+                LastRunUtc = DateTime.UtcNow.AddDays(-1)
+            });
+        }
         void Render(FrameworkElement visual, string name)
         {
             visual.UpdateLayout();
@@ -589,7 +600,17 @@ public partial class MainWindow : Window
         }
 
         await Task.Delay(1200);
-        Render((FrameworkElement)Content, "ui-main.png");
+        var root = (FrameworkElement)Content;
+        root.UpdateLayout();
+        var terminalBottom = TerminalHost.TranslatePoint(new Point(0, TerminalHost.ActualHeight), root).Y;
+        var toolbarTop = TerminalToolbar.TranslatePoint(new Point(0, 0), root).Y;
+        if (Math.Abs(terminalBottom - toolbarTop) > 1)
+            throw new InvalidOperationException($"Terminal toolbar must sit directly below the terminal host. HostBottom={terminalBottom:F1}, ToolbarTop={toolbarTop:F1}");
+        var openTerminalRight = TitleBarOpenWindowsTerminalButton.TranslatePoint(new Point(TitleBarOpenWindowsTerminalButton.ActualWidth, 0), root).X;
+        var minimizeLeft = MinimizeButton.TranslatePoint(new Point(0, 0), root).X;
+        if (openTerminalRight > minimizeLeft + 1)
+            throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
+        Render(root, "ui-main.png");
         if (panes.Values.FirstOrDefault() is { } recoveryPane)
         {
             recoveryPane.SetPreviousOutputForTest("PS C:\\Projects\\PowerShellPlus> codex\nPrevious session output remains available after a real app or Windows restart.\nPS C:\\Projects\\PowerShellPlus>");
