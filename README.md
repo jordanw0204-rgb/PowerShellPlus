@@ -110,10 +110,10 @@ To genuinely exit, right-click the tray icon and choose **Quit and close session
 If PowerShellPlus is terminated, crashes, updates, or Windows restarts, the original processes cannot remain alive. In that case PowerShellPlus:
 
 1. Recreates the saved panes and layout.
-2. Starts each shell in its configured working directory.
+2. Starts normal shells in their configured working directory and restored Codex panes in the directory where that Codex chat actually started.
 3. Makes the previous terminal output available from the history icon in the pane header.
 4. Resumes Codex only if an actual Codex child process was detected in that specific pane before shutdown.
-5. Uses the exact saved Codex thread ID when it can be matched safely; otherwise it uses Codex's working-directory-scoped `resume --last` behavior.
+5. Uses the exact saved Codex thread ID when it can be matched safely; otherwise it opens Codex's all-session picker instead of guessing and potentially opening an older chat.
 
 PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree. A normal PowerShell pane will therefore never be changed into a Codex session during recovery.
 

@@ -182,20 +182,23 @@ public partial class TerminalPane : UserControl
     public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
-        var validDirectory = !string.IsNullOrWhiteSpace(profile.WorkingDirectory) && Directory.Exists(profile.WorkingDirectory);
-        var escaped = validDirectory ? profile.WorkingDirectory.Replace("'", "''") : string.Empty;
         var resumeCodex = recovery?.CodexWasActive == true;
-        var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $"'{recovery!.CodexSessionId}'" : "--last";
+        var startupDirectory = resumeCodex && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory)
+            ? recovery.WorkingDirectory
+            : profile.WorkingDirectory;
+        var validDirectory = !string.IsNullOrWhiteSpace(startupDirectory) && Directory.Exists(startupDirectory);
+        var escaped = validDirectory ? startupDirectory.Replace("'", "''") : string.Empty;
+        var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $" '{recovery!.CodexSessionId}'" : " --all";
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'" : string.Empty;
-            if (resumeCodex) script += (script.Length == 0 ? string.Empty : "; ") + $"& codex resume {resumeArgument}";
+            if (resumeCodex) script += (script.Length == 0 ? string.Empty : "; ") + $"& codex resume{resumeArgument}";
             if (script.Length == 0) return command;
             var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             return $"{command} -NoExit -EncodedCommand {encoded}";
         }
         if (resumeCodex && Path.GetFileNameWithoutExtension(command.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).Equals("codex", StringComparison.OrdinalIgnoreCase))
-            return $"codex resume {resumeArgument}";
+            return $"codex resume{resumeArgument}";
         return command;
     }
 
