@@ -160,11 +160,20 @@
                 </Grid>
 
                 <TextBlock Text="BEHAVIOR" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
-                <CheckBox x:Name="SettingsConfirmRemove" Content="Confirm before removing a session" Foreground="{StaticResource Text}" Click="SettingsBehaviorChanged"/>
+                <CheckBox x:Name="SettingsConfirmRemove" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Confirm before removing a session" TextWrapping="Wrap" Width="178"/></CheckBox>
+
+                <TextBlock Text="SESSION RECOVERY" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <CheckBox x:Name="SettingsKeepSessionsInTray" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Keep live sessions running when the window closes" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="The close button hides PowerShellPlus in the system tray. PowerShell, Codex, SSH, jobs, and other running programs stay alive." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
+                <CheckBox x:Name="SettingsRestoreAfterRestart" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Recover sessions after an app or Windows restart" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Recreates each terminal and resumes Codex only when that pane was positively detected as a Codex process." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
+                <CheckBox x:Name="SettingsSaveTranscripts" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Save previous terminal output locally" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Keeps up to 500,000 characters per pane in your PowerShellPlus data folder. Terminal output can contain private information." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
                 <TextBlock Text="WORKSPACE DATA" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <Button Content="Open workspace data folder" HorizontalAlignment="Stretch" Margin="0,0,0,6" Click="OpenDataFolderClick"/>
                 <Button Content="Reset appearance to WT profile" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="SettingsResetClick" ToolTip="Clear overrides and use the Windows Terminal profile appearance"/>
+                <Button Content="Quit PowerShellPlus and close all sessions" Foreground="#F38BA8" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="QuitApplicationClick"/>
               </StackPanel>
             </ScrollViewer>
           </Grid>

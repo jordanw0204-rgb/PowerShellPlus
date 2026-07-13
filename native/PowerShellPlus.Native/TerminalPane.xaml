@@ -15,6 +15,7 @@
             <TextBlock x:Name="StateText" Text="  Windows Terminal control" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal">
+            <Button x:Name="PreviousOutputButton" Content="◷" ToolTip="Previous session output" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed" Click="PreviousOutputClick"/>
             <Button Content="⌫" ToolTip="Clear" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="ClearClick"/>
             <Button Content="■" ToolTip="Stop" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="StopClick"/>
             <Button Content="↻" ToolTip="Restart" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="RestartClick"/>
@@ -24,6 +25,20 @@
         </Grid>
       </Border>
       <term:EasyTerminalControl x:Name="Terminal" Grid.Row="1" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" MouseLeftButtonDown="ActivatePane"/>
+      <Border x:Name="RecoveryOverlay" Grid.Row="1" Panel.ZIndex="2" Background="#FA11111B" Visibility="Collapsed">
+        <Grid Margin="12">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+          <Grid Grid.Row="0" Margin="2,0,2,9">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel>
+              <TextBlock Text="Previous session output" FontSize="13" FontWeight="SemiBold"/>
+              <TextBlock x:Name="RecoveryTimestampText" Text="Recovered after restart" Foreground="#A6ADC8" FontSize="10" Margin="0,3,0,0"/>
+            </StackPanel>
+            <Button Grid.Column="1" Content="Continue to new terminal" Padding="10,5" Click="CloseRecoveryClick"/>
+          </Grid>
+          <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Cascadia Mono" FontSize="11" Background="#0B0B12" BorderBrush="#45475A" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+        </Grid>
+      </Border>
     </Grid>
   </Border>
 </UserControl>

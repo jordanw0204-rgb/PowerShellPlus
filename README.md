@@ -16,8 +16,10 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 - See a live countdown until an automation runs.
 - Right-click a session, command, or automation card for its available actions.
 - Inherit the font and color scheme from your Windows Terminal profile, with optional overrides in Settings.
+- Keep the real PowerShell, Codex, SSH, job, and native-program processes alive when the window is closed.
+- Recover pane output after a full app or Windows restart and resume Codex only when that pane was actually running Codex.
 
-PowerShellPlus stores its workspace locally under `%LOCALAPPDATA%\PowerShellPlus`. It does not require an account, an API key, or a cloud service.
+PowerShellPlus stores its workspace locally under `%APPDATA%\PowerShellPlus`. It does not require an account, an API key, or a cloud service.
 
 ## Installation for beginners
 
@@ -97,6 +99,26 @@ Double-clicking a saved command runs it in the selected terminal. Double-clickin
 
 Scheduled commands are real PowerShell commands. Test a new automation first, especially if it changes files, installs software, or stops processes.
 
+## How session recovery works
+
+PowerShellPlus uses two kinds of recovery because a live Windows process cannot be serialized and recreated perfectly.
+
+When you click the window's close button, PowerShellPlus hides in the Windows system tray by default. The application and its ConPTY processes remain alive, so PowerShell variables, running commands, Codex chats, SSH connections, background jobs, and interactive programs remain exactly where you left them. Double-click the PowerShellPlus tray icon—or start PowerShellPlus again—to bring the existing window back. A second launch activates the already-running instance instead of creating duplicate terminals.
+
+To genuinely exit, right-click the tray icon and choose **Quit and close sessions**, or use **Quit PowerShellPlus and close all sessions** in Settings.
+
+If PowerShellPlus is terminated, crashes, updates, or Windows restarts, the original processes cannot remain alive. In that case PowerShellPlus:
+
+1. Recreates the saved panes and layout.
+2. Starts each shell in its configured working directory.
+3. Makes the previous terminal output available from the history icon in the pane header.
+4. Resumes Codex only if an actual Codex child process was detected in that specific pane before shutdown.
+5. Uses the exact saved Codex thread ID when it can be matched safely; otherwise it uses Codex's working-directory-scoped `resume --last` behavior.
+
+PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree. A normal PowerShell pane will therefore never be changed into a Codex session during recovery.
+
+Recovery options are available under **Settings → Session recovery**. Saved terminal output is limited to the most recent 500,000 characters per pane and remains local in the PowerShellPlus data folder. Terminal output can contain private commands or tokens, so transcript saving can be disabled independently.
+
 ## Updating later
 
 Open PowerShell in the project folder and run:
@@ -131,7 +153,7 @@ Open Settings inside PowerShellPlus. Blank appearance fields inherit from your W
 PowerShellPlus saves user-created sessions, commands, automations, and preferences in:
 
 ```text
-%LOCALAPPDATA%\PowerShellPlus
+%APPDATA%\PowerShellPlus
 ```
 
 Close the app and rename that folder to `PowerShellPlus-backup`. The next launch creates a fresh workspace, while the renamed folder preserves your old data in case you want it back.
@@ -144,7 +166,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, tests launching Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery and session-ID mapping, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

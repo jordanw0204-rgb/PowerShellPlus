@@ -33,6 +33,9 @@ public sealed class WorkspaceSettings
     public string? DefaultCommandLine { get; set; }
     public string? DefaultWorkingDirectory { get; set; }
     public bool ConfirmBeforeRemove { get; set; } = true;
+    public bool KeepSessionsRunningInTray { get; set; } = true;
+    public bool RestoreSessionsAfterRestart { get; set; } = true;
+    public bool SaveTerminalTranscripts { get; set; } = true;
 }
 
 public sealed class SessionProfile

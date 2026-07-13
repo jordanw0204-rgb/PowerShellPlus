@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
@@ -18,16 +19,25 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, TerminalPane> panes = [];
     private readonly DispatcherTimer saveTimer;
     private readonly DispatcherTimer automationTimer;
+    private readonly DispatcherTimer recoveryTimer;
+    private readonly bool automationMode;
+    private readonly SessionRecoverySnapshot loadedRecovery;
+    private System.Windows.Forms.NotifyIcon? trayIcon;
+    private bool explicitShutdown;
+    private bool shutdownComplete;
+    private bool trayNoticeShown;
     private EditorMode editorMode;
     private object? editingValue;
     private TerminalPane? activePane;
     private string? activeLayoutSizeKey;
     private bool automationCheckRunning;
 
-    public MainWindow()
+    public MainWindow(bool automationMode = false)
     {
+        this.automationMode = automationMode;
         terminalProfile = WindowsTerminalProfile.Load();
         state = WorkspaceStore.Load(terminalProfile);
+        loadedRecovery = automationMode || !state.Settings.RestoreSessionsAfterRestart ? new SessionRecoverySnapshot() : SessionRecoveryStore.Load();
         InitializeComponent();
         SessionList.ItemsSource = state.Sessions;
         SnippetList.ItemsSource = state.Snippets;
@@ -41,13 +51,136 @@ public partial class MainWindow : Window
         automationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         automationTimer.Tick += async (_, _) => { AutomationList.Items.Refresh(); await CheckAutomationsAsync(); };
         automationTimer.Start();
+        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        recoveryTimer.Tick += (_, _) => CaptureRecoverySnapshot();
+        if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
         foreach (var profile in state.Sessions) CreatePane(profile);
         var activeId = state.ActiveSessionId ?? state.Sessions.FirstOrDefault()?.Id;
         if (activeId is not null) SelectPane(activeId, false);
         ApplyLayout();
         UpdateStatus("Native Windows Terminal renderer ready");
-        Closing += (_, _) => { automationTimer.Stop(); SaveNow(); foreach (var pane in panes.Values) pane.Stop(); };
+        Closing += WindowClosing;
+        if (!automationMode) InitializeTrayIcon();
+    }
+
+    public void RestoreFromTray() => RestoreWindow(true);
+
+    private void RestoreWindow(bool showInTaskbar)
+    {
+        if (shutdownComplete) return;
+        ShowInTaskbar = showInTaskbar;
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+        Focus();
+        UpdateStatus("Live terminal sessions restored");
+    }
+
+    public void PrepareForShutdown() => explicitShutdown = true;
+
+    private void WindowClosing(object? sender, CancelEventArgs e)
+    {
+        if (!automationMode && !explicitShutdown && state.Settings.KeepSessionsRunningInTray)
+        {
+            CaptureRecoverySnapshot();
+            e.Cancel = true;
+            HideToTray();
+            return;
+        }
+        CompleteShutdown();
+    }
+
+    private void HideToTray()
+    {
+        ShowInTaskbar = false;
+        Hide();
+        if (trayIcon is null || trayNoticeShown) return;
+        trayNoticeShown = true;
+        trayIcon.BalloonTipTitle = "PowerShellPlus is still running";
+        trayIcon.BalloonTipText = "Your live PowerShell and Codex sessions are being kept open. Double-click the tray icon to return.";
+        trayIcon.ShowBalloonTip(3500);
+    }
+
+    private void CompleteShutdown()
+    {
+        if (shutdownComplete) return;
+        automationTimer.Stop();
+        recoveryTimer.Stop();
+        saveTimer.Stop();
+        if (!automationMode) CaptureRecoverySnapshot();
+        shutdownComplete = true;
+        SaveNow();
+        foreach (var pane in panes.Values) pane.Stop();
+        if (trayIcon is not null)
+        {
+            trayIcon.Visible = false;
+            trayIcon.Dispose();
+            trayIcon = null;
+        }
+    }
+
+    private void InitializeTrayIcon()
+    {
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("Open PowerShellPlus", null, (_, _) => Dispatcher.BeginInvoke(RestoreFromTray));
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        menu.Items.Add("Quit and close sessions", null, (_, _) => Dispatcher.BeginInvoke(() =>
+        {
+            explicitShutdown = true;
+            Close();
+        }));
+        System.Drawing.Icon icon;
+        try { icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application; }
+        catch { icon = System.Drawing.SystemIcons.Application; }
+        trayIcon = new System.Windows.Forms.NotifyIcon
+        {
+            Text = "PowerShellPlus — live sessions running",
+            Icon = icon,
+            ContextMenuStrip = menu,
+            Visible = true
+        };
+        trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(RestoreFromTray);
+    }
+
+    private void CaptureRecoverySnapshot()
+    {
+        if (automationMode || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
+        try
+        {
+            var previous = SessionRecoveryStore.Load();
+            var snapshot = new SessionRecoverySnapshot();
+            foreach (var pane in panes.Values)
+            {
+                previous.Sessions.TryGetValue(pane.Profile.Id, out var oldEntry);
+                var transcriptFile = state.Settings.SaveTerminalTranscripts
+                    ? SessionRecoveryStore.SaveTranscript(pane.Profile.Id, pane.GetOutput()) ?? oldEntry?.TranscriptFile
+                    : null;
+                var codex = pane.GetCodexProcessState();
+                var codexSessionId = codex.IsActive
+                    ? CodexSessionLocator.FindSessionId(pane.Profile.WorkingDirectory, codex.StartedUtc)
+                    : null;
+                snapshot.Sessions[pane.Profile.Id] = new SessionRecoveryEntry
+                {
+                    SessionId = pane.Profile.Id,
+                    WorkingDirectory = pane.Profile.WorkingDirectory,
+                    TranscriptFile = transcriptFile,
+                    CodexWasActive = codex.IsActive,
+                    CodexSessionId = codexSessionId,
+                    CapturedUtc = DateTime.UtcNow
+                };
+            }
+            SessionRecoveryStore.Save(snapshot);
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
+                File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] Recovery snapshot: {exception}\n");
+            }
+            catch { }
+        }
     }
 
     private TerminalAppearance EffectiveAppearance()
@@ -81,7 +214,9 @@ public partial class MainWindow : Window
 
     private void CreatePane(SessionProfile profile)
     {
-        var pane = new TerminalPane(profile, EffectiveAppearance());
+        loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery);
+        var previousOutput = state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty;
+        var pane = new TerminalPane(profile, EffectiveAppearance(), recovery, previousOutput);
         pane.Activated += (_, _) => SelectPane(profile.Id);
         pane.CloseRequested += (_, _) => RemoveSession(profile);
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
@@ -302,7 +437,7 @@ public partial class MainWindow : Window
     private void RemoveSession(SessionProfile profile)
     {
         if (state.Settings.ConfirmBeforeRemove && MessageBox.Show(this, $"Remove {profile.Name}?", "PowerShellPlus", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        var pane = panes[profile.Id]; pane.Stop(); TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile);
+        var pane = panes[profile.Id]; pane.Stop(); TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
         activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout(); ScheduleSave();
     }
 
@@ -384,6 +519,13 @@ public partial class MainWindow : Window
 
         await Task.Delay(1200);
         Render((FrameworkElement)Content, "ui-main.png");
+        if (panes.Values.FirstOrDefault() is { } recoveryPane)
+        {
+            recoveryPane.SetPreviousOutputForTest("PS C:\\Projects\\PowerShellPlus> codex\nPrevious session output remains available after a real app or Windows restart.\nPS C:\\Projects\\PowerShellPlus>");
+            await Settle();
+            Render(recoveryPane, "ui-recovery-overlay.png");
+            recoveryPane.HidePreviousOutputForTest();
+        }
         await RenderCardMenuAsync(SessionList, "ui-sessions-actions.png");
 
         ShowSection(CommandsPanel);
@@ -464,10 +606,63 @@ public partial class MainWindow : Window
             if (output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase)) break;
             if (output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase)) break;
         }
-        var success = output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase) && !output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase);
+        await Task.Delay(350);
+        var codexDetected = pane.GetCodexProcessState().IsActive;
+        var success = output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase) && !output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase) && codexDetected;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Bare Codex launched inside Microsoft TerminalControl.\n\n{output}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Bare Codex launched inside Microsoft TerminalControl and was identified from its process tree.\nCodexDetected={codexDetected}\n\n{output}");
         pane.Stop();
+        return success;
+    }
+
+    public async Task<bool> RunPersistenceSmokeTestAsync(string reportPath)
+    {
+        await Task.Delay(1800);
+        var pane = activePane ?? panes.Values.FirstOrDefault();
+        if (pane is null)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+            File.WriteAllText(reportPath, "FAIL No terminal pane was available for persistence testing.");
+            return false;
+        }
+
+        var rootBefore = pane.GetRootProcessId();
+        var profile = new SessionProfile { CommandLine = "powershell.exe", WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
+        var normalScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = false }));
+        var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555" }));
+        var normalDoesNotResumeCodex = !normalScript.Contains("codex resume", StringComparison.OrdinalIgnoreCase);
+        var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
+        var fixtureRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "codex-recovery-fixture");
+        Directory.CreateDirectory(fixtureRoot);
+        var fixtureId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var fixtureStarted = DateTime.UtcNow;
+        var fixture = new { timestamp = fixtureStarted.ToString("O"), type = "session_meta", payload = new { session_id = fixtureId, id = Guid.NewGuid().ToString(), timestamp = fixtureStarted.ToString("O"), cwd = profile.WorkingDirectory } };
+        File.WriteAllText(Path.Combine(fixtureRoot, "rollout-test.jsonl"), System.Text.Json.JsonSerializer.Serialize(fixture) + Environment.NewLine);
+        var codexSessionMapped = CodexSessionLocator.FindSessionId(profile.WorkingDirectory, fixtureStarted, fixtureRoot) == fixtureId;
+        try { Directory.Delete(fixtureRoot, true); } catch { }
+        var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
+        var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
+        var recoveryFixture = new SessionRecoverySnapshot();
+        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId };
+        SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
+        var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
+        var recoveryRoundTrip = reloadedFixture.Sessions.TryGetValue("test-session", out var reloadedEntry)
+            && reloadedEntry.CodexWasActive && reloadedEntry.CodexSessionId == fixtureId
+            && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
+        try { Directory.Delete(recoveryRoot, true); } catch { }
+
+        HideToTray();
+        await Task.Delay(300);
+        var hidden = !IsVisible;
+        var rootWhileHidden = pane.GetRootProcessId();
+        RestoreWindow(false);
+        await Task.Delay(300);
+        var restored = IsVisible;
+        var rootAfter = pane.GetRootProcessId();
+        var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
+        var success = hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexSessionMapped && recoveryRoundTrip;
+        Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex only for a Codex-marked session.\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexSessionMapped={codexSessionMapped}\nRecoveryRoundTrip={recoveryRoundTrip}");
         return success;
     }
 
@@ -687,6 +882,9 @@ public partial class MainWindow : Window
         SettingsDefaultShell.Text = settings.DefaultCommandLine ?? string.Empty;
         SettingsDefaultDirectory.Text = settings.DefaultWorkingDirectory ?? string.Empty;
         SettingsConfirmRemove.IsChecked = settings.ConfirmBeforeRemove;
+        SettingsKeepSessionsInTray.IsChecked = settings.KeepSessionsRunningInTray;
+        SettingsRestoreAfterRestart.IsChecked = settings.RestoreSessionsAfterRestart;
+        SettingsSaveTranscripts.IsChecked = settings.SaveTerminalTranscripts;
         settingsUiReady = true;
     }
 
@@ -753,7 +951,19 @@ public partial class MainWindow : Window
     {
         if (!settingsUiReady) return;
         state.Settings.ConfirmBeforeRemove = SettingsConfirmRemove.IsChecked == true;
+        state.Settings.KeepSessionsRunningInTray = SettingsKeepSessionsInTray.IsChecked == true;
+        state.Settings.RestoreSessionsAfterRestart = SettingsRestoreAfterRestart.IsChecked == true;
+        state.Settings.SaveTerminalTranscripts = SettingsSaveTranscripts.IsChecked == true;
+        if (state.Settings.RestoreSessionsAfterRestart && !automationMode) recoveryTimer.Start(); else recoveryTimer.Stop();
+        if (!state.Settings.SaveTerminalTranscripts) SessionRecoveryStore.DeleteAllTranscripts();
         ScheduleSave();
+        UpdateStatus(state.Settings.KeepSessionsRunningInTray ? "Live session preservation enabled" : "The close button will quit PowerShellPlus");
+    }
+
+    private void QuitApplicationClick(object sender, RoutedEventArgs e)
+    {
+        explicitShutdown = true;
+        Close();
     }
 
     private void SettingsResetClick(object sender, RoutedEventArgs e)

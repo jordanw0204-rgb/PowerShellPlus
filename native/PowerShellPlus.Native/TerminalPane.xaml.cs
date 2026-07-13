@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Text;
 using EasyWindowsTerminalControl;
 
 namespace PowerShellPlus.Native;
@@ -13,13 +15,17 @@ public partial class TerminalPane : UserControl
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
     public event EventHandler? EditRequested;
+    private SessionRecoveryEntry? startupRecovery;
+    private string previousOutput = string.Empty;
 
-    public TerminalPane(SessionProfile profile, TerminalAppearance appearance)
+    public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null)
     {
         Profile = profile;
+        startupRecovery = recovery;
+        previousOutput = recoveredOutput ?? string.Empty;
         InitializeComponent();
         TitleText.Text = profile.Name;
-        Terminal.StartupCommandLine = BuildCommandLine(profile);
+        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
         Terminal.Theme = appearance.Theme;
@@ -46,6 +52,7 @@ public partial class TerminalPane : UserControl
                 }
             }
             StateDot.Fill = new SolidColorBrush(Color.FromRgb(166, 227, 161));
+            ConfigureRecoveryView();
         };
     }
 
@@ -82,7 +89,8 @@ public partial class TerminalPane : UserControl
     public async Task RestartAsync()
     {
         StateText.Text = "  Restarting…";
-        Terminal.StartupCommandLine = BuildCommandLine(Profile);
+        startupRecovery = null;
+        Terminal.StartupCommandLine = BuildCommandLine(Profile, null);
         await Terminal.RestartTerm();
         StateText.Text = "  Windows Terminal control";
         Terminal.Focus();
@@ -100,6 +108,34 @@ public partial class TerminalPane : UserControl
         try { return Terminal.ConPTYTerm?.GetConsoleText() ?? string.Empty; } catch { return string.Empty; }
     }
 
+    public int? GetRootProcessId()
+    {
+        try
+        {
+            var process = Terminal.ConPTYTerm?.Process;
+            if (process is null || process.HasExited) return null;
+            var type = process.GetType();
+            if (type.GetProperty("Pid")?.GetValue(process) is int pid) return pid;
+            if (type.GetProperty("Process")?.GetValue(process) is Process wrapped) return wrapped.Id;
+            var processInfo = type.GetProperty("ProcessInfo")?.GetValue(process);
+            if (processInfo is not null)
+            {
+                var infoType = processInfo.GetType();
+                var value = infoType.GetField("dwProcessId")?.GetValue(processInfo) ?? infoType.GetProperty("dwProcessId")?.GetValue(processInfo);
+                if (value is uint unsigned) return checked((int)unsigned);
+                if (value is int signed) return signed;
+            }
+        }
+        catch { return null; }
+        return null;
+    }
+
+    public CodexProcessState GetCodexProcessState()
+    {
+        var processId = GetRootProcessId();
+        return processId is int value ? ProcessTreeInspector.FindCodexProcess(value) : default;
+    }
+
     public void ApplyAppearance(TerminalAppearance appearance)
     {
         // Font properties only take effect when the theme is (re)applied; the
@@ -112,8 +148,9 @@ public partial class TerminalPane : UserControl
     public void ApplyProfile(SessionProfile profile)
     {
         Profile = profile;
+        startupRecovery = null;
         TitleText.Text = profile.Name;
-        Terminal.StartupCommandLine = BuildCommandLine(profile);
+        Terminal.StartupCommandLine = BuildCommandLine(profile, null);
     }
 
     public bool IsNativeScrollbarHidden()
@@ -142,17 +179,56 @@ public partial class TerminalPane : UserControl
         return null;
     }
 
-    private static string BuildCommandLine(SessionProfile profile)
+    public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
-        if (string.IsNullOrWhiteSpace(profile.WorkingDirectory) || !Directory.Exists(profile.WorkingDirectory)) return command;
-        var escaped = profile.WorkingDirectory.Replace("'", "''");
+        var validDirectory = !string.IsNullOrWhiteSpace(profile.WorkingDirectory) && Directory.Exists(profile.WorkingDirectory);
+        var escaped = validDirectory ? profile.WorkingDirectory.Replace("'", "''") : string.Empty;
+        var resumeCodex = recovery?.CodexWasActive == true;
+        var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $"'{recovery!.CodexSessionId}'" : "--last";
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
-            return $"{command} -NoExit -Command \"Set-Location -LiteralPath '{escaped}'\"";
+        {
+            var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'" : string.Empty;
+            if (resumeCodex) script += (script.Length == 0 ? string.Empty : "; ") + $"& codex resume {resumeArgument}";
+            if (script.Length == 0) return command;
+            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            return $"{command} -NoExit -EncodedCommand {encoded}";
+        }
+        if (resumeCodex && Path.GetFileNameWithoutExtension(command.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).Equals("codex", StringComparison.OrdinalIgnoreCase))
+            return $"codex resume {resumeArgument}";
         return command;
     }
 
+    public static string DecodePowerShellStartupScript(string commandLine)
+    {
+        const string marker = "-EncodedCommand ";
+        var index = commandLine.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0) return string.Empty;
+        var encoded = commandLine[(index + marker.Length)..].Trim().Split(' ')[0];
+        try { return Encoding.Unicode.GetString(Convert.FromBase64String(encoded)); }
+        catch { return string.Empty; }
+    }
+
+    public void SetPreviousOutputForTest(string output)
+    {
+        previousOutput = output;
+        ConfigureRecoveryView(true);
+    }
+
+    public void HidePreviousOutputForTest() => RecoveryOverlay.Visibility = Visibility.Collapsed;
+
+    private void ConfigureRecoveryView(bool show = false)
+    {
+        if (string.IsNullOrWhiteSpace(previousOutput)) return;
+        PreviousOutputButton.Visibility = Visibility.Visible;
+        RecoveryOutputText.Text = previousOutput;
+        RecoveryTimestampText.Text = startupRecovery?.CapturedUtc.ToLocalTime().ToString("Recovered MMM d, yyyy 'at' h:mm tt") ?? "Recovered after restart";
+        if (show || startupRecovery?.CodexWasActive != true) RecoveryOverlay.Visibility = Visibility.Visible;
+    }
+
     private void ActivatePane(object sender, MouseButtonEventArgs e) => Activated?.Invoke(this, EventArgs.Empty);
+    private void PreviousOutputClick(object sender, RoutedEventArgs e) { ConfigureRecoveryView(true); RecoveryOverlay.Visibility = Visibility.Visible; }
+    private void CloseRecoveryClick(object sender, RoutedEventArgs e) { RecoveryOverlay.Visibility = Visibility.Collapsed; Terminal.Focus(); }
     private void ClearClick(object sender, RoutedEventArgs e) { Terminal.ConPTYTerm?.ClearUITerminal(); Terminal.Focus(); }
     private void StopClick(object sender, RoutedEventArgs e) => Stop();
     private async void RestartClick(object sender, RoutedEventArgs e) => await RestartAsync();
