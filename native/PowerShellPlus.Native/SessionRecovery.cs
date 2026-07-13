@@ -22,7 +22,7 @@ public sealed class SessionRecoveryEntry
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 
-public readonly record struct CodexProcessState(bool IsActive, DateTime? StartedUtc);
+public readonly record struct CodexProcessState(bool IsActive, int? ProcessId, DateTime? StartedUtc);
 public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc, string? Model = null);
 public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
 
@@ -250,6 +250,48 @@ public static class CodexSessionLocator
         catch { return null; }
     }
 
+    public static CodexSessionMatch? FindSessionById(string? sessionId, string? sessionsRoot = null, bool requireTopLevelCli = false)
+    {
+        if (!IsSafeCodexId(sessionId)) return null;
+        var root = sessionsRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+        if (!Directory.Exists(root)) return null;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories)
+                         .Select(path => new FileInfo(path))
+                         .OrderByDescending(file => file.LastWriteTimeUtc)
+                         .Take(500))
+            {
+                try
+                {
+                    using var reader = new StreamReader(file.FullName);
+                    var line = reader.ReadLine();
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    using var document = JsonDocument.Parse(line);
+                    var rootElement = document.RootElement;
+                    if (!rootElement.TryGetProperty("type", out var type) || type.GetString() != "session_meta"
+                        || !rootElement.TryGetProperty("payload", out var payload)) continue;
+                    var id = payload.TryGetProperty("session_id", out var sessionIdValue) ? sessionIdValue.GetString() : null;
+                    id ??= payload.TryGetProperty("id", out var rolloutId) ? rolloutId.GetString() : null;
+                    if (!string.Equals(id, sessionId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (requireTopLevelCli && payload.TryGetProperty("source", out var source)
+                        && (source.ValueKind != JsonValueKind.String || !string.Equals(source.GetString(), "cli", StringComparison.OrdinalIgnoreCase))) continue;
+                    if (!payload.TryGetProperty("cwd", out var cwd)) continue;
+                    var workingDirectory = cwd.GetString() ?? string.Empty;
+                    var metadataUtc = payload.TryGetProperty("timestamp", out var timestampValue)
+                        && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)
+                            ? timestamp.ToUniversalTime()
+                            : file.CreationTimeUtc;
+                    var match = new CodexSessionMatch(sessionId!, workingDirectory, metadataUtc, TimeSpan.Zero, file.LastWriteTimeUtc);
+                    return match with { Model = FindLatestModel(sessionId, root)?.Model };
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return null;
+    }
+
     public static bool IsSafeCodexId(string? value) => value is { Length: >= 8 and <= 128 } && value.All(character => char.IsLetterOrDigit(character) || character is '-' or '_');
 
     public static bool IsSafeCodexModel(string? value) => value is { Length: >= 1 and <= 128 }
@@ -350,6 +392,117 @@ public static class CodexSessionLocator
     }
 }
 
+public static class CodexActivityStore
+{
+    private const int SqliteOk = 0;
+    private const int SqliteRow = 100;
+    private const int SqliteOpenReadOnly = 0x00000001;
+    private const int SqliteOpenReadWrite = 0x00000002;
+    private const int SqliteOpenCreate = 0x00000004;
+    private static readonly IntPtr SqliteTransient = new(-1);
+
+    public static CodexSessionMatch? FindActiveCliSession(int? processId, DateTime? processStartedUtc,
+        ISet<string>? excludedSessionIds = null, string? logsDatabasePath = null, string? sessionsRoot = null)
+    {
+        if (processId is not > 0 || processStartedUtc is null) return null;
+        foreach (var threadId in ReadActiveThreadIds(processId.Value, processStartedUtc.Value, logsDatabasePath))
+        {
+            if (excludedSessionIds?.Contains(threadId) == true) continue;
+            var match = CodexSessionLocator.FindSessionById(threadId, sessionsRoot, requireTopLevelCli: true);
+            if (match is not null) return match;
+        }
+        return null;
+    }
+
+    internal static bool CreateFixtureForTest(string path, int processId, IEnumerable<(string ThreadId, long Timestamp)> rows)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (sqlite3_open_v2(path, out var database, SqliteOpenReadWrite | SqliteOpenCreate, IntPtr.Zero) != SqliteOk) return false;
+            try
+            {
+                if (!Execute(database, "CREATE TABLE logs (process_uuid TEXT, thread_id TEXT, ts INTEGER);")) return false;
+                foreach (var row in rows)
+                {
+                    if (!CodexSessionLocator.IsSafeCodexId(row.ThreadId)) return false;
+                    var sql = $"INSERT INTO logs VALUES ('pid:{processId}:fixture', '{row.ThreadId}', {row.Timestamp});";
+                    if (!Execute(database, sql)) return false;
+                }
+                return true;
+            }
+            finally { sqlite3_close(database); }
+        }
+        catch { return false; }
+    }
+
+    private static List<string> ReadActiveThreadIds(int processId, DateTime processStartedUtc, string? databasePath)
+    {
+        var result = new List<string>();
+        var path = databasePath ?? FindLogsDatabasePath();
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return result;
+        IntPtr database = IntPtr.Zero;
+        IntPtr statement = IntPtr.Zero;
+        try
+        {
+            if (sqlite3_open_v2(path, out database, SqliteOpenReadOnly, IntPtr.Zero) != SqliteOk) return result;
+            const string sql = "SELECT thread_id, MAX(ts) FROM logs WHERE process_uuid GLOB ?1 AND thread_id IS NOT NULL AND ts >= ?2 GROUP BY thread_id ORDER BY MAX(ts) DESC LIMIT 64;";
+            if (sqlite3_prepare_v2(database, sql, -1, out statement, IntPtr.Zero) != SqliteOk) return result;
+            if (sqlite3_bind_text(statement, 1, $"pid:{processId}:*", -1, SqliteTransient) != SqliteOk) return result;
+            var earliestEpoch = new DateTimeOffset(processStartedUtc.AddMinutes(-1)).ToUnixTimeSeconds();
+            if (sqlite3_bind_int64(statement, 2, earliestEpoch) != SqliteOk) return result;
+            while (sqlite3_step(statement) == SqliteRow)
+            {
+                var value = Marshal.PtrToStringUTF8(sqlite3_column_text(statement, 0));
+                if (CodexSessionLocator.IsSafeCodexId(value)) result.Add(value!);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (statement != IntPtr.Zero) sqlite3_finalize(statement);
+            if (database != IntPtr.Zero) sqlite3_close(database);
+        }
+        return result;
+    }
+
+    private static string? FindLogsDatabasePath()
+    {
+        try
+        {
+            var codexRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+            return Directory.Exists(codexRoot)
+                ? Directory.EnumerateFiles(codexRoot, "logs_*.sqlite", SearchOption.TopDirectoryOnly)
+                    .Select(path => new FileInfo(path)).OrderByDescending(file => file.LastWriteTimeUtc).FirstOrDefault()?.FullName
+                : null;
+        }
+        catch { return null; }
+    }
+
+    private static bool Execute(IntPtr database, string sql)
+    {
+        var result = sqlite3_exec(database, sql, IntPtr.Zero, IntPtr.Zero, out var error);
+        if (error != IntPtr.Zero) sqlite3_free(error);
+        return result == SqliteOk;
+    }
+
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_open_v2([MarshalAs(UnmanagedType.LPUTF8Str)] string filename, out IntPtr database, int flags, IntPtr vfs);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_prepare_v2(IntPtr database, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, int bytes, out IntPtr statement, IntPtr tail);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_bind_text(IntPtr statement, int index, [MarshalAs(UnmanagedType.LPUTF8Str)] string value, int bytes, IntPtr destructor);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_bind_int64(IntPtr statement, int index, long value);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_step(IntPtr statement);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern IntPtr sqlite3_column_text(IntPtr statement, int index);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_finalize(IntPtr statement);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern int sqlite3_close(IntPtr database);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int sqlite3_exec(IntPtr database, [MarshalAs(UnmanagedType.LPUTF8Str)] string sql, IntPtr callback, IntPtr argument, out IntPtr error);
+    [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)] private static extern void sqlite3_free(IntPtr value);
+}
+
 public static class ProcessTreeInspector
 {
     private const uint Th32csSnapProcess = 0x00000002;
@@ -369,17 +522,26 @@ public static class ProcessTreeInspector
         }
 
         DateTime? earliest = null;
+        int? earliestProcessId = null;
         foreach (var process in processes.Where(process => descendants.Contains(process.Id) && IsCodexExecutable(process.Name)))
         {
             try
             {
                 using var running = Process.GetProcessById(process.Id);
                 var started = running.StartTime.ToUniversalTime();
-                if (earliest is null || started < earliest) earliest = started;
+                if (earliest is null || started < earliest)
+                {
+                    earliest = started;
+                    earliestProcessId = process.Id;
+                }
             }
-            catch { earliest ??= DateTime.UtcNow; }
+            catch
+            {
+                earliest ??= DateTime.UtcNow;
+                earliestProcessId ??= process.Id;
+            }
         }
-        return new CodexProcessState(earliest is not null, earliest);
+        return new CodexProcessState(earliest is not null, earliestProcessId, earliest);
     }
 
     private static bool IsCodexExecutable(string value)
