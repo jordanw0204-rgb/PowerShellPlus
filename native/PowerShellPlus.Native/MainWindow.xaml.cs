@@ -38,6 +38,7 @@ public partial class MainWindow : Window
         terminalProfile = WindowsTerminalProfile.Load();
         state = WorkspaceStore.Load(terminalProfile);
         loadedRecovery = automationMode || !state.Settings.RestoreSessionsAfterRestart ? new SessionRecoverySnapshot() : SessionRecoveryStore.Load();
+        if (!automationMode && state.Settings.RestoreSessionsAfterRestart) ReconcileCodexRecovery();
         InitializeComponent();
         SessionList.ItemsSource = state.Sessions;
         SnippetList.ItemsSource = state.Snippets;
@@ -51,7 +52,7 @@ public partial class MainWindow : Window
         automationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         automationTimer.Tick += async (_, _) => { AutomationList.Items.Refresh(); await CheckAutomationsAsync(); };
         automationTimer.Start();
-        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         recoveryTimer.Tick += (_, _) => CaptureRecoverySnapshot();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
@@ -158,15 +159,33 @@ public partial class MainWindow : Window
                     ? SessionRecoveryStore.SaveTranscript(pane.Profile.Id, pane.GetOutput()) ?? oldEntry?.TranscriptFile
                     : null;
                 var codex = pane.GetCodexProcessState();
-                var codexMatch = codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
-                if (codexMatch is not null) usedCodexSessionIds.Add(codexMatch.SessionId);
+                var launch = CodexLaunchStore.Load(pane.Profile.Id);
+                var codexIsActive = codex.IsActive || launch?.IsActive == true;
+                var codexMatch = launch?.IsActive == true && !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+                    ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
+                    : null;
+                codexMatch ??= codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
+                var codexSessionId = codexMatch?.SessionId;
+                var codexDirectory = codexMatch?.WorkingDirectory;
+                if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
+                {
+                    codexSessionId = launch.SessionId;
+                    codexDirectory = launch.WorkingDirectory;
+                }
+                if (codexSessionId is null && codexIsActive && launch is null && oldEntry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(oldEntry.CodexSessionId))
+                {
+                    codexSessionId = oldEntry.CodexSessionId;
+                    codexDirectory = oldEntry.WorkingDirectory;
+                }
+                if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
+                if (codexSessionId is not null) usedCodexSessionIds.Add(codexSessionId);
                 snapshot.Sessions[pane.Profile.Id] = new SessionRecoveryEntry
                 {
                     SessionId = pane.Profile.Id,
-                    WorkingDirectory = codexMatch?.WorkingDirectory ?? pane.Profile.WorkingDirectory,
+                    WorkingDirectory = codexDirectory ?? (codexIsActive && launch is not null ? launch.WorkingDirectory : pane.Profile.WorkingDirectory),
                     TranscriptFile = transcriptFile,
-                    CodexWasActive = codex.IsActive,
-                    CodexSessionId = codexMatch?.SessionId,
+                    CodexWasActive = codexIsActive,
+                    CodexSessionId = codexSessionId,
                     CapturedUtc = DateTime.UtcNow
                 };
             }
@@ -181,6 +200,40 @@ public partial class MainWindow : Window
             }
             catch { }
         }
+    }
+
+    private void ReconcileCodexRecovery()
+    {
+        var changed = false;
+        var usedCodexSessionIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in state.Sessions)
+        {
+            loadedRecovery.Sessions.TryGetValue(profile.Id, out var entry);
+            if (entry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(entry.CodexSessionId))
+                usedCodexSessionIds.Add(entry.CodexSessionId!);
+
+            var launch = CodexLaunchStore.Load(profile.Id);
+            if (launch?.IsActive != true) continue;
+
+            var match = !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+                ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
+                : null;
+            if (match is not null) CodexLaunchStore.Confirm(launch, match);
+            var sessionId = match?.SessionId ?? launch.SessionId;
+            if (!CodexSessionLocator.IsSafeCodexId(sessionId)) continue;
+
+            if (entry is not null && CodexSessionLocator.IsSafeCodexId(entry.CodexSessionId))
+                usedCodexSessionIds.Remove(entry.CodexSessionId!);
+            usedCodexSessionIds.Add(sessionId!);
+            entry ??= new SessionRecoveryEntry { SessionId = profile.Id };
+            entry.CodexWasActive = true;
+            entry.CodexSessionId = sessionId;
+            entry.WorkingDirectory = match?.WorkingDirectory ?? launch.WorkingDirectory;
+            entry.CapturedUtc = DateTime.UtcNow;
+            loadedRecovery.Sessions[profile.Id] = entry;
+            changed = true;
+        }
+        if (changed) SessionRecoveryStore.Save(loadedRecovery);
     }
 
     private TerminalAppearance EffectiveAppearance()
@@ -608,9 +661,17 @@ public partial class MainWindow : Window
         }
         await Task.Delay(350);
         var codexDetected = pane.GetCodexProcessState().IsActive;
-        var success = output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase) && !output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase) && codexDetected;
+        var launchMarker = CodexLaunchStore.Load(pane.Profile.Id);
+        var launchRecorded = launchMarker?.IsActive == true && launchMarker.StartedUtc > DateTime.UtcNow.AddMinutes(-2);
+        var exactSession = launchRecorded ? CodexSessionLocator.FindBestSession(launchMarker!.StartedUtc, launchMarker.WorkingDirectory) : null;
+        var exactSessionBound = exactSession is not null;
+        if (exactSession is not null) CodexLaunchStore.Confirm(launchMarker!, exactSession);
+        // Codex does not create rollout metadata until the first user message,
+        // so a launch-only smoke can verify the pane marker but may not yet
+        // have a durable thread ID to bind.
+        var success = output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase) && !output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase) && codexDetected && launchRecorded;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Bare Codex launched inside Microsoft TerminalControl and was identified from its process tree.\nCodexDetected={codexDetected}\n\n{output}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Bare Codex launched inside Microsoft TerminalControl and its pane-scoped recovery marker was recorded.\nCodexDetected={codexDetected}\nLaunchRecorded={launchRecorded}\nExactSessionBoundAfterFirstMessage={exactSessionBound}\n\n{output}");
         pane.Stop();
         return success;
     }
@@ -627,6 +688,8 @@ public partial class MainWindow : Window
         }
 
         var rootBefore = pane.GetRootProcessId();
+        var workspaceTestIsolated = automationMode && WorkspaceStore.DirectoryOverride is not null
+            && !Path.GetFullPath(WorkspaceStore.DirectoryPath).Equals(Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus")), StringComparison.OrdinalIgnoreCase);
         var profile = new SessionProfile { CommandLine = "powershell.exe", WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
         var normalScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = false }));
         var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555" }));
@@ -634,6 +697,8 @@ public partial class MainWindow : Window
         var normalDoesNotResumeCodex = !normalScript.Contains("codex resume", StringComparison.OrdinalIgnoreCase);
         var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
         var ambiguousCodexUsesPicker = pickerScript.Contains("codex resume --all", StringComparison.OrdinalIgnoreCase) && !pickerScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
+        var powershellWrapperInstalled = normalScript.Contains("function global:codex", StringComparison.OrdinalIgnoreCase)
+            && normalScript.Contains(profile.Id, StringComparison.Ordinal);
         var fixtureRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "codex-recovery-fixture");
         Directory.CreateDirectory(fixtureRoot);
         var fixtureId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -646,6 +711,23 @@ public partial class MainWindow : Window
         var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
         try { Directory.Delete(fixtureRoot, true); } catch { }
+        var launchRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "codex-launch-fixture");
+        var launchMarker = new CodexLaunchMarker { PaneId = profile.Id, StartedUtc = fixtureStarted, WorkingDirectory = actualCodexDirectory };
+        CodexLaunchStore.Save(launchMarker, launchRoot);
+        if (mappedSession is not null) CodexLaunchStore.Confirm(launchMarker, mappedSession, launchRoot);
+        var confirmedLaunch = CodexLaunchStore.Load(profile.Id, launchRoot);
+        var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory;
+        if (confirmedLaunch is not null)
+        {
+            confirmedLaunch.EndedUtc = DateTime.UtcNow;
+            CodexLaunchStore.Save(confirmedLaunch, launchRoot);
+        }
+        var normalCodexExitRecorded = CodexLaunchStore.Load(profile.Id, launchRoot)?.IsActive == false;
+        var wrapperScript = CodexLaunchStore.BuildPowerShellWrapper(profile.Id, launchRoot);
+        var wrapperRecordsPaneAndLifecycle = wrapperScript.Contains(profile.Id, StringComparison.Ordinal)
+            && wrapperScript.Contains("StartedUtc", StringComparison.Ordinal)
+            && wrapperScript.Contains("EndedUtc", StringComparison.Ordinal);
+        try { Directory.Delete(launchRoot, true); } catch { }
         var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
         var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
         var recoveryFixture = new SessionRecoverySnapshot();
@@ -661,7 +743,7 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 2 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 3 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
 
         HideToTray();
@@ -673,9 +755,9 @@ public partial class MainWindow : Window
         var restored = IsVisible;
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
-        var success = hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && ambiguousCodexUsesPicker && codexSessionMapped && changedDirectoryRestored && recoveryRoundTrip && unsafeLegacyIdDiscarded;
+        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && changedDirectoryRestored && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex only for a Codex-marked session.\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nChangedDirectoryRestored={changedDirectoryRestored}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex only for a Codex-marked session.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nChangedDirectoryRestored={changedDirectoryRestored}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
         return success;
     }
 

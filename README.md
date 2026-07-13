@@ -112,10 +112,10 @@ If PowerShellPlus is terminated, crashes, updates, or Windows restarts, the orig
 1. Recreates the saved panes and layout.
 2. Starts normal shells in their configured working directory and restored Codex panes in the directory where that Codex chat actually started.
 3. Makes the previous terminal output available from the history icon in the pane header.
-4. Resumes Codex only if an actual Codex child process was detected in that specific pane before shutdown.
-5. Uses the exact saved Codex thread ID when it can be matched safely; otherwise it opens Codex's all-session picker instead of guessing and potentially opening an older chat.
+4. Installs a small pane-local PowerShell wrapper around the existing `codex` command. Before Codex starts, the wrapper records that pane's real working directory and launch time; it also records when Codex exits normally.
+5. Correlates that pane marker with Codex's local rollout metadata and saves the durable thread ID. After an app crash, update, or Windows restart, recovery calls `codex resume <thread-id>` directly rather than relying on whichever global chat happened to be updated most recently.
 
-PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree. A normal PowerShell pane will therefore never be changed into a Codex session during recovery.
+PowerShellPlus never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree and its own launch marker. A normal PowerShell pane will therefore never be changed into a Codex session during recovery. These marker files contain session identifiers, timestamps, and local folder paths—not chat contents or API credentials—and remain under `%APPDATA%\PowerShellPlus\session-recovery`.
 
 Recovery options are available under **Settings → Session recovery**. Saved terminal output is limited to the most recent 500,000 characters per pane and remains local in the PowerShellPlus data folder. Terminal output can contain private commands or tokens, so transcript saving can be disabled independently.
 
@@ -166,7 +166,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery and session-ID mapping, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and layouts, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery and exact launch-marker binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

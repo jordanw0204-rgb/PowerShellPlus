@@ -15,6 +15,11 @@ public partial class App : Application
     {
         base.OnStartup(e);
         var automationMode = e.Args.Any(IsAutomationArgument);
+        if (automationMode)
+        {
+            WorkspaceStore.DirectoryOverride = Path.Combine(Path.GetTempPath(), "PowerShellPlus-tests", Environment.ProcessId.ToString());
+            CodexLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "codex-launches");
+        }
         if (!automationMode && !ClaimPrimaryInstance())
         {
             Shutdown(0);
@@ -77,6 +82,12 @@ public partial class App : Application
         activationEvent?.Dispose();
         instanceMutex?.Dispose();
         activationCancellation?.Dispose();
+        if (WorkspaceStore.DirectoryOverride is { } testDirectory)
+        {
+            try { Directory.Delete(testDirectory, true); } catch { }
+            CodexLaunchStore.DirectoryOverride = null;
+            WorkspaceStore.DirectoryOverride = null;
+        }
         base.OnExit(e);
     }
 

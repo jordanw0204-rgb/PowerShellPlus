@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -24,6 +24,76 @@ public sealed class SessionRecoveryEntry
 public readonly record struct CodexProcessState(bool IsActive, DateTime? StartedUtc);
 public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc);
 
+public sealed class CodexLaunchMarker
+{
+    public int Version { get; set; } = 1;
+    public string PaneId { get; set; } = string.Empty;
+    public DateTime StartedUtc { get; set; }
+    public string WorkingDirectory { get; set; } = string.Empty;
+    public string? ExplicitSessionId { get; set; }
+    public string? SessionId { get; set; }
+    public DateTime? EndedUtc { get; set; }
+    public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
+}
+
+public static class CodexLaunchStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    public static string? DirectoryOverride { get; set; }
+    public static string DirectoryPath => DirectoryOverride ?? Path.Combine(SessionRecoveryStore.DirectoryPath, "codex-launches");
+
+    public static CodexLaunchMarker? Load(string paneId, string? directoryPath = null)
+    {
+        try
+        {
+            var path = MarkerPath(paneId, directoryPath);
+            if (!File.Exists(path)) return null;
+            var marker = JsonSerializer.Deserialize<CodexLaunchMarker>(File.ReadAllText(path), JsonOptions);
+            return marker is { Version: 1 } && marker.PaneId == paneId ? marker : null;
+        }
+        catch { return null; }
+    }
+
+    public static void Save(CodexLaunchMarker marker, string? directoryPath = null)
+    {
+        var directory = directoryPath ?? DirectoryPath;
+        Directory.CreateDirectory(directory);
+        var path = MarkerPath(marker.PaneId, directory);
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(marker, JsonOptions));
+        File.Move(temporary, path, true);
+    }
+
+    public static void Confirm(CodexLaunchMarker marker, CodexSessionMatch match, string? directoryPath = null)
+    {
+        marker.SessionId = match.SessionId;
+        marker.WorkingDirectory = match.WorkingDirectory;
+        Save(marker, directoryPath);
+    }
+
+    public static string BuildPowerShellWrapper(string paneId, string? directoryPath = null)
+    {
+        var directory = directoryPath ?? DirectoryPath;
+        Directory.CreateDirectory(directory);
+        var markerPath = MarkerPath(paneId, directory);
+        var escapedPaneId = EscapePowerShell(paneId);
+        var escapedMarkerPath = EscapePowerShell(markerPath);
+        return "$global:__PowerShellPlusCodexCommand = (Get-Command codex -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1).Source; "
+            + "if ($global:__PowerShellPlusCodexCommand) { function global:codex { "
+            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; "
+            + "if ($__pspArgs.Count -ge 2 -and [string]$__pspArgs[0] -eq 'resume' -and [string]$__pspArgs[1] -match '^[A-Za-z0-9_-]{8,128}$') { $__pspExplicit = [string]$__pspArgs[1] }; "
+            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; EndedUtc = $null }; "
+            + "$__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8; "
+            + "try { & $global:__PowerShellPlusCodexCommand @__pspArgs } finally { $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O'); $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8 } "
+            + "} }";
+    }
+
+    private static string MarkerPath(string paneId, string? directoryPath = null)
+        => Path.Combine(directoryPath ?? DirectoryPath, SessionRecoveryStore.SafeSessionId(paneId) + ".json");
+
+    private static string EscapePowerShell(string value) => value.Replace("'", "''");
+}
+
 public static class SessionRecoveryStore
 {
     private const int MaximumTranscriptCharacters = 500_000;
@@ -38,7 +108,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is 1 or 2)
+            if (value is not null && value.Version is >= 1 and <= 3)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -47,8 +117,9 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 2;
+                    value.Version = 3;
                 }
+                if (value.Version == 2) value.Version = 3;
                 return value;
             }
         }
@@ -113,7 +184,7 @@ public static class SessionRecoveryStore
         catch { }
     }
 
-    private static string SafeSessionId(string value)
+    internal static string SafeSessionId(string value)
     {
         var safe = new string(value.Where(character => char.IsLetterOrDigit(character) || character is '-' or '_').ToArray());
         return safe.Length == 0 ? "session" : safe[..Math.Min(100, safe.Length)];

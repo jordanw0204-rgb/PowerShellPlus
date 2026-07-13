@@ -5,7 +5,8 @@ namespace PowerShellPlus.Native;
 public static class WorkspaceStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-    public static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus");
+    public static string? DirectoryOverride { get; set; }
+    public static string DirectoryPath => DirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus");
     public static string FilePath => Path.Combine(DirectoryPath, "native-workspace.json");
 
     public static WorkspaceState Load(WindowsTerminalProfile terminalProfile)

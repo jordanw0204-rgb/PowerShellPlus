@@ -191,8 +191,9 @@ public partial class TerminalPane : UserControl
         var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $" '{recovery!.CodexSessionId}'" : " --all";
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
-            var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'" : string.Empty;
-            if (resumeCodex) script += (script.Length == 0 ? string.Empty : "; ") + $"& codex resume{resumeArgument}";
+            var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
+            script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
+            if (resumeCodex) script += $"; & codex resume{resumeArgument}";
             if (script.Length == 0) return command;
             var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             return $"{command} -NoExit -EncodedCommand {encoded}";
