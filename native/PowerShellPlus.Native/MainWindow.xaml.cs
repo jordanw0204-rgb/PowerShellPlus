@@ -330,12 +330,32 @@ public partial class MainWindow : Window
         ? state.Settings.DefaultWorkingDirectory
         : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+    private ModifierKeys SendToAllModifier => state.Settings.SendToAllModifier switch
+    {
+        "Ctrl" => ModifierKeys.Control,
+        "Alt" => ModifierKeys.Alt,
+        _ => ModifierKeys.Shift
+    };
+
+    private async Task<bool> SendCommandToAllAsync(string command)
+    {
+        var targets = panes.Values.ToList();
+        if (targets.Count == 0) return false;
+        var results = await Task.WhenAll(targets.Select(pane => pane.SendCommandAsync(command)));
+        var accepted = results.Count(value => value);
+        UpdateStatus(accepted == targets.Count
+            ? $"Command sent to all {accepted} terminals"
+            : $"Command reached {accepted} of {targets.Count} terminals");
+        return accepted == targets.Count;
+    }
+
     private void CreatePane(SessionProfile profile)
     {
         loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery);
         var previousOutput = state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty;
         var pane = new TerminalPane(profile, EffectiveAppearance(), recovery, previousOutput,
-            () => state.Snippets, ScheduleSave);
+            () => state.Snippets, ScheduleSave, SendCommandToAllAsync,
+            () => state.Settings.SendToAllModifierEnabled, () => SendToAllModifier);
         // A native terminal click already gives its HWND keyboard focus. Only
         // update application selection here so WPF does not steal that focus.
         pane.Activated += (_, _) => SelectPane(profile.Id, false);
@@ -971,6 +991,8 @@ public partial class MainWindow : Window
     public async Task<bool> RunMultiPaneSmokeTestAsync(string reportPath)
     {
         var originalLayout = state.Layout;
+        var originalSendAllEnabled = state.Settings.SendToAllModifierEnabled;
+        var originalSendAllModifier = state.Settings.SendToAllModifier;
         var added = new List<SessionProfile>();
         AutomationRule? countdownRefreshFixture = null;
         CommandSnippet? quickAccessFixture = null;
@@ -1037,6 +1059,18 @@ public partial class MainWindow : Window
             activationTarget.SetCommandBarExpandedForTest(true);
             var commandBarExpands = activationTarget.CommandBarExpandedForTest;
             var quickAccessPopulatesInput = activationTarget.SelectFirstQuickAccessCommandForTest();
+            for (var queueIndex = 1; queueIndex <= 18; queueIndex++)
+            {
+                activationTarget.SetCommandInputForTest($"Write-Output 'QUEUE_MENU_{queueIndex}'");
+                activationTarget.QueueCommandForTest();
+            }
+            var queueMenuListsCommands = activationTarget.QueuedCommandCountForTest == 18
+                && activationTarget.QueueCountTextForTest == "18"
+                && activationTarget.OpenQueueMenuForTest() == 18
+                && activationTarget.QueueMenuMaxHeightForTest == 300
+                && activationTarget.SelectQueuedCommandForTest(12)
+                && activationTarget.CommandInputTextForTest.Contains("QUEUE_MENU_13", StringComparison.Ordinal);
+            activationTarget.ClearQueuedCommandsForTest();
             activationTarget.SetCommandInputForTest("Write-Output 'QUEUE_FIRST'"); activationTarget.QueueCommandForTest();
             activationTarget.SetCommandInputForTest("Write-Output 'QUEUE_SECOND'"); activationTarget.QueueCommandForTest();
             var queueAddsCommands = activationTarget.QueuedCommandCountForTest == 2 && activationTarget.CommandInputTextForTest.Length == 0;
@@ -1057,6 +1091,30 @@ public partial class MainWindow : Window
                 || !activationTarget.GetOutput().Contains("QUEUE_FIRST", StringComparison.Ordinal) || !activationTarget.GetOutput().Contains("QUEUE_SECOND", StringComparison.Ordinal))) await Task.Delay(120);
             var queueCommandsExecuted = activationTarget.GetOutput().Contains("QUEUE_NOW", StringComparison.Ordinal)
                 && activationTarget.GetOutput().Contains("QUEUE_FIRST", StringComparison.Ordinal) && activationTarget.GetOutput().Contains("QUEUE_SECOND", StringComparison.Ordinal);
+
+            state.Settings.SendToAllModifierEnabled = true;
+            state.Settings.SendToAllModifier = "Shift";
+            activationTarget.RefreshCommandRoutingAppearance();
+            var shiftModifierRoutesAll = activationTarget.SendToAllActiveForTest(ModifierKeys.Shift)
+                && !activationTarget.SendToAllActiveForTest(ModifierKeys.Control);
+            activationTarget.SetSendToAllVisualForTest(true);
+            var sendAllVisualFeedback = activationTarget.SendCommandGlyphForTest == "⇉"
+                && activationTarget.SendCommandToolTipForTest.Contains("all terminals", StringComparison.OrdinalIgnoreCase);
+            activationTarget.SetSendToAllVisualForTest(false);
+            state.Settings.SendToAllModifierEnabled = false;
+            var modifierCanBeDisabled = !activationTarget.SendToAllActiveForTest(ModifierKeys.Shift);
+            state.Settings.SendToAllModifierEnabled = true;
+            state.Settings.SendToAllModifier = "Ctrl";
+            var modifierCanBeRemapped = activationTarget.SendToAllActiveForTest(ModifierKeys.Control)
+                && !activationTarget.SendToAllActiveForTest(ModifierKeys.Shift);
+            WorkspaceStore.Save(state);
+            var sendAllSettingsPersist = WorkspaceStore.Load(terminalProfile).Settings is { SendToAllModifierEnabled: true, SendToAllModifier: "Ctrl" };
+            state.Settings.SendToAllModifier = "Shift";
+            activationTarget.SetCommandInputForTest("Write-Output 'SEND_ALL_READY'");
+            var allCommandAccepted = await activationTarget.RunCommandForTestAsync(true);
+            var allCommandDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < allCommandDeadline && panes.Values.Any(pane => !pane.GetOutput().Contains("SEND_ALL_READY", StringComparison.Ordinal))) await Task.Delay(120);
+            var commandReachedAllPanes = allCommandAccepted && panes.Values.All(pane => pane.GetOutput().Contains("SEND_ALL_READY", StringComparison.Ordinal));
 
             SetLayout("Rows"); var rows = TerminalHost.Children.OfType<TerminalPane>().Count() == expectedPanes && TerminalHost.Children.OfType<GridSplitter>().Any();
             SetLayout("Columns"); var columns = TerminalHost.Children.OfType<TerminalPane>().Count() == expectedPanes && TerminalHost.Children.OfType<GridSplitter>().Any();
@@ -1088,17 +1146,20 @@ public partial class MainWindow : Window
 
             var paneCommandSystem = paneCommandInputTakesFocus && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
-                && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted;
+                && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
+                && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes;
             var titleLayoutControlsCentered = initiallyCentered && centeredAfterResize;
             var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded && rows && columns && focus && grid && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted pane-local command input and queues, activated correctly, resized in every layout, and preserved scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueStatePersists={queueStatePersists}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted pane-local command input and queues, modifier-routed commands to all panes, resized in every layout, and preserved scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             return success;
         }
         finally
         {
             if (countdownRefreshFixture is not null) state.Automations.Remove(countdownRefreshFixture);
             if (quickAccessFixture is not null) state.Snippets.Remove(quickAccessFixture);
+            state.Settings.SendToAllModifierEnabled = originalSendAllEnabled;
+            state.Settings.SendToAllModifier = originalSendAllModifier;
             foreach (var profile in added) { panes[profile.Id].Stop(); TerminalHost.Children.Remove(panes[profile.Id]); panes.Remove(profile.Id); state.Sessions.Remove(profile); }
             state.Layout = originalLayout; activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout();
         }
@@ -1265,6 +1326,9 @@ public partial class MainWindow : Window
         SettingsKeepSessionsInTray.IsChecked = settings.KeepSessionsRunningInTray;
         SettingsRestoreAfterRestart.IsChecked = settings.RestoreSessionsAfterRestart;
         SettingsSaveTranscripts.IsChecked = settings.SaveTerminalTranscripts;
+        SettingsSendAllModifierEnabled.IsChecked = settings.SendToAllModifierEnabled;
+        SettingsSendAllModifier.SelectedIndex = settings.SendToAllModifier switch { "Ctrl" => 1, "Alt" => 2, _ => 0 };
+        SettingsSendAllModifier.IsEnabled = settings.SendToAllModifierEnabled;
         settingsUiReady = true;
     }
 
@@ -1337,6 +1401,19 @@ public partial class MainWindow : Window
         if (!state.Settings.SaveTerminalTranscripts) SessionRecoveryStore.DeleteAllTranscripts();
         ScheduleSave();
         UpdateStatus(state.Settings.KeepSessionsRunningInTray ? "Live session preservation enabled" : "The close button will quit PowerShellPlus");
+    }
+
+    private void SettingsSendAllChanged(object sender, RoutedEventArgs e)
+    {
+        if (!settingsUiReady) return;
+        state.Settings.SendToAllModifierEnabled = SettingsSendAllModifierEnabled.IsChecked == true;
+        state.Settings.SendToAllModifier = SettingsSendAllModifier.SelectedIndex switch { 1 => "Ctrl", 2 => "Alt", _ => "Shift" };
+        SettingsSendAllModifier.IsEnabled = state.Settings.SendToAllModifierEnabled;
+        foreach (var pane in panes.Values) pane.RefreshCommandRoutingAppearance();
+        ScheduleSave();
+        UpdateStatus(state.Settings.SendToAllModifierEnabled
+            ? $"Hold {state.Settings.SendToAllModifier} to send commands to all terminals"
+            : "Send-to-all modifier disabled");
     }
 
     private void QuitApplicationClick(object sender, RoutedEventArgs e)

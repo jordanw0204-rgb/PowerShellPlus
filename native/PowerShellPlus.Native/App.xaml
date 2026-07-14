@@ -77,7 +77,9 @@
           <ControlTemplate TargetType="ContextMenu">
             <Border Background="#F51E1E2E" BorderBrush="#585B70" BorderThickness="1" CornerRadius="10" Padding="6">
               <Border.Effect><DropShadowEffect BlurRadius="22" ShadowDepth="7" Opacity="0.42" Color="#000000"/></Border.Effect>
-              <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+              <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="True">
+                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+              </ScrollViewer>
             </Border>
           </ControlTemplate>
         </Setter.Value>

@@ -7,7 +7,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class WorkspaceState
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
     public string Name { get; set; } = "Main workspace";
     public string Layout { get; set; } = "Grid";
     public string? ActiveSessionId { get; set; }
@@ -37,6 +37,8 @@ public sealed class WorkspaceSettings
     public bool KeepSessionsRunningInTray { get; set; } = true;
     public bool RestoreSessionsAfterRestart { get; set; } = true;
     public bool SaveTerminalTranscripts { get; set; } = true;
+    public bool SendToAllModifierEnabled { get; set; } = true;
+    public string SendToAllModifier { get; set; } = "Shift";
 }
 
 public sealed class SessionProfile

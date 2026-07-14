@@ -101,7 +101,9 @@ The app is currently unsigned. Windows SmartScreen may show a warning the first 
 
 Double-clicking a saved command runs it in the selected terminal. Double-clicking an automation runs it immediately. You can also click the `⋯` button or right-click any card to see every action available for that item.
 
-Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command. Click **+** to place the current text at the end of that pane's queue; after a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Queue contents and the expanded or collapsed state are saved with the session. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
+Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command. Click **+** to place the current text at the end of that pane's queue; the badge shows how many commands are waiting. Right-click **+** to open a numbered, scrollable queue and choose any pending command. After a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Queue contents and the expanded or collapsed state are saved with the session. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
+
+Hold **Shift** while pressing **Enter** or clicking the send button to send the command to every open terminal. The send icon turns purple and changes to a double arrow before anything is sent, so the wider action is visible. You can disable this shortcut or change its modifier to **Ctrl** or **Alt** under **Settings → Behavior**.
 
 To put a saved command in the lightning-bolt menu, open **Commands**, edit that command, and enable **Show in terminal quick access**. Selecting it from a terminal's quick-access menu fills that pane's input so you can review, edit, queue, or run it.
 
@@ -174,7 +176,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted queues, queue navigation, and quick-access filtering, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted and scrollable queues, queue navigation, quick-access filtering, configurable send-to-all routing, and real fan-out to every live pane, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

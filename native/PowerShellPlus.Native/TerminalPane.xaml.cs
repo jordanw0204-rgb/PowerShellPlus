@@ -27,22 +27,31 @@ public partial class TerminalPane : UserControl
     private TerminalContainer? terminalContainer;
     private readonly Func<IEnumerable<CommandSnippet>> quickAccessProvider;
     private readonly Action commandStateChanged;
+    private readonly Func<string, Task<bool>> sendAllCommand;
+    private readonly Func<bool> sendAllModifierEnabled;
+    private readonly Func<ModifierKeys> sendAllModifier;
     private int? queueSelectionIndex;
     private string queueNavigationDraft = string.Empty;
     private bool commandExecutionPending;
+    private bool? sendButtonShowsAll;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
-        Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null)
+        Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
+        Func<string, Task<bool>>? sendAllCommand = null, Func<bool>? sendAllModifierEnabled = null, Func<ModifierKeys>? sendAllModifier = null)
     {
         Profile = profile;
         startupRecovery = recovery;
         previousOutput = recoveredOutput ?? string.Empty;
         this.quickAccessProvider = quickAccessProvider ?? (() => []);
         this.commandStateChanged = commandStateChanged ?? (() => { });
+        this.sendAllCommand = sendAllCommand ?? SendCommandAsync;
+        this.sendAllModifierEnabled = sendAllModifierEnabled ?? (() => true);
+        this.sendAllModifier = sendAllModifier ?? (() => ModifierKeys.Shift);
         Profile.PendingCommands ??= [];
         InitializeComponent();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
         UpdateQueueDisplay();
+        UpdateSendButtonVisual(false);
         AttachTerminalActivationHook();
         TitleText.Text = profile.Name;
         Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
@@ -107,7 +116,24 @@ public partial class TerminalPane : UserControl
     public async Task<bool> SendCommandAsync(string command)
     {
         if (string.IsNullOrWhiteSpace(command)) return false;
-        if (Terminal.ConPTYTerm?.Process?.HasExited == true) await Terminal.RestartTerm();
+        var restarted = false;
+        try
+        {
+            if (Terminal.ConPTYTerm?.Process?.HasExited == true)
+            {
+                await Terminal.RestartTerm();
+                restarted = true;
+            }
+        }
+        catch (ArgumentException)
+        {
+            try { await Terminal.RestartTerm(); restarted = true; } catch { return false; }
+        }
+        catch (InvalidOperationException)
+        {
+            try { await Terminal.RestartTerm(); restarted = true; } catch { return false; }
+        }
+        if (restarted) await Task.Delay(900);
         var deadline = DateTime.UtcNow.AddSeconds(8);
         while (DateTime.UtcNow < deadline)
         {
@@ -121,6 +147,9 @@ public partial class TerminalPane : UserControl
                 }
             }
             catch (NullReferenceException) { }
+            catch (ArgumentException) { }
+            catch (ObjectDisposedException) { return false; }
+            catch (InvalidOperationException) { }
             await Task.Delay(100);
         }
         return false;
@@ -139,7 +168,7 @@ public partial class TerminalPane : UserControl
         CommandInput.Focus();
     }
 
-    private async Task<bool> RunCommandInputAsync()
+    private async Task<bool> RunCommandInputAsync(bool sendToAll = false)
     {
         if (commandExecutionPending) return false;
         var command = CommandInput.Text.Trim();
@@ -152,7 +181,7 @@ public partial class TerminalPane : UserControl
                 && string.Equals(Profile.PendingCommands[selected], command, StringComparison.Ordinal)
                     ? selected
                     : (int?)null;
-            if (!await SendCommandAsync(command)) return false;
+            if (!await (sendToAll ? sendAllCommand(command) : SendCommandAsync(command))) return false;
             if (queuedIndex is int index) Profile.PendingCommands.RemoveAt(index);
             PromoteNextQueuedCommand();
             UpdateQueueDisplay();
@@ -214,8 +243,109 @@ public partial class TerminalPane : UserControl
         var count = Profile.PendingCommands.Count;
         QueueCountBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         QueueCountText.Text = count > 99 ? "99+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        QueueCommandButton.ToolTip = count == 0 ? "Add this command to the queue" : $"Add to queue · {count} pending · Up/Down browses";
+        QueueCommandButton.ToolTip = count == 0
+            ? "Add this command to the queue · Right-click to view the queue"
+            : $"Add to queue · {count} pending · Right-click to view · Up/Down browses";
     }
+
+    private void ShowQueueMenu()
+    {
+        var menu = new ContextMenu
+        {
+            PlacementTarget = QueueCommandButton,
+            Placement = PlacementMode.Top,
+            HorizontalOffset = 0,
+            VerticalOffset = -4,
+            MaxHeight = 300,
+            MinWidth = 300,
+            Style = TryFindResource("CardContextMenu") as Style
+        };
+        if (Profile.PendingCommands.Count == 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = "No queued commands",
+                IsEnabled = false,
+                Style = TryFindResource("CardMenuItem") as Style
+            });
+        }
+        else
+        {
+            for (var index = 0; index < Profile.PendingCommands.Count; index++)
+            {
+                var queuedIndex = index;
+                var command = Profile.PendingCommands[index];
+                var item = new MenuItem
+                {
+                    Header = AbbreviateCommand(command),
+                    InputGestureText = $"{index + 1} / {Profile.PendingCommands.Count}",
+                    ToolTip = command,
+                    Style = TryFindResource("CardMenuItem") as Style,
+                    Icon = new TextBlock { Text = (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), Foreground = new SolidColorBrush(Color.FromRgb(137, 180, 250)), FontSize = 10, FontWeight = FontWeights.SemiBold }
+                };
+                item.Click += (_, _) => SelectQueuedCommand(queuedIndex);
+                menu.Items.Add(item);
+            }
+        }
+        QueueCommandButton.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private void SelectQueuedCommand(int index)
+    {
+        if (index < 0 || index >= Profile.PendingCommands.Count) return;
+        queueNavigationDraft = CommandInput.Text;
+        queueSelectionIndex = index;
+        CommandInput.Text = Profile.PendingCommands[index];
+        CommandInput.SelectAll();
+        CommandInput.Focus();
+    }
+
+    private static string AbbreviateCommand(string command)
+    {
+        var singleLine = command.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return singleLine.Length <= 72 ? singleLine : singleLine[..69] + "…";
+    }
+
+    private bool IsSendToAllActive(ModifierKeys modifiers)
+    {
+        if (!sendAllModifierEnabled()) return false;
+        var configured = sendAllModifier();
+        return configured != ModifierKeys.None && modifiers.HasFlag(configured);
+    }
+
+    private string SendToAllModifierLabel() => sendAllModifier() switch
+    {
+        ModifierKeys.Control => "Ctrl",
+        ModifierKeys.Alt => "Alt",
+        _ => "Shift"
+    };
+
+    private void UpdateSendButtonVisual(bool sendToAll, bool force = false)
+    {
+        if (!force && sendButtonShowsAll == sendToAll) return;
+        sendButtonShowsAll = sendToAll;
+        if (sendToAll)
+        {
+            RunCommandButton.Content = "⇉";
+            RunCommandButton.Foreground = new SolidColorBrush(Color.FromRgb(203, 166, 247));
+            RunCommandButton.Background = new SolidColorBrush(Color.FromRgb(59, 49, 84));
+            RunCommandButton.BorderBrush = new SolidColorBrush(Color.FromRgb(203, 166, 247));
+            RunCommandButton.ToolTip = $"Send to all terminals ({SendToAllModifierLabel()}+Enter)";
+        }
+        else
+        {
+            RunCommandButton.Content = "▶";
+            RunCommandButton.ClearValue(ForegroundProperty);
+            RunCommandButton.ClearValue(BackgroundProperty);
+            RunCommandButton.ClearValue(BorderBrushProperty);
+            RunCommandButton.ToolTip = sendAllModifierEnabled()
+                ? $"Run in this terminal (Enter) · Hold {SendToAllModifierLabel()} for all terminals"
+                : "Run in this terminal (Enter)";
+        }
+    }
+
+    private void RefreshSendButtonVisual() => UpdateSendButtonVisual(IsSendToAllActive(Keyboard.Modifiers));
 
     private void ShowQuickAccessMenu()
     {
@@ -379,7 +509,10 @@ public partial class TerminalPane : UserControl
     public bool FocusCommandInputForTest() => CommandInput.Focus();
     public bool CommandBarExpandedForTest => Profile.CommandBarExpanded && CommandBarContainer.Visibility == Visibility.Visible;
     public int QueuedCommandCountForTest => Profile.PendingCommands.Count;
+    public string QueueCountTextForTest => QueueCountText.Text;
     public string CommandInputTextForTest => CommandInput.Text;
+    public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
+    public string SendCommandToolTipForTest => RunCommandButton.ToolTip?.ToString() ?? string.Empty;
     public int QuickAccessCommandCountForTest => quickAccessProvider().Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
     public bool SelectFirstQuickAccessCommandForTest()
     {
@@ -394,9 +527,33 @@ public partial class TerminalPane : UserControl
     }
     public void SetCommandInputForTest(string value) { queueSelectionIndex = null; queueNavigationDraft = string.Empty; CommandInput.Text = value; }
     public void QueueCommandForTest() => QueueCurrentCommand();
-    public Task<bool> RunCommandForTestAsync() => RunCommandInputAsync();
+    public void ClearQueuedCommandsForTest()
+    {
+        Profile.PendingCommands.Clear();
+        queueSelectionIndex = null;
+        queueNavigationDraft = string.Empty;
+        CommandInput.Clear();
+        UpdateQueueDisplay();
+    }
+    public Task<bool> RunCommandForTestAsync(bool sendToAll = false) => RunCommandInputAsync(sendToAll);
     public void NavigateQueueForTest(int direction) => NavigateQueue(direction);
     public void SetCommandBarExpandedForTest(bool expanded) => SetCommandBarExpanded(expanded, false, false);
+    public bool SendToAllActiveForTest(ModifierKeys modifiers) => IsSendToAllActive(modifiers);
+    public void SetSendToAllVisualForTest(bool active) => UpdateSendButtonVisual(active);
+    public int OpenQueueMenuForTest()
+    {
+        ShowQueueMenu();
+        return QueueCommandButton.ContextMenu?.Items.Count ?? 0;
+    }
+    public bool SelectQueuedCommandForTest(int index)
+    {
+        SelectQueuedCommand(index);
+        if (QueueCommandButton.ContextMenu is { } menu) menu.IsOpen = false;
+        return queueSelectionIndex == index && index >= 0 && index < Profile.PendingCommands.Count
+            && string.Equals(CommandInput.Text, Profile.PendingCommands[index], StringComparison.Ordinal);
+    }
+    public double QueueMenuMaxHeightForTest => QueueCommandButton.ContextMenu?.MaxHeight ?? double.PositiveInfinity;
+    public void RefreshCommandRoutingAppearance() => UpdateSendButtonVisual(IsSendToAllActive(Keyboard.Modifiers), true);
 
     private void HideNativeScrollbar()
     {
@@ -522,13 +679,24 @@ public partial class TerminalPane : UserControl
     }
     private void QuickAccessClick(object sender, RoutedEventArgs e) { ShowQuickAccessMenu(); e.Handled = true; }
     private void QueueCommandClick(object sender, RoutedEventArgs e) { QueueCurrentCommand(); e.Handled = true; }
-    private async void RunCommandClick(object sender, RoutedEventArgs e) { await RunCommandInputAsync(); e.Handled = true; }
+    private void QueueCommandRightClick(object sender, MouseButtonEventArgs e) { ShowQueueMenu(); e.Handled = true; }
+    private async void RunCommandClick(object sender, RoutedEventArgs e) { await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); e.Handled = true; }
     private async void CommandInputPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter) { e.Handled = true; await RunCommandInputAsync(); }
+        if (e.Key == Key.Enter) { e.Handled = true; await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); }
         else if (e.Key == Key.Up) { e.Handled = true; NavigateQueue(-1); }
         else if (e.Key == Key.Down) { e.Handled = true; NavigateQueue(1); }
     }
+    private void PanePreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        RefreshSendButtonVisual();
+    }
+    private void PanePreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
+    }
+    private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
+    private void RunCommandMouseMove(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
     private void ToggleCommandBarClick(object sender, RoutedEventArgs e) { SetCommandBarExpanded(!Profile.CommandBarExpanded, true, true); e.Handled = true; }
     private void PreviousOutputClick(object sender, RoutedEventArgs e) { ConfigureRecoveryView(true); RecoveryOverlay.Visibility = Visibility.Visible; }
     private void CloseRecoveryClick(object sender, RoutedEventArgs e) { RecoveryOverlay.Visibility = Visibility.Collapsed; Terminal.Focus(); }

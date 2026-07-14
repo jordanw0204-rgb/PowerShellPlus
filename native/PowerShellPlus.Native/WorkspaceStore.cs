@@ -16,9 +16,9 @@ public static class WorkspaceStore
             if (File.Exists(FilePath))
             {
                 var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(FilePath), JsonOptions);
-                if (loaded is not null && loaded.Version is 3 or 4)
+                if (loaded is not null && loaded.Version is 3 or 4 or 5)
                 {
-                    loaded.Version = 4;
+                    loaded.Version = 5;
                     loaded.Settings ??= new WorkspaceSettings();
                     loaded.LayoutSizes ??= [];
                     foreach (var session in loaded.Sessions) session.PendingCommands ??= [];

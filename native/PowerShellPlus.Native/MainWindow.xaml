@@ -175,6 +175,12 @@
 
                 <TextBlock Text="BEHAVIOR" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsConfirmRemove" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Confirm before removing a session" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <CheckBox x:Name="SettingsSendAllModifierEnabled" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="SettingsSendAllChanged"><TextBlock Text="Use a modifier to send commands to every terminal" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Send-to-all modifier" Foreground="{StaticResource Muted}" Margin="49,10,0,5"/>
+                <ComboBox x:Name="SettingsSendAllModifier" Margin="49,0,0,0" SelectionChanged="SettingsSendAllChanged">
+                  <ComboBoxItem Content="Shift"/><ComboBoxItem Content="Ctrl"/><ComboBoxItem Content="Alt"/>
+                </ComboBox>
+                <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. The button changes color before the command is sent." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
 
                 <TextBlock Text="SESSION RECOVERY" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsKeepSessionsInTray" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Keep live sessions running when the window closes" TextWrapping="Wrap" Width="178"/></CheckBox>
