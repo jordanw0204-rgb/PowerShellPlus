@@ -224,11 +224,12 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private async Task<IResult> SessionsAsync(HttpContext context)
     {
         if (!TryAuthorize(context, out _)) return Results.Unauthorized();
-        var sessions = await GetSessionsAsync();
+        var workspace = await GetRemoteWorkspaceStateAsync();
         return Results.Json(new
         {
             allowInput = AllowInput,
-            sessions = sessions.Select(value => new { value.Id, value.Name, value.WorkingDirectory })
+            sessions = workspace.Views,
+            quickCommands = workspace.QuickCommands
         }, JsonOptions);
     }
 
@@ -326,7 +327,8 @@ internal sealed class LanRemoteServer : IAsyncDisposable
 
         async Task RefreshSubscriptionsAsync(bool forceSnapshots)
         {
-            var sessions = await GetSessionsAsync();
+            var workspace = await GetRemoteWorkspaceStateAsync();
+            var sessions = workspace.Sessions;
             var currentIds = sessions.Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var stale in subscriptions.Keys.Where(value => !currentIds.Contains(value)).ToArray())
             {
@@ -341,7 +343,9 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                 await dispatcher.InvokeAsync(session.Pane.EnableRemoteOutputCapture, DispatcherPriority.Background);
                 Action<TerminalPane, string> handler = (_, data) =>
                 {
-                    if (!output.Writer.TryWrite(new OutputFrame(session.Id, data))) Interlocked.Exchange(ref outputDropped, 1);
+                    var dimensions = session.Pane.GetRemoteDimensions();
+                    if (!output.Writer.TryWrite(new OutputFrame(session.Id, data, dimensions.Columns, dimensions.Rows)))
+                        Interlocked.Exchange(ref outputDropped, 1);
                 };
                 session.Pane.RawOutputReceived += handler;
                 subscriptions[session.Id] = (session.Pane, handler);
@@ -351,13 +355,16 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             {
                 type = "sessions",
                 allowInput = AllowInput,
-                sessions = sessions.Select(value => new { value.Id, value.Name, value.WorkingDirectory })
+                sessions = workspace.Views,
+                quickCommands = workspace.QuickCommands
             });
+            var views = workspace.Views.ToDictionary(value => value.Id, StringComparer.Ordinal);
             foreach (var session in forceSnapshots ? sessions : added)
             {
                 var snapshot = await dispatcher.InvokeAsync(session.Pane.GetRawOutputForTest, DispatcherPriority.Background);
                 if (snapshot.Length > MaximumSnapshotCharacters) snapshot = snapshot[^MaximumSnapshotCharacters..];
-                await SendAsync(new { type = "snapshot", sessionId = session.Id, data = snapshot });
+                var view = views[session.Id];
+                await SendAsync(new { type = "snapshot", sessionId = session.Id, data = snapshot, columns = view.Columns, rows = view.Rows });
             }
         }
 
@@ -371,7 +378,14 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                     await SendAsync(new { type = "resync" });
                     continue;
                 }
-                await SendAsync(new { type = "output", sessionId = frame.SessionId, data = frame.Data });
+                await SendAsync(new
+                {
+                    type = "output",
+                    sessionId = frame.SessionId,
+                    data = frame.Data,
+                    columns = frame.Columns,
+                    rows = frame.Rows
+                });
             }
         }
 
@@ -397,23 +411,52 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                     await RefreshSubscriptionsAsync(snapshots);
                     continue;
                 }
-                if (type != "input") continue;
+                if (type is not ("input" or "queue-add" or "command")) continue;
                 if (!AllowInput)
                 {
                     await SendAsync(new { type = "input-denied" });
                     continue;
                 }
                 if (!document.RootElement.TryGetProperty("sessionId", out var idElement)
-                    || !document.RootElement.TryGetProperty("data", out var dataElement)
-                    || idElement.ValueKind != JsonValueKind.String || dataElement.ValueKind != JsonValueKind.String) continue;
+                    || idElement.ValueKind != JsonValueKind.String) continue;
                 var sessionId = idElement.GetString();
-                var data = dataElement.GetString();
-                if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(data) || data.Length > MaximumInputMessageBytes) continue;
                 var sessions = await GetSessionsAsync();
                 var session = sessions.FirstOrDefault(value => value.Id.Equals(sessionId, StringComparison.Ordinal));
-                var accepted = session is not null
-                    && await dispatcher.InvokeAsync(() => session.Pane.WriteRemoteInput(data), DispatcherPriority.Input);
-                await SendAsync(new { type = "input-ack", sessionId, accepted });
+                if (string.IsNullOrEmpty(sessionId) || session is null) continue;
+
+                if (type == "input")
+                {
+                    if (!document.RootElement.TryGetProperty("data", out var dataElement) || dataElement.ValueKind != JsonValueKind.String) continue;
+                    var data = dataElement.GetString();
+                    if (string.IsNullOrEmpty(data) || data.Length > MaximumInputMessageBytes) continue;
+                    var accepted = await dispatcher.InvokeAsync(() => session.Pane.WriteRemoteInput(data), DispatcherPriority.Input);
+                    await SendAsync(new { type = "input-ack", sessionId, accepted });
+                    continue;
+                }
+
+                if (!document.RootElement.TryGetProperty("command", out var commandElement) || commandElement.ValueKind != JsonValueKind.String) continue;
+                var command = commandElement.GetString();
+                if (string.IsNullOrWhiteSpace(command) || command.Length > MaximumInputMessageBytes) continue;
+                var requestId = document.RootElement.TryGetProperty("requestId", out var requestElement) && requestElement.ValueKind == JsonValueKind.String
+                    ? requestElement.GetString()
+                    : null;
+                if (type == "queue-add")
+                {
+                    var accepted = await dispatcher.InvokeAsync(() => session.Pane.QueueRemoteCommand(command), DispatcherPriority.Input);
+                    await SendAsync(new { type = "queue-ack", sessionId, requestId, accepted });
+                    await RefreshSubscriptionsAsync(false);
+                    continue;
+                }
+
+                int? queuedIndex = null;
+                if (document.RootElement.TryGetProperty("queueIndex", out var queueElement)
+                    && queueElement.ValueKind == JsonValueKind.Number && queueElement.TryGetInt32(out var parsedIndex))
+                    queuedIndex = parsedIndex;
+                var commandTask = await dispatcher.InvokeAsync(
+                    () => session.Pane.RunRemoteCommandAsync(command, queuedIndex), DispatcherPriority.Input);
+                var commandAccepted = await commandTask;
+                await SendAsync(new { type = "command-ack", sessionId, requestId, accepted = commandAccepted });
+                await RefreshSubscriptionsAsync(false);
             }
         }
         finally
@@ -429,6 +472,29 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     {
         if (dispatcher.CheckAccess()) return sessionProvider();
         return await dispatcher.InvokeAsync(sessionProvider, DispatcherPriority.Background);
+    }
+
+    private async Task<RemoteWorkspaceState> GetRemoteWorkspaceStateAsync()
+    {
+        if (dispatcher.CheckAccess()) return BuildRemoteWorkspaceState();
+        return await dispatcher.InvokeAsync(BuildRemoteWorkspaceState, DispatcherPriority.Background);
+    }
+
+    private RemoteWorkspaceState BuildRemoteWorkspaceState()
+    {
+        var sessions = sessionProvider();
+        var views = sessions.Select(session =>
+        {
+            var dimensions = session.Pane.GetRemoteDimensions();
+            var appearance = session.Pane.GetRemoteAppearance();
+            return new RemoteSessionView(session.Id, session.Name, session.WorkingDirectory,
+                dimensions.Columns, dimensions.Rows, appearance.FontFace, appearance.FontSize,
+                session.Pane.GetRemotePendingCommands());
+        }).ToArray();
+        var quickCommands = sessions.FirstOrDefault()?.Pane.GetRemoteQuickCommands()
+            .Select(value => new RemoteQuickCommand(value.Id, value.Name, value.Category, value.Command))
+            .ToArray() ?? [];
+        return new RemoteWorkspaceState(sessions, views, quickCommands);
     }
 
     private bool TryAuthorize(HttpContext context, out DateTimeOffset expiresUtc)
@@ -556,7 +622,12 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     public void SignalShutdown() => lifetimeCancellation.Cancel();
 
     private sealed record PairRequest(string Code);
-    private sealed record OutputFrame(string SessionId, string Data);
+    private sealed record OutputFrame(string SessionId, string Data, int Columns, int Rows);
+    private sealed record RemoteSessionView(string Id, string Name, string WorkingDirectory, int Columns, int Rows,
+        string FontFace, int FontSize, IReadOnlyList<string> PendingCommands);
+    private sealed record RemoteQuickCommand(string Id, string Name, string Category, string Command);
+    private sealed record RemoteWorkspaceState(IReadOnlyList<LanRemoteSession> Sessions,
+        IReadOnlyList<RemoteSessionView> Views, IReadOnlyList<RemoteQuickCommand> QuickCommands);
 
     private sealed class PairingFailures
     {

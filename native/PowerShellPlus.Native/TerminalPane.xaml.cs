@@ -43,6 +43,10 @@ public partial class TerminalPane : UserControl
     private bool? sendButtonShowsAll;
     private char configuredCursorStyleCode;
     private long remoteOutputEventCount;
+    private int remoteColumns = 120;
+    private int remoteRows = 32;
+    private string remoteFontFace = "Cascadia Mono";
+    private int remoteFontSize = 12;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -56,8 +60,12 @@ public partial class TerminalPane : UserControl
         this.sendAllCommand = sendAllCommand ?? SendCommandAsync;
         this.sendAllModifierEnabled = sendAllModifierEnabled ?? (() => true);
         this.sendAllModifier = sendAllModifier ?? (() => ModifierKeys.Shift);
+        remoteFontFace = appearance.FontFace;
+        remoteFontSize = appearance.FontSize;
         Profile.PendingCommands ??= [];
         InitializeComponent();
+        Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
+        Terminal.Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
         UpdateQueueDisplay();
         UpdateSendButtonVisual(false);
@@ -74,6 +82,7 @@ public partial class TerminalPane : UserControl
             AttachTerminalActivationHook();
             AttachTerminalOutputFilter();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
+            RefreshRemoteDimensions();
             HideNativeScrollbar();
             StateText.Text = $"  {appearance.ProfileName} · native renderer";
             await Task.Delay(1400);
@@ -95,6 +104,7 @@ public partial class TerminalPane : UserControl
             }
             StateDot.Fill = new SolidColorBrush(Color.FromRgb(166, 227, 161));
             AttachTerminalOutputFilter();
+            RefreshRemoteDimensions();
             ConfigureRecoveryView();
         };
     }
@@ -489,6 +499,54 @@ public partial class TerminalPane : UserControl
         catch (InvalidOperationException) { return false; }
     }
 
+    public (int Columns, int Rows) GetRemoteDimensions() =>
+        (Math.Max(2, Volatile.Read(ref remoteColumns)), Math.Max(2, Volatile.Read(ref remoteRows)));
+
+    public (string FontFace, int FontSize) GetRemoteAppearance() =>
+        (remoteFontFace, Math.Max(6, Volatile.Read(ref remoteFontSize)));
+
+    public IReadOnlyList<string> GetRemotePendingCommands() => Profile.PendingCommands.ToArray();
+
+    public IReadOnlyList<CommandSnippet> GetRemoteQuickCommands() => quickAccessProvider()
+        .Where(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command))
+        .ToArray();
+
+    public bool QueueRemoteCommand(string command)
+    {
+        command = command.Trim();
+        if (command.Length == 0 || command.Length > MaximumCommandLength || Profile.PendingCommands.Count >= MaximumQueuedCommands) return false;
+        Profile.PendingCommands.Add(command);
+        queueSelectionIndex = null;
+        queueNavigationDraft = string.Empty;
+        UpdateQueueDisplay();
+        commandStateChanged();
+        return true;
+    }
+
+    public async Task<bool> RunRemoteCommandAsync(string command, int? queuedIndex)
+    {
+        command = command.Trim();
+        if (commandExecutionPending || command.Length == 0 || command.Length > MaximumCommandLength) return false;
+        commandExecutionPending = true;
+        RunCommandButton.IsEnabled = false;
+        try
+        {
+            if (!await SendCommandAsync(command)) return false;
+            if (queuedIndex is int index && index >= 0 && index < Profile.PendingCommands.Count
+                && string.Equals(Profile.PendingCommands[index], command, StringComparison.Ordinal))
+                Profile.PendingCommands.RemoveAt(index);
+            PromoteNextQueuedCommand();
+            UpdateQueueDisplay();
+            commandStateChanged();
+            return true;
+        }
+        finally
+        {
+            commandExecutionPending = false;
+            RunCommandButton.IsEnabled = true;
+        }
+    }
+
     public void EnableRemoteOutputCapture() => AttachTerminalOutputFilter();
 
     public int? GetRootProcessId()
@@ -526,6 +584,8 @@ public partial class TerminalPane : UserControl
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
         Terminal.Theme = appearance.Theme;
+        remoteFontFace = appearance.FontFace;
+        Volatile.Write(ref remoteFontSize, appearance.FontSize);
         configuredCursorStyleCode = CursorStyleCode(appearance.Theme.CursorStyle);
         AttachTerminalOutputFilter();
     }
@@ -673,6 +733,25 @@ public partial class TerminalPane : UserControl
     }
 
     public long RemoteOutputEventsForTest => Interlocked.Read(ref remoteOutputEventCount);
+
+    private void ScheduleRemoteDimensionRefresh()
+    {
+        if (Dispatcher.HasShutdownStarted) return;
+        Dispatcher.BeginInvoke(RefreshRemoteDimensions, System.Windows.Threading.DispatcherPriority.Render);
+    }
+
+    private void RefreshRemoteDimensions()
+    {
+        try
+        {
+            var columns = Terminal.Terminal.Columns;
+            var rows = Terminal.Terminal.Rows;
+            if (columns >= 2) Volatile.Write(ref remoteColumns, columns);
+            if (rows >= 2) Volatile.Write(ref remoteRows, rows);
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
 
     private void EnforceCursorStyle(ref Span<char> output)
     {
