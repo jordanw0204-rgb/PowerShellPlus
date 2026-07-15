@@ -11,7 +11,7 @@
     <SelfContained>true</SelfContained>
     <AssemblyName>PowerShellPlus</AssemblyName>
     <RootNamespace>PowerShellPlus.Native</RootNamespace>
-    <Version>3.7.2</Version>
+    <Version>3.7.3</Version>
     <ApplicationIcon>Assets\PowerShellPlus.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>

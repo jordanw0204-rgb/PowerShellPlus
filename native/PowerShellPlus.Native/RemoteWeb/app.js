@@ -47,12 +47,13 @@
 
   function activateSession(id, focus = false) {
     if (!runtime.has(id)) return;
+    const changed = activeSessionId !== id;
     activeSessionId = id;
     runtime.forEach((value, key) => value.card.classList.toggle('active', key === id));
     tabs.querySelectorAll('button').forEach(button => button.classList.toggle('active', button.dataset.id === id));
     if (focusMode) runtime.get(id).card.scrollIntoView({ block: 'nearest' });
     if (focus) runtime.get(id).terminal.focus();
-    scheduleAllFits();
+    if (changed && focusMode) scheduleFit(runtime.get(id));
   }
 
   function sendJson(message) {
@@ -92,7 +93,23 @@
 
   function scheduleFit(value) {
     cancelAnimationFrame(value.fitFrame);
-    value.fitFrame = requestAnimationFrame(() => fitTerminal(value));
+    value.fitFrame = requestAnimationFrame(() => {
+      value.fitFrame = 0;
+      fitTerminal(value);
+    });
+  }
+
+  function setTerminalFontSize(value, fontSize) {
+    if (Math.abs((Number(value.terminal.options.fontSize) || 0) - fontSize) <= 0.001) return;
+    value.terminal.options.fontSize = fontSize;
+    value.terminal.resize(value.columns, value.rows);
+  }
+
+  function terminalFits(screen, availableWidth, availableHeight) {
+    const bounds = screen.getBoundingClientRect();
+    return bounds.width > 0 && bounds.height > 0
+      && bounds.width <= availableWidth + 0.5
+      && bounds.height <= availableHeight + 0.5;
   }
 
   function fitTerminal(value) {
@@ -100,9 +117,10 @@
     const preferred = Math.max(8, Math.min(24, value.nativeFontSize));
     const expectedFamily = fontStack(value.fontFace);
     if (value.terminal.options.fontFamily !== expectedFamily) {
+      value.lastFitKey = '';
       value.terminal.options.fontFamily = expectedFamily;
       value.terminal.resize(value.columns, value.rows);
-      value.fitFrame = requestAnimationFrame(() => fitTerminal(value));
+      scheduleFit(value);
       return;
     }
     const screen = value.terminal.element?.querySelector('.xterm-screen');
@@ -110,16 +128,33 @@
     const hostStyle = getComputedStyle(value.host);
     const availableWidth = value.host.clientWidth - parseFloat(hostStyle.paddingLeft) - parseFloat(hostStyle.paddingRight);
     const availableHeight = value.host.clientHeight - parseFloat(hostStyle.paddingTop) - parseFloat(hostStyle.paddingBottom);
-    const bounds = screen.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0 || availableWidth <= 0 || availableHeight <= 0) return;
-    const current = Math.max(5, Number(value.terminal.options.fontSize) || preferred);
-    const scale = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
+    if (availableWidth <= 0 || availableHeight <= 0) return;
     const preferredMaximum = Math.max(5, Math.min(24, preferred * Math.pow(1.12, fontOffset)));
-    const fitted = Math.max(5, Math.min(preferredMaximum, Math.floor(current * scale * 10) / 10));
-    if (Math.abs(current - fitted) > 0.05) {
-      value.terminal.options.fontSize = fitted;
-      value.terminal.resize(value.columns, value.rows);
+    const fitKey = [
+      availableWidth.toFixed(2), availableHeight.toFixed(2), value.columns, value.rows,
+      expectedFamily, preferredMaximum.toFixed(3)
+    ].join('|');
+    if (value.lastFitKey === fitKey) return;
+
+    // xterm rounds each cell to device pixels, so scaling from the current
+    // font can cycle forever near a row-height boundary. Search the fixed
+    // 0.1px candidate range instead; the result depends only on the host and
+    // native grid, not on whichever font size happened to render last.
+    let low = 50;
+    let high = Math.max(low, Math.floor(preferredMaximum * 10 + 0.0001));
+    let best = low;
+    while (low <= high) {
+      const candidate = Math.floor((low + high) / 2);
+      setTerminalFontSize(value, candidate / 10);
+      if (terminalFits(screen, availableWidth, availableHeight)) {
+        best = candidate;
+        low = candidate + 1;
+      } else {
+        high = candidate - 1;
+      }
     }
+    setTerminalFontSize(value, best / 10);
+    value.lastFitKey = fitKey;
   }
 
   function scheduleAllFits() {
@@ -367,7 +402,7 @@
       id: session.id, card, terminal, host, title, directory, tab,
       columns: dimensions.columns, rows: dimensions.rows,
       fontFace: session.fontFace || 'Cascadia Mono', nativeFontSize: Number(session.fontSize) || 12,
-      pendingCommands: session.pendingCommands || [], selectedQueueIndex: null, popoverMode: null, fitFrame: 0
+      pendingCommands: session.pendingCommands || [], selectedQueueIndex: null, popoverMode: null, fitFrame: 0, lastFitKey: ''
     };
     card.append(createCommandArea(value));
     runtime.set(session.id, value);
@@ -408,8 +443,9 @@
     }
     emptyState.hidden = sessions.length !== 0;
     grid.classList.toggle('focus-mode', focusMode);
-    if (!runtime.has(activeSessionId)) activeSessionId = sessions[0]?.id;
-    if (activeSessionId) activateSession(activeSessionId);
+    const nextActiveSessionId = runtime.has(activeSessionId) ? activeSessionId : sessions[0]?.id;
+    if (nextActiveSessionId) activateSession(nextActiveSessionId);
+    else activeSessionId = undefined;
   }
 
   function settleRequest(message) {

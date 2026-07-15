@@ -98,6 +98,8 @@ public partial class MainWindow
             var index = await indexResponse.Content.ReadAsStringAsync();
             var appResponse = await client.GetAsync("app.js");
             var appScript = await appResponse.Content.ReadAsStringAsync();
+            var stylesResponse = await client.GetAsync("styles.css");
+            var styles = await stylesResponse.Content.ReadAsStringAsync();
             var manifestResponse = await client.GetAsync("manifest.webmanifest");
             var manifest = await manifestResponse.Content.ReadAsStringAsync();
             var assetsEmbedded = indexResponse.IsSuccessStatusCode && index.Contains("/vendor/xterm.js", StringComparison.Ordinal)
@@ -109,12 +111,19 @@ public partial class MainWindow
                 && appScript.Contains("preferredMaximum", StringComparison.Ordinal)
                 && appScript.Contains("queue-add", StringComparison.Ordinal)
                 && appScript.Contains("command-input", StringComparison.Ordinal);
+            var stableTerminalSizingEmbedded = stylesResponse.IsSuccessStatusCode
+                && appScript.Contains("lastFitKey", StringComparison.Ordinal)
+                && appScript.Contains("terminalFits", StringComparison.Ordinal)
+                && appScript.Contains("const changed = activeSessionId !== id", StringComparison.Ordinal)
+                && styles.Contains(".terminal-host", StringComparison.Ordinal)
+                && styles.Contains("overflow: hidden", StringComparison.Ordinal);
             var rotationManifestEmbedded = manifestResponse.IsSuccessStatusCode
                 && manifest.Contains("\"orientation\": \"any\"", StringComparison.Ordinal);
             var securityHeadersPresent = indexResponse.Headers.TryGetValues("Content-Security-Policy", out var policies)
                 && policies.Any(value => value.Contains("frame-ancestors 'none'", StringComparison.Ordinal));
             details.Add($"AssetsEmbedded={assetsEmbedded}");
             details.Add($"ResponsiveCommandClientEmbedded={responsiveClientEmbedded}");
+            details.Add($"StableTerminalSizingEmbedded={stableTerminalSizingEmbedded}");
             details.Add($"RotationManifestEmbedded={rotationManifestEmbedded}");
             details.Add($"SecurityHeadersPresent={securityHeadersPresent}");
 
@@ -344,7 +353,7 @@ public partial class MainWindow
             var stoppedCleanly = !server.IsRunning;
             details.Add($"StoppedCleanly={stoppedCleanly}");
 
-            var success = assetsEmbedded && responsiveClientEmbedded && rotationManifestEmbedded && securityHeadersPresent && unauthenticatedRejected && wrongCodeRejected && pairingAccepted
+            var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && unauthenticatedRejected && wrongCodeRejected && pairingAccepted
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
                 && sessionFrameSeen && snapshotSeen && sessionGridSeen && snapshotGridSeen && snapshotComposedSeen && snapshotCursorSeen
                 && remoteInputAccepted && liveOutputSeen && outputGridSeen && composedSnapshotContainsMarker

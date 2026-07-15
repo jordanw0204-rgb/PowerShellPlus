@@ -49,7 +49,7 @@ button:active { opacity: .72; }
 .terminal-header i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--green); }
 .terminal-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 650; }
 .terminal-directory { margin-left: auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 9px "Cascadia Mono", Consolas, monospace; }
-.terminal-host { min-width: 0; min-height: 0; overflow: auto; padding: 8px 7px; background: #1e1e2e; overscroll-behavior: contain; }
+.terminal-host { min-width: 0; min-height: 0; overflow: hidden; padding: 8px 7px; background: #1e1e2e; overscroll-behavior: contain; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { background: transparent !important; scrollbar-color: #45475a transparent; }
 
