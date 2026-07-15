@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -14,6 +15,8 @@ namespace PowerShellPlus.Native;
 public partial class MainWindow : Window
 {
     private enum EditorMode { Session, Snippet, Automation }
+    private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId);
+    private const double WorkspaceSidebarWidth = 278;
     private readonly WindowsTerminalProfile terminalProfile;
     private readonly WorkspaceState state;
     private readonly Dictionary<string, TerminalPane> panes = [];
@@ -31,6 +34,12 @@ public partial class MainWindow : Window
     private TerminalPane? activePane;
     private string? activeLayoutSizeKey;
     private bool automationCheckRunning;
+    private WindowsTerminalDragMonitor? windowsTerminalDragMonitor;
+    private bool windowsTerminalImportRunning;
+    private bool windowsTerminalDropVisible;
+    private bool topmostBeforeWindowsTerminalDrop;
+    private readonly object recoveryCaptureSync = new();
+    private int recoveryCaptureInProgress;
 
     public MainWindow(bool automationMode = false)
     {
@@ -45,14 +54,15 @@ public partial class MainWindow : Window
         AutomationList.ItemsSource = state.Automations;
         InitializeAutomationTimeUi();
         PopulateSettingsUi();
+        ApplyWorkspaceSidebarState(false);
 
         saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         saveTimer.Tick += (_, _) => { saveTimer.Stop(); SaveNow(); };
         automationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         automationTimer.Tick += async (_, _) => { RefreshAutomationCountdowns(); await CheckAutomationsAsync(); };
         automationTimer.Start();
-        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        recoveryTimer.Tick += (_, _) => CaptureRecoverySnapshot();
+        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+        recoveryTimer.Tick += async (_, _) => await CaptureRecoverySnapshotAsync();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
         foreach (var profile in state.Sessions) CreatePane(profile);
@@ -61,6 +71,7 @@ public partial class MainWindow : Window
         ApplyLayout();
         UpdateStatus("Native Windows Terminal renderer ready");
         Closing += WindowClosing;
+        SourceInitialized += (_, _) => InitializeWindowsTerminalImport();
         if (!automationMode) InitializeTrayIcon();
     }
 
@@ -108,6 +119,9 @@ public partial class MainWindow : Window
         automationTimer.Stop();
         recoveryTimer.Stop();
         saveTimer.Stop();
+        windowsTerminalDragMonitor?.Dispose();
+        windowsTerminalDragMonitor = null;
+        StopLanRemoteForShutdown();
         if (!automationMode) CaptureRecoverySnapshot();
         shutdownComplete = true;
         SaveNow();
@@ -143,100 +157,328 @@ public partial class MainWindow : Window
         trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(RestoreFromTray);
     }
 
-    private void CaptureRecoverySnapshot()
+    private void InitializeWindowsTerminalImport()
     {
-        if (automationMode || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
+        if (automationMode || windowsTerminalDragMonitor is not null) return;
         try
         {
-            var previous = SessionRecoveryStore.Load();
-            var snapshot = new SessionRecoverySnapshot();
-            var usedCodexSessionIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var pane in panes.Values)
-            {
-                previous.Sessions.TryGetValue(pane.Profile.Id, out var oldEntry);
-                var transcriptFile = state.Settings.SaveTerminalTranscripts
-                    ? SessionRecoveryStore.SaveTranscript(pane.Profile.Id, pane.GetOutput()) ?? oldEntry?.TranscriptFile
-                    : null;
-                var codex = pane.GetCodexProcessState();
-                var launch = CodexLaunchStore.Load(pane.Profile.Id);
-                if (!codex.IsActive && launch?.IsActive == true && launch.ShellProcessId is > 0)
-                    codex = ProcessTreeInspector.FindCodexProcess(launch.ShellProcessId.Value);
-                var codexIsActive = codex.IsActive || launch?.IsActive == true;
-                var codexMatch = codex.IsActive
-                    ? CodexActivityStore.FindActiveCliSession(codex.ProcessId, codex.StartedUtc, usedCodexSessionIds)
-                    : null;
-                codexMatch ??= launch?.IsActive == true
-                    ? CodexActivityStore.FindActiveCliSessionNearLaunch(launch.StartedUtc, usedCodexSessionIds)
-                    : null;
-                codexMatch ??= launch?.IsActive == true && !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
-                    ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
-                    : null;
-                codexMatch ??= codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
-                var codexSessionId = codexMatch?.SessionId;
-                var codexDirectory = codexMatch?.WorkingDirectory;
-                var codexModel = codexMatch?.Model;
-                var codexSandboxMode = codexMatch?.SandboxMode;
-                var codexApprovalPolicy = codexMatch?.ApprovalPolicy;
-                if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
-                {
-                    codexSessionId = launch.SessionId;
-                    codexDirectory = launch.WorkingDirectory;
-                    codexModel = launch.Model;
-                    codexSandboxMode = launch.SandboxMode;
-                    codexApprovalPolicy = launch.ApprovalPolicy;
-                }
-                if (codexSessionId is null && codexIsActive && launch is null && oldEntry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(oldEntry.CodexSessionId))
-                {
-                    codexSessionId = oldEntry.CodexSessionId;
-                    codexDirectory = oldEntry.WorkingDirectory;
-                    codexModel = oldEntry.CodexModel;
-                    codexSandboxMode = oldEntry.CodexSandboxMode;
-                    codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
-                }
-                if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
-                if (codexSessionId is not null)
-                {
-                    usedCodexSessionIds.Add(codexSessionId);
-                    codexModel = (codexMatch is null ? CodexSessionLocator.FindLatestModel(codexSessionId)?.Model : codexMatch.Model)
-                        ?? codexModel ?? oldEntry?.CodexModel;
-                    var latestPermissions = codexMatch is not null && CodexSessionLocator.IsSafeCodexPermissions(codexMatch.SandboxMode, codexMatch.ApprovalPolicy)
-                        ? new CodexSessionPermissions(codexMatch.SandboxMode!, codexMatch.ApprovalPolicy!, codexMatch.FileModifiedUtc)
-                        : CodexSessionLocator.FindLatestPermissions(codexSessionId);
-                    if (latestPermissions is not null)
-                    {
-                        codexSandboxMode = latestPermissions.SandboxMode;
-                        codexApprovalPolicy = latestPermissions.ApprovalPolicy;
-                    }
-                    else if (!CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy)
-                        && CodexSessionLocator.IsSafeCodexPermissions(oldEntry?.CodexSandboxMode, oldEntry?.CodexApprovalPolicy))
-                    {
-                        codexSandboxMode = oldEntry!.CodexSandboxMode;
-                        codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
-                    }
-                }
-                snapshot.Sessions[pane.Profile.Id] = new SessionRecoveryEntry
-                {
-                    SessionId = pane.Profile.Id,
-                    WorkingDirectory = codexDirectory ?? (codexIsActive && launch is not null ? launch.WorkingDirectory : pane.Profile.WorkingDirectory),
-                    TranscriptFile = transcriptFile,
-                    CodexWasActive = codexIsActive,
-                    CodexSessionId = codexSessionId,
-                    CodexModel = CodexSessionLocator.IsSafeCodexModel(codexModel) ? codexModel : null,
-                    CodexSandboxMode = CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy) ? codexSandboxMode : null,
-                    CodexApprovalPolicy = CodexSessionLocator.IsSafeCodexPermissions(codexSandboxMode, codexApprovalPolicy) ? codexApprovalPolicy : null,
-                    CapturedUtc = DateTime.UtcNow
-                };
-            }
-            SessionRecoveryStore.Save(snapshot);
+            var windowHandle = new WindowInteropHelper(this).Handle;
+            windowsTerminalDragMonitor = new WindowsTerminalDragMonitor(windowHandle, Dispatcher);
+            windowsTerminalDragMonitor.HoverChanged += WindowsTerminalHoverChanged;
+            windowsTerminalDragMonitor.Dropped += WindowsTerminalDropped;
         }
         catch (Exception exception)
         {
+            LogNativeError("Windows Terminal drag monitor", exception);
+            UpdateStatus("Windows Terminal drag import is unavailable");
+        }
+    }
+
+    private void WindowsTerminalHoverChanged(IntPtr sourceWindow, bool isOverTarget, bool isArmed)
+    {
+        if (windowsTerminalImportRunning) return;
+        if (!isOverTarget)
+        {
+            HideWindowsTerminalDropOverlay();
+            return;
+        }
+        if (!windowsTerminalDropVisible)
+        {
+            windowsTerminalDropVisible = true;
+            topmostBeforeWindowsTerminalDrop = Topmost;
+            Topmost = true;
+            TerminalHost.Visibility = Visibility.Hidden;
+            WindowsTerminalDropOverlay.Visibility = Visibility.Visible;
+        }
+        WindowsTerminalDropTitle.Text = isArmed ? "Release to import Windows Terminal" : "Hold to import Windows Terminal";
+        WindowsTerminalDropDetail.Text = isArmed
+            ? "Release the window now. You will review tab and Codex matches before anything closes."
+            : "Keep the window here for a moment, then release it.";
+    }
+
+    private void HideWindowsTerminalDropOverlay()
+    {
+        if (!windowsTerminalDropVisible) return;
+        windowsTerminalDropVisible = false;
+        WindowsTerminalDropOverlay.Visibility = Visibility.Collapsed;
+        Topmost = topmostBeforeWindowsTerminalDrop;
+        TerminalHost.Visibility = EditorOverlay.Visibility == Visibility.Visible ? Visibility.Hidden : Visibility.Visible;
+    }
+
+    private async void WindowsTerminalDropped(IntPtr sourceWindow)
+    {
+        if (windowsTerminalImportRunning) return;
+        windowsTerminalImportRunning = true;
+        HideWindowsTerminalDropOverlay();
+        try
+        {
+            UpdateStatus("Reading Windows Terminal tabs and scrollback…");
+            var capture = await WindowsTerminalImportService.CaptureAsync(sourceWindow);
+            CaptureRecoverySnapshot();
+            var existingCodexIds = SessionRecoveryStore.Load().Sessions.Values
+                .Where(value => CodexSessionLocator.IsSafeCodexId(value.CodexSessionId))
+                .Select(value => value.CodexSessionId!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var profile in state.Sessions)
+            {
+                var marker = CodexLaunchStore.Load(profile.Id);
+                if (CodexSessionLocator.IsSafeCodexId(marker?.SessionId)) existingCodexIds.Add(marker!.SessionId!);
+            }
+            var ownedCodexProcesses = panes.Values.Select(value => value.GetCodexProcessState()).Where(value => value.IsActive).ToList();
+            var candidates = await Task.Run(() =>
+            {
+                foreach (var process in ownedCodexProcesses)
+                {
+                    var match = CodexActivityStore.FindActiveCliSession(process.ProcessId, process.StartedUtc, existingCodexIds);
+                    if (match is not null) existingCodexIds.Add(match.SessionId);
+                }
+                return CodexActivityStore.FindAllActiveCliSessions(existingCodexIds);
+            });
+            var plan = WindowsTerminalImportPlanner.Create(capture, candidates);
+
+            TerminalHost.Visibility = Visibility.Hidden;
+            var dialog = new WindowsTerminalImportDialog(plan) { Owner = this };
+            var accepted = dialog.ShowDialog() == true;
+            TerminalHost.Visibility = EditorOverlay.Visibility == Visibility.Visible ? Visibility.Hidden : Visibility.Visible;
+            if (!accepted)
+            {
+                UpdateStatus("Windows Terminal import cancelled — source window unchanged");
+                return;
+            }
+
+            var staged = new List<(WindowsTerminalImportRow Row, SessionProfile Profile, string? TranscriptFile)>();
+            foreach (var row in plan.Rows)
+            {
+                var selected = row.SelectedChoice?.Session;
+                if (selected is not null && (!CodexSessionLocator.IsSafeCodexId(selected.SessionId)
+                    || !CodexSessionLocator.IsSafeCodexPermissionState(selected.PermissionProfile, selected.SandboxMode, selected.ApprovalPolicy, selected.ApprovalsReviewer)
+                    || !CodexSessionLocator.IsSafeCodexApprovalsReviewer(selected.ApprovalsReviewer)))
+                    throw new InvalidOperationException($"Codex permissions for {row.Title} are not safe to restore.");
+                var directory = selected?.WorkingDirectory ?? row.Tab.WorkingDirectory;
+                if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) directory = DefaultSessionDirectory;
+                var profile = new SessionProfile
+                {
+                    Name = row.Title,
+                    CommandLine = DefaultSessionCommandLine,
+                    WorkingDirectory = directory,
+                    AutoStart = true
+                };
+                var transcriptFile = SessionRecoveryStore.SaveTranscript(profile.Id, row.Tab.Transcript);
+                staged.Add((row, profile, transcriptFile));
+            }
+
+            UpdateStatus("Close the Windows Terminal confirmation, if shown, to finish importing…");
+            if (!WindowsTerminalImportService.RequestClose(sourceWindow)
+                || !await WindowsTerminalImportService.WaitForClosedAsync(sourceWindow, TimeSpan.FromSeconds(45)))
+            {
+                foreach (var item in staged) SessionRecoveryStore.DeleteSession(item.Profile.Id);
+                MessageBox.Show(this, "The source Windows Terminal window stayed open, so nothing was imported. Close-confirmation may have been cancelled or the source may be elevated.", "Import cancelled safely", MessageBoxButton.OK, MessageBoxImage.Information);
+                UpdateStatus("Windows Terminal stayed open — import cancelled safely");
+                return;
+            }
+
+            await Task.Delay(350);
+            var sourceCodexIds = staged.Select(value => value.Row.SelectedChoice?.Session?.SessionId)
+                .Where(CodexSessionLocator.IsSafeCodexId).Cast<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var codexExitDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (sourceCodexIds.Count > 0 && DateTime.UtcNow < codexExitDeadline)
+            {
+                var stillActive = await Task.Run(() => CodexActivityStore.FindAllActiveCliSessions()
+                    .Any(value => sourceCodexIds.Contains(value.SessionId)));
+                if (!stillActive) break;
+                await Task.Delay(250);
+            }
+            var importedCodex = 0;
+            var ready = new List<(SessionProfile Profile, SessionRecoveryEntry Recovery, string Transcript)>();
+            foreach (var item in staged)
+            {
+                var original = item.Row.SelectedChoice?.Session;
+                CodexSessionMatch? exact = null;
+                if (original is not null)
+                {
+                    var latest = await Task.Run(() => CodexSessionLocator.FindSessionById(original.SessionId, requireTopLevelCli: true));
+                    exact = latest is null ? original : latest with
+                    {
+                        Model = latest.Model ?? original.Model,
+                        SandboxMode = latest.SandboxMode ?? original.SandboxMode,
+                        ApprovalPolicy = latest.ApprovalPolicy ?? original.ApprovalPolicy,
+                        PermissionProfile = latest.PermissionProfile ?? original.PermissionProfile,
+                        ApprovalsReviewer = latest.ApprovalsReviewer ?? original.ApprovalsReviewer
+                    };
+                }
+                var recovery = WindowsTerminalImportPlanner.CreateRecoveryEntry(item.Row, item.Profile.Id, item.TranscriptFile, exact);
+                if (original is not null && !recovery.CodexWasActive)
+                    throw new InvalidOperationException($"The exact Codex permission level for {item.Row.Title} could not be restored.");
+                if (recovery.CodexWasActive) importedCodex++;
+                if (!string.IsNullOrWhiteSpace(recovery.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory))
+                    item.Profile.WorkingDirectory = recovery.WorkingDirectory;
+                ready.Add((item.Profile, recovery, item.Row.Tab.Transcript));
+            }
+            foreach (var item in ready)
+            {
+                loadedRecovery.Sessions[item.Profile.Id] = item.Recovery;
+                state.Sessions.Add(item.Profile);
+            }
+            SessionRecoveryStore.Save(loadedRecovery);
+            SaveNow();
+            foreach (var item in ready) CreatePane(item.Profile, item.Transcript);
+            if (ready.FirstOrDefault().Profile is { } firstImported) SelectPane(firstImported.Id, false);
+            ApplyLayout();
+            UpdateStatus($"Imported {staged.Count} Windows Terminal tab{(staged.Count == 1 ? string.Empty : "s")}; resumed {importedCodex} Codex session{(importedCodex == 1 ? string.Empty : "s")} with saved permissions");
+        }
+        catch (Exception exception)
+        {
+            LogNativeError("Windows Terminal import", exception);
+            TerminalHost.Visibility = EditorOverlay.Visibility == Visibility.Visible ? Visibility.Hidden : Visibility.Visible;
+            MessageBox.Show(this, exception.Message, "Windows Terminal import failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            UpdateStatus("Windows Terminal import failed — source was not changed unless its close was already confirmed");
+        }
+        finally
+        {
+            windowsTerminalImportRunning = false;
+        }
+    }
+
+    private static void LogNativeError(string area, Exception exception)
+    {
+        try
+        {
+            Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
+            File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] {area}: {exception}\n");
+        }
+        catch { }
+    }
+
+    private void CaptureRecoverySnapshot()
+    {
+        if (automationMode || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
+        CaptureRecoverySnapshotCore(CollectRecoveryPaneCaptures(), state.Settings.SaveTerminalTranscripts);
+    }
+
+    private async Task CaptureRecoverySnapshotAsync()
+    {
+        if (automationMode || windowsTerminalImportRunning || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
+        if (System.Threading.Interlocked.CompareExchange(ref recoveryCaptureInProgress, 1, 0) != 0) return;
+        try
+        {
+            var captures = CollectRecoveryPaneCaptures();
+            var saveTerminalTranscripts = state.Settings.SaveTerminalTranscripts;
+            await Task.Run(() => CaptureRecoverySnapshotCore(captures, saveTerminalTranscripts));
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref recoveryCaptureInProgress, 0);
+        }
+    }
+
+    private List<RecoveryPaneCapture> CollectRecoveryPaneCaptures() => panes.Values
+        .Select(pane => new RecoveryPaneCapture(pane.Profile.Id, pane.Profile.WorkingDirectory, pane.GetOutput(), pane.GetRootProcessId()))
+        .ToList();
+
+    private void CaptureRecoverySnapshotCore(IReadOnlyList<RecoveryPaneCapture> captures, bool saveTerminalTranscripts)
+    {
+        lock (recoveryCaptureSync)
+        {
             try
             {
-                Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
-                File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] Recovery snapshot: {exception}\n");
+                var previous = SessionRecoveryStore.Load();
+                var snapshot = new SessionRecoverySnapshot();
+                var usedCodexSessionIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var capture in captures)
+                {
+                    previous.Sessions.TryGetValue(capture.SessionId, out var oldEntry);
+                    var transcriptFile = saveTerminalTranscripts
+                        ? SessionRecoveryStore.SaveTranscript(capture.SessionId, capture.Output) ?? oldEntry?.TranscriptFile
+                        : null;
+                    var codex = capture.RootProcessId is int rootProcessId ? ProcessTreeInspector.FindCodexProcess(rootProcessId) : default;
+                    var launch = CodexLaunchStore.Load(capture.SessionId);
+                    if (!codex.IsActive && launch?.IsActive == true && launch.ShellProcessId is > 0)
+                        codex = ProcessTreeInspector.FindCodexProcess(launch.ShellProcessId.Value);
+                    var codexIsActive = codex.IsActive || launch?.IsActive == true;
+                    var codexMatch = codex.IsActive
+                        ? CodexActivityStore.FindActiveCliSession(codex.ProcessId, codex.StartedUtc, usedCodexSessionIds)
+                        : null;
+                    codexMatch ??= launch?.IsActive == true
+                        ? CodexActivityStore.FindActiveCliSessionNearLaunch(launch.StartedUtc, usedCodexSessionIds)
+                        : null;
+                    codexMatch ??= launch?.IsActive == true && !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+                        ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
+                        : null;
+                    codexMatch ??= codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
+                    var codexSessionId = codexMatch?.SessionId;
+                    var codexDirectory = codexMatch?.WorkingDirectory;
+                    var codexModel = codexMatch?.Model;
+                    var codexSandboxMode = codexMatch?.SandboxMode;
+                    var codexApprovalPolicy = codexMatch?.ApprovalPolicy;
+                    var codexPermissionProfile = codexMatch?.PermissionProfile;
+                    var codexApprovalsReviewer = codexMatch?.ApprovalsReviewer;
+                    if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
+                    {
+                        codexSessionId = launch.SessionId;
+                        codexDirectory = launch.WorkingDirectory;
+                        codexModel = launch.Model;
+                        codexSandboxMode = launch.SandboxMode;
+                        codexApprovalPolicy = launch.ApprovalPolicy;
+                        codexPermissionProfile = launch.PermissionProfile;
+                        codexApprovalsReviewer = launch.ApprovalsReviewer;
+                    }
+                    if (codexSessionId is null && codexIsActive && launch is null && oldEntry?.CodexWasActive == true && CodexSessionLocator.IsSafeCodexId(oldEntry.CodexSessionId))
+                    {
+                        codexSessionId = oldEntry.CodexSessionId;
+                        codexDirectory = oldEntry.WorkingDirectory;
+                        codexModel = oldEntry.CodexModel;
+                        codexSandboxMode = oldEntry.CodexSandboxMode;
+                        codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
+                        codexPermissionProfile = oldEntry.CodexPermissionProfile;
+                        codexApprovalsReviewer = oldEntry.CodexApprovalsReviewer;
+                    }
+                    if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
+                    if (codexSessionId is not null)
+                    {
+                        usedCodexSessionIds.Add(codexSessionId);
+                        codexModel = (codexMatch is null ? CodexSessionLocator.FindLatestModel(codexSessionId)?.Model : codexMatch.Model)
+                            ?? codexModel ?? oldEntry?.CodexModel;
+                        var latestPermissions = codexMatch is not null && CodexSessionLocator.IsSafeCodexPermissionState(codexMatch.PermissionProfile, codexMatch.SandboxMode, codexMatch.ApprovalPolicy, codexMatch.ApprovalsReviewer)
+                            ? new CodexSessionPermissions(codexMatch.SandboxMode, codexMatch.ApprovalPolicy!, codexMatch.FileModifiedUtc, codexMatch.PermissionProfile, codexMatch.ApprovalsReviewer)
+                            : CodexSessionLocator.FindLatestPermissions(codexSessionId);
+                        if (latestPermissions is not null)
+                        {
+                            codexSandboxMode = latestPermissions.SandboxMode;
+                            codexApprovalPolicy = latestPermissions.ApprovalPolicy;
+                            codexPermissionProfile = latestPermissions.PermissionProfile;
+                            codexApprovalsReviewer = latestPermissions.ApprovalsReviewer;
+                        }
+                        else if (!CodexSessionLocator.IsSafeCodexPermissionState(codexPermissionProfile, codexSandboxMode, codexApprovalPolicy, codexApprovalsReviewer)
+                            && CodexSessionLocator.IsSafeCodexPermissionState(oldEntry?.CodexPermissionProfile, oldEntry?.CodexSandboxMode, oldEntry?.CodexApprovalPolicy, oldEntry?.CodexApprovalsReviewer))
+                        {
+                            codexSandboxMode = oldEntry!.CodexSandboxMode;
+                            codexApprovalPolicy = oldEntry.CodexApprovalPolicy;
+                            codexPermissionProfile = oldEntry.CodexPermissionProfile;
+                            codexApprovalsReviewer = oldEntry.CodexApprovalsReviewer;
+                        }
+                    }
+                    var hasSafePermissionState = CodexSessionLocator.IsSafeCodexPermissionState(codexPermissionProfile, codexSandboxMode, codexApprovalPolicy, codexApprovalsReviewer);
+                    snapshot.Sessions[capture.SessionId] = new SessionRecoveryEntry
+                    {
+                        SessionId = capture.SessionId,
+                        WorkingDirectory = codexDirectory ?? (codexIsActive && launch is not null ? launch.WorkingDirectory : capture.WorkingDirectory),
+                        TranscriptFile = transcriptFile,
+                        CodexWasActive = codexIsActive,
+                        CodexSessionId = codexSessionId,
+                        CodexModel = CodexSessionLocator.IsSafeCodexModel(codexModel) ? codexModel : null,
+                        CodexSandboxMode = hasSafePermissionState && CodexSessionLocator.IsSafeCodexSandboxMode(codexSandboxMode) ? codexSandboxMode : null,
+                        CodexApprovalPolicy = hasSafePermissionState ? codexApprovalPolicy : null,
+                        CodexPermissionProfile = hasSafePermissionState && CodexSessionLocator.IsSafeCodexPermissionProfile(codexPermissionProfile) ? codexPermissionProfile : null,
+                        CodexApprovalsReviewer = hasSafePermissionState && CodexSessionLocator.IsSafeCodexApprovalsReviewer(codexApprovalsReviewer) ? codexApprovalsReviewer : null,
+                        CapturedUtc = DateTime.UtcNow
+                    };
+                }
+                SessionRecoveryStore.Save(snapshot);
             }
-            catch { }
+            catch (Exception exception)
+            {
+                LogNativeError("Recovery snapshot", exception);
+            }
         }
     }
 
@@ -258,10 +500,14 @@ public partial class MainWindow : Window
                 }
                 var latestPermissions = CodexSessionLocator.FindLatestPermissions(entry.CodexSessionId);
                 if (latestPermissions is not null && (!string.Equals(entry.CodexSandboxMode, latestPermissions.SandboxMode, StringComparison.Ordinal)
-                    || !string.Equals(entry.CodexApprovalPolicy, latestPermissions.ApprovalPolicy, StringComparison.Ordinal)))
+                    || !string.Equals(entry.CodexApprovalPolicy, latestPermissions.ApprovalPolicy, StringComparison.Ordinal)
+                    || !string.Equals(entry.CodexPermissionProfile, latestPermissions.PermissionProfile, StringComparison.Ordinal)
+                    || !string.Equals(entry.CodexApprovalsReviewer, latestPermissions.ApprovalsReviewer, StringComparison.Ordinal)))
                 {
                     entry.CodexSandboxMode = latestPermissions.SandboxMode;
                     entry.CodexApprovalPolicy = latestPermissions.ApprovalPolicy;
+                    entry.CodexPermissionProfile = latestPermissions.PermissionProfile;
+                    entry.CodexApprovalsReviewer = latestPermissions.ApprovalsReviewer;
                     changed = true;
                 }
             }
@@ -288,16 +534,22 @@ public partial class MainWindow : Window
             {
                 entry.CodexSandboxMode = permissions.SandboxMode;
                 entry.CodexApprovalPolicy = permissions.ApprovalPolicy;
+                entry.CodexPermissionProfile = permissions.PermissionProfile;
+                entry.CodexApprovalsReviewer = permissions.ApprovalsReviewer;
             }
-            else if (CodexSessionLocator.IsSafeCodexPermissions(match?.SandboxMode, match?.ApprovalPolicy))
+            else if (CodexSessionLocator.IsSafeCodexPermissionState(match?.PermissionProfile, match?.SandboxMode, match?.ApprovalPolicy, match?.ApprovalsReviewer))
             {
                 entry.CodexSandboxMode = match!.SandboxMode;
                 entry.CodexApprovalPolicy = match.ApprovalPolicy;
+                entry.CodexPermissionProfile = match.PermissionProfile;
+                entry.CodexApprovalsReviewer = match.ApprovalsReviewer;
             }
-            else if (CodexSessionLocator.IsSafeCodexPermissions(launch.SandboxMode, launch.ApprovalPolicy))
+            else if (CodexSessionLocator.IsSafeCodexPermissionState(launch.PermissionProfile, launch.SandboxMode, launch.ApprovalPolicy, launch.ApprovalsReviewer))
             {
                 entry.CodexSandboxMode = launch.SandboxMode;
                 entry.CodexApprovalPolicy = launch.ApprovalPolicy;
+                entry.CodexPermissionProfile = launch.PermissionProfile;
+                entry.CodexApprovalsReviewer = launch.ApprovalsReviewer;
             }
             entry.WorkingDirectory = match?.WorkingDirectory ?? launch.WorkingDirectory;
             entry.CapturedUtc = DateTime.UtcNow;
@@ -349,10 +601,10 @@ public partial class MainWindow : Window
         return accepted == targets.Count;
     }
 
-    private void CreatePane(SessionProfile profile)
+    private void CreatePane(SessionProfile profile, string? recoveredOutputOverride = null)
     {
         loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery);
-        var previousOutput = state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty;
+        var previousOutput = recoveredOutputOverride ?? (state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty);
         var pane = new TerminalPane(profile, EffectiveAppearance(), recovery, previousOutput,
             () => state.Snippets, ScheduleSave, SendCommandToAllAsync,
             () => state.Settings.SendToAllModifierEnabled, () => SendToAllModifier);
@@ -374,6 +626,27 @@ public partial class MainWindow : Window
         if (state.Layout == "Focus") ApplyLayout();
         if (focus) pane.Focus();
         ScheduleSave();
+    }
+
+    private void ApplyWorkspaceSidebarState(bool persist)
+    {
+        var expanded = state.WorkspaceSidebarExpanded;
+        WorkspaceSidebar.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceSidebarColumn.Width = new GridLength(expanded ? WorkspaceSidebarWidth : 0);
+        WorkspaceSidebarToggle.Content = expanded ? "‹" : "›";
+        WorkspaceSidebarToggle.ToolTip = expanded ? "Collapse workspace sidebar" : "Expand workspace sidebar";
+        TerminalHost.InvalidateMeasure();
+        TerminalHost.InvalidateArrange();
+        Dispatcher.BeginInvoke(() => TerminalHost.UpdateLayout(), DispatcherPriority.Render);
+        if (!persist) return;
+        ScheduleSave();
+        UpdateStatus(expanded ? "Workspace sidebar expanded" : "Workspace sidebar collapsed — terminals resized");
+    }
+
+    private void SetWorkspaceSidebarExpanded(bool expanded, bool persist)
+    {
+        state.WorkspaceSidebarExpanded = expanded;
+        ApplyWorkspaceSidebarState(persist);
     }
 
     private void ApplyLayout()
@@ -679,6 +952,24 @@ public partial class MainWindow : Window
         if (openTerminalRight > minimizeLeft + 1)
             throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
         Render(root, "ui-main.png");
+        WindowsTerminalHoverChanged(IntPtr.Zero, true, true);
+        await Settle();
+        Render(root, "ui-windows-terminal-drop.png");
+        HideWindowsTerminalDropOverlay();
+        await Settle();
+        var importSnapshotDirectory = Path.GetFullPath(outputDirectory);
+        var importSnapshotSession = new CodexSessionMatch("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", importSnapshotDirectory, DateTime.UtcNow, TimeSpan.Zero, DateTime.UtcNow,
+            "gpt-5.6-sol", "workspace-write", "on-request", ":workspace", "user");
+        var importSnapshotPlan = WindowsTerminalImportPlanner.Create(new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [
+            WindowsTerminalImportPlanner.CreateTabCapture(0, "PowerShellPlus", $"OpenAI Codex (fixture){Environment.NewLine}directory: {importSnapshotDirectory}"),
+            WindowsTerminalImportPlanner.CreateTabCapture(1, "Windows PowerShell", $"PS {Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}>")
+        ]), [importSnapshotSession]);
+        var importDialog = new WindowsTerminalImportDialog(importSnapshotPlan) { Owner = this, ShowActivated = false };
+        importDialog.Show();
+        await Settle();
+        Render((FrameworkElement)importDialog.Content, "ui-windows-terminal-import.png");
+        importDialog.Close();
+        await Settle();
         if (panes.Values.FirstOrDefault() is { } recoveryPane)
         {
             recoveryPane.SetPreviousOutputForTest("PS C:\\Projects\\PowerShellPlus> codex\nPrevious session output remains available after a real app or Windows restart.\nPS C:\\Projects\\PowerShellPlus>");
@@ -757,6 +1048,39 @@ public partial class MainWindow : Window
         return success;
     }
 
+    public async Task<bool> RunWindowsTerminalCaptureSmokeTestAsync(string reportPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+        try
+        {
+            await Task.Delay(500);
+            var windowHandle = WindowsTerminalImportService.FindWindowsTerminalWindows().FirstOrDefault();
+            if (windowHandle == IntPtr.Zero)
+            {
+                File.WriteAllText(reportPath, "FAIL No running Windows Terminal window was available for the non-destructive capture smoke test.");
+                return false;
+            }
+            var capture = await WindowsTerminalImportService.CaptureAsync(windowHandle);
+            var candidates = await Task.Run(() => CodexActivityStore.FindAllActiveCliSessions());
+            var plan = WindowsTerminalImportPlanner.Create(capture, candidates);
+            var tabNamesCaptured = capture.Tabs.Count > 0 && capture.Tabs.All(value => !string.IsNullOrWhiteSpace(value.Title));
+            var rowsCreatedPerTab = plan.Rows.Count == capture.Tabs.Count;
+            var transcriptCaptured = capture.Tabs.Any(value => !string.IsNullOrWhiteSpace(value.Transcript));
+            var codexDetected = capture.Tabs.Any(value => value.LooksLikeCodex);
+            var exactCodexPermissionsAvailable = !codexDetected || candidates.Any(value => CodexSessionLocator.IsSafeCodexPermissionState(value.PermissionProfile, value.SandboxMode, value.ApprovalPolicy, value.ApprovalsReviewer)
+                && CodexSessionLocator.IsSafeCodexApprovalsReviewer(value.ApprovalsReviewer));
+            var codexThreadAutoMatched = !codexDetected || plan.Rows.Any(value => value.Tab.LooksLikeCodex && value.SelectedChoice?.Session is not null);
+            var success = tabNamesCaptured && rowsCreatedPerTab && transcriptCaptured && exactCodexPermissionsAvailable && codexThreadAutoMatched;
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Windows Terminal UI Automation exposed tab names and terminal scrollback without closing the source window.\nWindowTitle={capture.WindowTitle}\nTabs={capture.Tabs.Count}\nTabNamesCaptured={tabNamesCaptured}\nRowsCreatedPerTab={rowsCreatedPerTab}\nTranscriptCaptured={transcriptCaptured}\nActiveCodexCandidates={candidates.Count}\nExactCodexPermissionsAvailable={exactCodexPermissionsAvailable}\nCodexThreadAutoMatched={codexThreadAutoMatched}\n{string.Join(Environment.NewLine, capture.Tabs.Select(value => $"Tab[{value.Index}]={value.Title}; Characters={value.Transcript.Length}; Directory={value.WorkingDirectory ?? "unknown"}; Codex={value.LooksLikeCodex}"))}\n{string.Join(Environment.NewLine, candidates.Select(value => $"Codex={value.SessionId}; Directory={value.WorkingDirectory}; Model={value.Model}; PermissionProfile={value.PermissionProfile}; Sandbox={value.SandboxMode}; Approval={value.ApprovalPolicy}; Reviewer={value.ApprovalsReviewer}"))}");
+            return success;
+        }
+        catch (Exception exception)
+        {
+            File.WriteAllText(reportPath, $"FAIL Windows Terminal capture threw an exception.\n{exception}");
+            return false;
+        }
+    }
+
     public async Task<bool> RunCodexSmokeTestAsync(string reportPath)
     {
         await Task.Delay(1700); var pane = activePane ?? panes.Values.FirstOrDefault();
@@ -812,7 +1136,10 @@ public partial class MainWindow : Window
         const string savedModel = "gpt-5.3-codex-spark";
         const string savedSandboxMode = "danger-full-access";
         const string savedApprovalPolicy = "never";
+        const string savedPermissionProfile = ":danger-full-access";
+        const string savedApprovalsReviewer = "user";
         var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy }));
+        var profilePermissionScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy, CodexPermissionProfile = savedPermissionProfile, CodexApprovalsReviewer = savedApprovalsReviewer }));
         var pickerScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true }));
         var unsafeModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = "gpt'; Write-Output unsafe; #" }));
         var unsafePermissionsScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexSandboxMode = "danger-full-access'; Write-Output unsafe; #", CodexApprovalPolicy = savedApprovalPolicy }));
@@ -820,6 +1147,10 @@ public partial class MainWindow : Window
         var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
         var codexResumesSavedModel = codexScript.Contains($"--model '{savedModel}'", StringComparison.Ordinal);
         var codexResumesSavedPermissions = codexScript.Contains($"--sandbox '{savedSandboxMode}' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal);
+        var profilePermissionResumeStart = profilePermissionScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
+        var profilePermissionResumeCommand = profilePermissionResumeStart >= 0 ? profilePermissionScript[profilePermissionResumeStart..] : profilePermissionScript;
+        var codexResumesSavedPermissionProfile = profilePermissionResumeCommand.Contains($"--config 'default_permissions=\"{savedPermissionProfile}\"' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
+            && !profilePermissionResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase);
         var unsafeModelRejected = !unsafeModelScript.Contains("codex resume '11111111-2222-3333-4444-555555555555' --model", StringComparison.OrdinalIgnoreCase)
             && !unsafeModelScript.Contains("Write-Output unsafe", StringComparison.Ordinal);
         var unsafeResumeStart = unsafePermissionsScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
@@ -838,7 +1169,7 @@ public partial class MainWindow : Window
         var fixture = new { timestamp = fixtureStarted.ToString("O"), type = "session_meta", payload = new { session_id = fixtureId, id = Guid.NewGuid().ToString(), timestamp = fixtureStarted.ToString("O"), cwd = actualCodexDirectory } };
         var earlierTurn = new { timestamp = fixtureStarted.AddSeconds(1).ToString("O"), type = "turn_context", payload = new { model = "gpt-5.2-codex", approval_policy = "on-request", sandbox_policy = new { type = "workspace-write", network_access = false } } };
         var modelChange = new { timestamp = fixtureStarted.AddSeconds(2).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = savedModel } } };
-        var permissionsChange = new { timestamp = fixtureStarted.AddSeconds(3).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { active_permission_profile = new { id = ":danger-full-access" }, approval_policy = savedApprovalPolicy } } };
+        var permissionsChange = new { timestamp = fixtureStarted.AddSeconds(3).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { active_permission_profile = new { id = ":danger-full-access" }, approval_policy = savedApprovalPolicy, approvals_reviewer = savedApprovalsReviewer } } };
         var unknownPermissionsChange = new { timestamp = fixtureStarted.AddSeconds(4).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { active_permission_profile = new { id = ":unknown-profile" }, approval_policy = savedApprovalPolicy } } };
         var unsafeModelChange = new { timestamp = fixtureStarted.AddSeconds(5).ToString("O"), type = "event_msg", payload = new { type = "thread_settings_applied", thread_settings = new { model = "gpt'; Write-Output unsafe; #" } } };
         File.WriteAllLines(Path.Combine(fixtureRoot, "rollout-test.jsonl"), [
@@ -855,7 +1186,10 @@ public partial class MainWindow : Window
         var latestModelMapped = mappedSession?.Model == savedModel && CodexSessionLocator.FindLatestModel(fixtureId, fixtureRoot)?.Model == savedModel;
         var latestPermissions = CodexSessionLocator.FindLatestPermissions(fixtureId, fixtureRoot);
         var latestPermissionsMapped = mappedSession?.SandboxMode == savedSandboxMode && mappedSession.ApprovalPolicy == savedApprovalPolicy
-            && latestPermissions?.SandboxMode == savedSandboxMode && latestPermissions.ApprovalPolicy == savedApprovalPolicy;
+            && mappedSession.PermissionProfile == savedPermissionProfile
+            && mappedSession.ApprovalsReviewer == savedApprovalsReviewer
+            && latestPermissions?.SandboxMode == savedSandboxMode && latestPermissions.ApprovalPolicy == savedApprovalPolicy
+            && latestPermissions.PermissionProfile == savedPermissionProfile && latestPermissions.ApprovalsReviewer == savedApprovalsReviewer;
         var partialRolloutIgnored = codexSessionMapped && latestModelMapped && latestPermissionsMapped;
         var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
@@ -938,7 +1272,8 @@ public partial class MainWindow : Window
         if (mappedSession is not null) CodexLaunchStore.Confirm(launchMarker, mappedSession, launchRoot);
         var confirmedLaunch = CodexLaunchStore.Load(profile.Id, launchRoot);
         var exactLaunchBindingPersisted = confirmedLaunch?.IsActive == true && confirmedLaunch.ShellProcessId == fixtureProcessId && confirmedLaunch.SessionId == fixtureId && confirmedLaunch.WorkingDirectory == actualCodexDirectory && confirmedLaunch.Model == savedModel
-            && confirmedLaunch.SandboxMode == savedSandboxMode && confirmedLaunch.ApprovalPolicy == savedApprovalPolicy;
+            && confirmedLaunch.SandboxMode == savedSandboxMode && confirmedLaunch.ApprovalPolicy == savedApprovalPolicy && confirmedLaunch.PermissionProfile == savedPermissionProfile
+            && confirmedLaunch.ApprovalsReviewer == savedApprovalsReviewer;
         if (confirmedLaunch is not null)
         {
             confirmedLaunch.EndedUtc = DateTime.UtcNow;
@@ -952,17 +1287,21 @@ public partial class MainWindow : Window
             && wrapperScript.Contains("Model", StringComparison.Ordinal)
             && wrapperScript.Contains("SandboxMode", StringComparison.Ordinal)
             && wrapperScript.Contains("ApprovalPolicy", StringComparison.Ordinal)
+            && wrapperScript.Contains("PermissionProfile", StringComparison.Ordinal)
+            && wrapperScript.Contains("ApprovalsReviewer", StringComparison.Ordinal)
             && wrapperScript.Contains("EndedUtc", StringComparison.Ordinal);
         try { Directory.Delete(launchRoot, true); } catch { }
         var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
         var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
         var recoveryFixture = new SessionRecoverySnapshot();
-        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId, CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy };
+        recoveryFixture.Sessions["test-session"] = new SessionRecoveryEntry { SessionId = "test-session", TranscriptFile = transcriptFile, CodexWasActive = true, CodexSessionId = fixtureId, CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy, CodexPermissionProfile = savedPermissionProfile, CodexApprovalsReviewer = savedApprovalsReviewer };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
         var recoveryRoundTrip = reloadedFixture.Sessions.TryGetValue("test-session", out var reloadedEntry)
             && reloadedEntry.CodexWasActive && reloadedEntry.CodexSessionId == fixtureId && reloadedEntry.CodexModel == savedModel
             && reloadedEntry.CodexSandboxMode == savedSandboxMode && reloadedEntry.CodexApprovalPolicy == savedApprovalPolicy
+            && reloadedEntry.CodexPermissionProfile == savedPermissionProfile
+            && reloadedEntry.CodexApprovalsReviewer == savedApprovalsReviewer
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -970,8 +1309,41 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 5 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 7 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
+
+        var importedCodexTranscript = $"OpenAI Codex (fixture){Environment.NewLine}model: {savedModel}{Environment.NewLine}directory: {actualCodexDirectory}{Environment.NewLine}";
+        var importedCodexTab = WindowsTerminalImportPlanner.CreateTabCapture(0, "⠧ PowerShellPlus", importedCodexTranscript);
+        var importedPowerShellTab = WindowsTerminalImportPlanner.CreateTabCapture(1, "Windows PowerShell", $"PS {profile.WorkingDirectory}>");
+        var importedCandidate = new CodexSessionMatch(fixtureId, actualCodexDirectory, fixtureStarted, TimeSpan.Zero, fixtureStarted, savedModel, savedSandboxMode, savedApprovalPolicy, savedPermissionProfile, savedApprovalsReviewer);
+        var importedWindow = new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [importedCodexTab, importedPowerShellTab]);
+        var importedPlan = WindowsTerminalImportPlanner.Create(importedWindow, [importedCandidate]);
+        var importPreservesStableTabNames = importedPlan.Rows[0].Title == "PowerShellPlus" && importedPlan.Rows[1].Title == "Windows PowerShell";
+        var importExtractsWorkingDirectories = string.Equals(importedPlan.Rows[0].Tab.WorkingDirectory, actualCodexDirectory, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(importedPlan.Rows[1].Tab.WorkingDirectory, profile.WorkingDirectory, StringComparison.OrdinalIgnoreCase);
+        var importAutoMatchesExactCodexThread = importedPlan.Rows[0].SelectedChoice?.Session?.SessionId == fixtureId
+            && importedPlan.Rows[1].SelectedChoice?.Session is null;
+        var importedRecovery = WindowsTerminalImportPlanner.CreateRecoveryEntry(importedPlan.Rows[0], "imported-session", "imported-session.txt");
+        var importCarriesExactCodexPermissions = importedRecovery.CodexWasActive && importedRecovery.CodexSessionId == fixtureId
+            && importedRecovery.CodexModel == savedModel && importedRecovery.CodexSandboxMode == savedSandboxMode
+            && importedRecovery.CodexApprovalPolicy == savedApprovalPolicy && importedRecovery.CodexPermissionProfile == savedPermissionProfile
+            && importedRecovery.CodexApprovalsReviewer == savedApprovalsReviewer;
+        var importedResumeScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, importedRecovery));
+        var importedResumeStart = importedResumeScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
+        var importedResumeCommand = importedResumeStart >= 0 ? importedResumeScript[importedResumeStart..] : importedResumeScript;
+        var importResumeCommandIsExact = importedResumeCommand.Contains($"codex resume '{fixtureId}' --model '{savedModel}' --config 'default_permissions=\"{savedPermissionProfile}\"' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
+            && !importedResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase);
+        var secondCandidate = importedCandidate with { SessionId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", FileModifiedUtc = fixtureStarted.AddSeconds(1) };
+        var nestedCodexDirectory = Path.Combine(actualCodexDirectory, "src", "feature");
+        var descendantImport = WindowsTerminalImportPlanner.Create(new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [
+            WindowsTerminalImportPlanner.CreateTabCapture(0, "Nested Codex", $"OpenAI Codex (fixture){Environment.NewLine}directory: {nestedCodexDirectory}")
+        ]), [importedCandidate]);
+        var descendantDirectoryMatchesSessionRoot = descendantImport.Rows[0].SelectedChoice?.Session?.SessionId == fixtureId;
+        var ambiguousImport = WindowsTerminalImportPlanner.Create(new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [
+            WindowsTerminalImportPlanner.CreateTabCapture(0, "First Codex", importedCodexTranscript),
+            WindowsTerminalImportPlanner.CreateTabCapture(1, "Second Codex", importedCodexTranscript)
+        ]), [importedCandidate, secondCandidate]);
+        var ambiguousImportRequiresChoice = ambiguousImport.Rows.All(value => value.SelectedChoice?.Session is null);
 
         HideToTray();
         await Task.Delay(300);
@@ -982,9 +1354,9 @@ public partial class MainWindow : Window
         var restored = IsVisible;
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
-        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded;
+        var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex with its exact thread, saved model, and saved permission level.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore and recovery commands resumed Codex with its exact thread, saved model, and saved permission level.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}");
         return success;
     }
 
@@ -993,6 +1365,7 @@ public partial class MainWindow : Window
         var originalLayout = state.Layout;
         var originalSendAllEnabled = state.Settings.SendToAllModifierEnabled;
         var originalSendAllModifier = state.Settings.SendToAllModifier;
+        var originalWorkspaceSidebarExpanded = state.WorkspaceSidebarExpanded;
         var added = new List<SessionProfile>();
         AutomationRule? countdownRefreshFixture = null;
         CommandSnippet? quickAccessFixture = null;
@@ -1010,9 +1383,24 @@ public partial class MainWindow : Window
             state.Snippets.Add(quickAccessFixture);
             SetLayout("Grid");
             await Task.Delay(2600);
+            SetWorkspaceSidebarExpanded(true, false);
+            await Dispatcher.Yield(DispatcherPriority.Render);
             var originalWindowWidth = Width;
             var root = (FrameworkElement)Content;
             root.UpdateLayout();
+            var terminalWidthWithSidebar = TerminalHost.ActualWidth;
+            SetWorkspaceSidebarExpanded(false, false);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            root.UpdateLayout();
+            var sidebarCollapses = WorkspaceSidebar.Visibility == Visibility.Collapsed && WorkspaceSidebarColumn.ActualWidth == 0
+                && TerminalHost.ActualWidth >= terminalWidthWithSidebar + WorkspaceSidebarWidth - 2;
+            WorkspaceStore.Save(state);
+            var sidebarStatePersists = !WorkspaceStore.Load(terminalProfile).WorkspaceSidebarExpanded;
+            SetWorkspaceSidebarExpanded(true, false);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            root.UpdateLayout();
+            var sidebarExpands = WorkspaceSidebar.Visibility == Visibility.Visible && Math.Abs(WorkspaceSidebarColumn.ActualWidth - WorkspaceSidebarWidth) <= 1
+                && TerminalHost.ActualWidth <= terminalWidthWithSidebar + 2;
             var initialToolbarCenter = TerminalToolbar.TranslatePoint(new Point(TerminalToolbar.ActualWidth / 2, 0), root).X;
             var initiallyCentered = Math.Abs(initialToolbarCenter - root.ActualWidth / 2) <= 1;
             Width = Math.Max(MinWidth, ActualWidth - 260);
@@ -1031,6 +1419,13 @@ public partial class MainWindow : Window
             var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
                 && ReferenceEquals(SessionList.SelectedItem, activationTarget.Profile);
             var terminalSurfaceTakesKeyboardFocus = activationTarget.HasNativeKeyboardFocus();
+            activationTarget.SetCommandInputForTest(new string('W', 900));
+            activationTarget.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            activationTarget.UpdateLayout();
+            var commandInputAutoGrows = activationTarget.CommandInputAutoGrowsForTest && activationTarget.CommandInputHeightForTest > 30;
+            activationTarget.SetCommandInputForTest(string.Empty);
+            var cursorTransformConfigured = activationTarget.ForceCursorStyleForTest("\u001b[3 q") == "\u001b[5 q";
             var windowIconLoaded = Icon is not null;
             var executableIconEmbedded = false;
             try
@@ -1049,6 +1444,25 @@ public partial class MainWindow : Window
                 await Task.Delay(180);
                 outputReady = panes.Values.Select((pane, index) => pane.GetOutput().Contains($"NATIVE_PANE_{index + 1}_READY", StringComparison.Ordinal)).All(value => value);
             } while (!outputReady && DateTime.UtcNow < deadline);
+
+            var textPasteAccepted = activationTarget.PasteTextForTest("Write-Output ('TEXT_PASTE_' + (6 * 7))");
+            activationTarget.SubmitTerminalInputForTest();
+            var textPasteDeadline = DateTime.UtcNow.AddSeconds(6);
+            while (DateTime.UtcNow < textPasteDeadline && !activationTarget.GetOutput().Contains("TEXT_PASTE_42", StringComparison.Ordinal)) await Task.Delay(100);
+            var textPasteWorks = textPasteAccepted && activationTarget.GetOutput().Contains("TEXT_PASTE_42", StringComparison.Ordinal)
+                && TerminalPane.FormatClipboardTextForTest("1281660770492485763") == "\u001b[200~1281660770492485763\u001b[201~";
+            activationTarget.EnableRemoteOutputCapture();
+            var cursorSequenceAccepted = await activationTarget.SendCommandAsync("[Console]::Write(([char]27).ToString() + '[3 q'); Write-Output 'CURSOR_FILTER_READY'");
+            var cursorDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < cursorDeadline && !activationTarget.GetOutput().Contains("CURSOR_FILTER_READY", StringComparison.Ordinal)) await Task.Delay(100);
+            var rawCursorOutput = activationTarget.GetRawOutputForTest();
+            var lastBarCursor = rawCursorOutput.LastIndexOf("\u001b[5 q", StringComparison.Ordinal);
+            var lastUnderlineCursor = rawCursorOutput.LastIndexOf("\u001b[3 q", StringComparison.Ordinal);
+            var cursorCommandCompleted = activationTarget.GetOutput().Contains("CURSOR_FILTER_READY", StringComparison.Ordinal);
+            // ConPTY may consume DECSCUSR as terminal state instead of echoing it
+            // into the passive output log, so gate the deterministic interceptor
+            // transform plus a completed live command rather than log presence.
+            var cursorBarEnforced = cursorTransformConfigured && cursorSequenceAccepted && cursorCommandCompleted;
 
             activationTarget.SetCommandBarExpandedForTest(false);
             var commandBarCollapses = !activationTarget.CommandBarExpandedForTest;
@@ -1085,6 +1499,9 @@ public partial class MainWindow : Window
             var queueAdvances = activationTarget.QueuedCommandCountForTest == 1 && activationTarget.CommandInputTextForTest.Contains("QUEUE_SECOND", StringComparison.Ordinal);
             var secondQueuedCommandRuns = await activationTarget.RunCommandForTestAsync();
             var queueDrains = activationTarget.QueuedCommandCountForTest == 0 && activationTarget.CommandInputTextForTest.Length == 0;
+            var ctrlEnterQueues = await activationTarget.QueueWithCtrlEnterForTestAsync("Write-Output 'CTRL_ENTER_QUEUE'");
+            var queueButtonOpensQueue = activationTarget.ClickQueueButtonForTest() == 1;
+            activationTarget.ClearQueuedCommandsForTest();
             var quickAccessFiltersCommands = activationTarget.QuickAccessCommandCountForTest == state.Snippets.Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
             var queueOutputDeadline = DateTime.UtcNow.AddSeconds(8);
             while (DateTime.UtcNow < queueOutputDeadline && (!activationTarget.GetOutput().Contains("QUEUE_NOW", StringComparison.Ordinal)
@@ -1104,11 +1521,11 @@ public partial class MainWindow : Window
             state.Settings.SendToAllModifierEnabled = false;
             var modifierCanBeDisabled = !activationTarget.SendToAllActiveForTest(ModifierKeys.Shift);
             state.Settings.SendToAllModifierEnabled = true;
-            state.Settings.SendToAllModifier = "Ctrl";
-            var modifierCanBeRemapped = activationTarget.SendToAllActiveForTest(ModifierKeys.Control)
+            state.Settings.SendToAllModifier = "Alt";
+            var modifierCanBeRemapped = activationTarget.SendToAllActiveForTest(ModifierKeys.Alt)
                 && !activationTarget.SendToAllActiveForTest(ModifierKeys.Shift);
             WorkspaceStore.Save(state);
-            var sendAllSettingsPersist = WorkspaceStore.Load(terminalProfile).Settings is { SendToAllModifierEnabled: true, SendToAllModifier: "Ctrl" };
+            var sendAllSettingsPersist = WorkspaceStore.Load(terminalProfile).Settings is { SendToAllModifierEnabled: true, SendToAllModifier: "Alt" };
             state.Settings.SendToAllModifier = "Shift";
             activationTarget.SetCommandInputForTest("Write-Output 'SEND_ALL_READY'");
             var allCommandAccepted = await activationTarget.RunCommandForTestAsync(true);
@@ -1147,11 +1564,14 @@ public partial class MainWindow : Window
             var paneCommandSystem = paneCommandInputTakesFocus && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
+                && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && textPasteWorks && cursorBarEnforced
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes;
             var titleLayoutControlsCentered = initiallyCentered && centeredAfterResize;
-            var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded && rows && columns && focus && grid && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
+            var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && sidebarCollapses && sidebarExpands && sidebarStatePersists
+                && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
+                && rows && columns && focus && grid && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted pane-local command input and queues, modifier-routed commands to all panes, resized in every layout, and preserved scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive pane-local input, queues, text paste, cursor enforcement, sidebar resizing, every layout, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             return success;
         }
         finally
@@ -1160,6 +1580,8 @@ public partial class MainWindow : Window
             if (quickAccessFixture is not null) state.Snippets.Remove(quickAccessFixture);
             state.Settings.SendToAllModifierEnabled = originalSendAllEnabled;
             state.Settings.SendToAllModifier = originalSendAllModifier;
+            state.WorkspaceSidebarExpanded = originalWorkspaceSidebarExpanded;
+            ApplyWorkspaceSidebarState(false);
             foreach (var profile in added) { panes[profile.Id].Stop(); TerminalHost.Children.Remove(panes[profile.Id]); panes.Remove(profile.Id); state.Sessions.Remove(profile); }
             state.Layout = originalLayout; activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout();
         }
@@ -1172,6 +1594,12 @@ public partial class MainWindow : Window
         CommandsRail.Tag = panel == CommandsPanel ? "Active" : null;
         AutomationRail.Tag = panel == AutomationPanel ? "Active" : null;
         SettingsRail.Tag = panel == SettingsPanel ? "Active" : null;
+    }
+
+    private void WorkspaceSidebarToggleClick(object sender, RoutedEventArgs e)
+    {
+        SetWorkspaceSidebarExpanded(!state.WorkspaceSidebarExpanded, true);
+        e.Handled = true;
     }
     private void TitleBarMouseDown(object sender, MouseButtonEventArgs e) { if (e.ClickCount == 2) WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; else DragMove(); }
     private void MinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -1327,7 +1755,7 @@ public partial class MainWindow : Window
         SettingsRestoreAfterRestart.IsChecked = settings.RestoreSessionsAfterRestart;
         SettingsSaveTranscripts.IsChecked = settings.SaveTerminalTranscripts;
         SettingsSendAllModifierEnabled.IsChecked = settings.SendToAllModifierEnabled;
-        SettingsSendAllModifier.SelectedIndex = settings.SendToAllModifier switch { "Ctrl" => 1, "Alt" => 2, _ => 0 };
+        SettingsSendAllModifier.SelectedIndex = settings.SendToAllModifier == "Alt" ? 1 : 0;
         SettingsSendAllModifier.IsEnabled = settings.SendToAllModifierEnabled;
         settingsUiReady = true;
     }
@@ -1407,7 +1835,7 @@ public partial class MainWindow : Window
     {
         if (!settingsUiReady) return;
         state.Settings.SendToAllModifierEnabled = SettingsSendAllModifierEnabled.IsChecked == true;
-        state.Settings.SendToAllModifier = SettingsSendAllModifier.SelectedIndex switch { 1 => "Ctrl", 2 => "Alt", _ => "Shift" };
+        state.Settings.SendToAllModifier = SettingsSendAllModifier.SelectedIndex == 1 ? "Alt" : "Shift";
         SettingsSendAllModifier.IsEnabled = state.Settings.SendToAllModifierEnabled;
         foreach (var pane in panes.Values) pane.RefreshCommandRoutingAppearance();
         ScheduleSave();

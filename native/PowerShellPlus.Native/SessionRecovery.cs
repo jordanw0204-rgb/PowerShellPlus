@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 7;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -21,14 +21,16 @@ public sealed class SessionRecoveryEntry
     public string? CodexModel { get; set; }
     public string? CodexSandboxMode { get; set; }
     public string? CodexApprovalPolicy { get; set; }
+    public string? CodexPermissionProfile { get; set; }
+    public string? CodexApprovalsReviewer { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 
 public readonly record struct CodexProcessState(bool IsActive, int? ProcessId, DateTime? StartedUtc);
 public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory, DateTime MetadataUtc, TimeSpan ProcessStartDistance, DateTime FileModifiedUtc,
-    string? Model = null, string? SandboxMode = null, string? ApprovalPolicy = null);
+    string? Model = null, string? SandboxMode = null, string? ApprovalPolicy = null, string? PermissionProfile = null, string? ApprovalsReviewer = null);
 public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
-public sealed record CodexSessionPermissions(string SandboxMode, string ApprovalPolicy, DateTime UpdatedUtc);
+public sealed record CodexSessionPermissions(string? SandboxMode, string ApprovalPolicy, DateTime UpdatedUtc, string? PermissionProfile = null, string? ApprovalsReviewer = null);
 
 public sealed class CodexLaunchMarker
 {
@@ -42,6 +44,8 @@ public sealed class CodexLaunchMarker
     public string? Model { get; set; }
     public string? SandboxMode { get; set; }
     public string? ApprovalPolicy { get; set; }
+    public string? PermissionProfile { get; set; }
+    public string? ApprovalsReviewer { get; set; }
     public DateTime? EndedUtc { get; set; }
     public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
 }
@@ -81,6 +85,8 @@ public static class CodexLaunchStore
         marker.Model = match.Model ?? marker.Model;
         marker.SandboxMode = match.SandboxMode ?? marker.SandboxMode;
         marker.ApprovalPolicy = match.ApprovalPolicy ?? marker.ApprovalPolicy;
+        marker.PermissionProfile = match.PermissionProfile ?? marker.PermissionProfile;
+        marker.ApprovalsReviewer = match.ApprovalsReviewer ?? marker.ApprovalsReviewer;
         Save(marker, directoryPath);
     }
 
@@ -93,15 +99,16 @@ public static class CodexLaunchStore
         var escapedMarkerPath = EscapePowerShell(markerPath);
         return "$global:__PowerShellPlusCodexCommand = (Get-Command codex -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1).Source; "
             + "if ($global:__PowerShellPlusCodexCommand) { function global:codex { "
-            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; $__pspSandbox = $null; $__pspApproval = $null; "
+            + "$__pspArgs = @($args); $__pspStarted = [DateTime]::UtcNow; $__pspCwd = (Get-Location).ProviderPath; $__pspExplicit = $null; $__pspModel = $null; $__pspSandbox = $null; $__pspApproval = $null; $__pspPermissionProfile = $null; $__pspApprovalsReviewer = $null; "
             + "if ($__pspArgs.Count -ge 2 -and [string]$__pspArgs[0] -eq 'resume' -and [string]$__pspArgs[1] -match '^[A-Za-z0-9_-]{8,128}$') { $__pspExplicit = [string]$__pspArgs[1] }; "
             + "for ($__pspIndex = 0; $__pspIndex -lt $__pspArgs.Count; $__pspIndex++) { $__pspArg = [string]$__pspArgs[$__pspIndex]; "
             + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-m', '--model')) { $__pspModel = [string]$__pspArgs[$__pspIndex + 1] }; "
             + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-s', '--sandbox')) { $__pspSandbox = [string]$__pspArgs[$__pspIndex + 1] }; "
             + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-a', '--ask-for-approval')) { $__pspApproval = [string]$__pspArgs[$__pspIndex + 1] }; "
+            + "if ($__pspIndex -lt $__pspArgs.Count - 1 -and $__pspArg -in @('-c', '--config')) { $__pspConfig = [string]$__pspArgs[$__pspIndex + 1]; if ($__pspConfig -match '^default_permissions\\s*=\\s*\"?(?<value>[A-Za-z0-9_.:-]{1,128})') { $__pspPermissionProfile = $Matches['value'] }; if ($__pspConfig -match '^approvals_reviewer\\s*=\\s*\"?(?<value>user|auto_review)') { $__pspApprovalsReviewer = $Matches['value'] } }; "
             + "if ($__pspArg -like '--sandbox=*') { $__pspSandbox = $__pspArg.Substring(10) }; if ($__pspArg -like '--ask-for-approval=*') { $__pspApproval = $__pspArg.Substring(19) }; "
             + "if ($__pspArg -eq '--dangerously-bypass-approvals-and-sandbox') { $__pspSandbox = 'danger-full-access'; $__pspApproval = 'never' } }; "
-            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); ShellProcessId = $PID; WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; SandboxMode = $__pspSandbox; ApprovalPolicy = $__pspApproval; EndedUtc = $null }; "
+            + "$__pspMarker = [ordered]@{ Version = 1; PaneId = '" + escapedPaneId + "'; StartedUtc = $__pspStarted.ToString('O'); ShellProcessId = $PID; WorkingDirectory = $__pspCwd; ExplicitSessionId = $__pspExplicit; SessionId = $__pspExplicit; Model = $__pspModel; SandboxMode = $__pspSandbox; ApprovalPolicy = $__pspApproval; PermissionProfile = $__pspPermissionProfile; ApprovalsReviewer = $__pspApprovalsReviewer; EndedUtc = $null }; "
             + "$__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8; "
             + "try { & $global:__PowerShellPlusCodexCommand @__pspArgs } finally { $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O'); $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '" + escapedMarkerPath + "' -Encoding UTF8 } "
             + "} }";
@@ -127,7 +134,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is >= 1 and <= 5)
+            if (value is not null && value.Version is >= 1 and <= 7)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -136,9 +143,9 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 5;
+                    value.Version = 7;
                 }
-                if (value.Version is 2 or 3 or 4) value.Version = 5;
+                if (value.Version is 2 or 3 or 4 or 5 or 6) value.Version = 7;
                 return value;
             }
         }
@@ -263,7 +270,9 @@ public static class CodexSessionLocator
             {
                 Model = settings.Model?.Model,
                 SandboxMode = settings.Permissions?.SandboxMode,
-                ApprovalPolicy = settings.Permissions?.ApprovalPolicy
+                ApprovalPolicy = settings.Permissions?.ApprovalPolicy,
+                PermissionProfile = settings.Permissions?.PermissionProfile,
+                ApprovalsReviewer = settings.Permissions?.ApprovalsReviewer
             };
         }
         catch { return null; }
@@ -307,7 +316,9 @@ public static class CodexSessionLocator
                     {
                         Model = settings.Model?.Model,
                         SandboxMode = settings.Permissions?.SandboxMode,
-                        ApprovalPolicy = settings.Permissions?.ApprovalPolicy
+                        ApprovalPolicy = settings.Permissions?.ApprovalPolicy,
+                        PermissionProfile = settings.Permissions?.PermissionProfile,
+                        ApprovalsReviewer = settings.Permissions?.ApprovalsReviewer
                     };
                 }
                 catch { }
@@ -326,8 +337,22 @@ public static class CodexSessionLocator
 
     public static bool IsSafeCodexApprovalPolicy(string? value) => value is "untrusted" or "on-request" or "never";
 
+    public static bool IsSafeCodexApprovalsReviewer(string? value) => value is "user" or "auto_review";
+
+    public static bool IsSafeCodexPermissionProfile(string? value)
+    {
+        if (value is not { Length: >= 1 and <= 128 }) return false;
+        if (value[0] == ':') return value is ":read-only" or ":workspace" or ":danger-full-access";
+        return char.IsLetterOrDigit(value[0]) && value.All(character => char.IsLetterOrDigit(character) || character is '-' or '_' or '.');
+    }
+
     public static bool IsSafeCodexPermissions(string? sandboxMode, string? approvalPolicy)
         => IsSafeCodexSandboxMode(sandboxMode) && IsSafeCodexApprovalPolicy(approvalPolicy);
+
+    public static bool IsSafeCodexPermissionState(string? permissionProfile, string? sandboxMode, string? approvalPolicy, string? approvalsReviewer = null)
+        => IsSafeCodexApprovalPolicy(approvalPolicy)
+            && (IsSafeCodexPermissionProfile(permissionProfile) || IsSafeCodexSandboxMode(sandboxMode))
+            && (approvalsReviewer is null || IsSafeCodexApprovalsReviewer(approvalsReviewer));
 
     public static CodexSessionModel? FindLatestModel(string? sessionId, string? sessionsRoot = null)
         => FindLatestSettings(sessionId, sessionsRoot).Model;
@@ -400,7 +425,9 @@ public static class CodexSessionLocator
     {
         if (!line.Contains("model", StringComparison.OrdinalIgnoreCase)
             && !line.Contains("approval_policy", StringComparison.OrdinalIgnoreCase)
-            && !line.Contains("sandbox_policy", StringComparison.OrdinalIgnoreCase)) return;
+            && !line.Contains("approvals_reviewer", StringComparison.OrdinalIgnoreCase)
+            && !line.Contains("sandbox_policy", StringComparison.OrdinalIgnoreCase)
+            && !line.Contains("active_permission_profile", StringComparison.OrdinalIgnoreCase)) return;
         try
         {
             using var document = JsonDocument.Parse(line);
@@ -409,7 +436,10 @@ public static class CodexSessionLocator
             string? model = null;
             string? sandboxMode = null;
             string? approvalPolicy = null;
-            if (root.TryGetProperty("type", out var type) && type.GetString() == "turn_context")
+            string? permissionProfile = null;
+            string? approvalsReviewer = null;
+            var isTurnContext = root.TryGetProperty("type", out var type) && type.GetString() == "turn_context";
+            if (isTurnContext)
             {
                 model = payload.TryGetProperty("model", out var turnModel) ? turnModel.GetString() : null;
                 approvalPolicy = payload.TryGetProperty("approval_policy", out var turnApproval) ? turnApproval.GetString() : null;
@@ -420,17 +450,26 @@ public static class CodexSessionLocator
             {
                 model = settings.TryGetProperty("model", out var settingsModel) ? settingsModel.GetString() : null;
                 approvalPolicy = settings.TryGetProperty("approval_policy", out var settingsApproval) ? settingsApproval.GetString() : null;
+                approvalsReviewer = settings.TryGetProperty("approvals_reviewer", out var settingsReviewer) ? settingsReviewer.GetString() : null;
                 if (settings.TryGetProperty("sandbox_policy", out var settingsSandbox)) sandboxMode = ReadSandboxMode(settingsSandbox);
-                if (sandboxMode is null && settings.TryGetProperty("active_permission_profile", out var activeProfile))
-                    sandboxMode = ReadPermissionProfileSandboxMode(activeProfile);
+                if (settings.TryGetProperty("active_permission_profile", out var activeProfile))
+                {
+                    permissionProfile = ReadPermissionProfile(activeProfile);
+                    sandboxMode ??= ReadPermissionProfileSandboxMode(activeProfile);
+                }
             }
             var updated = root.TryGetProperty("timestamp", out var timestampValue)
                 && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp)
                     ? timestamp.ToUniversalTime()
                     : DateTime.MinValue;
             if (IsSafeCodexModel(model) && (latest is null || updated >= latest.UpdatedUtc)) latest = new CodexSessionModel(model!, updated);
-            if (IsSafeCodexPermissions(sandboxMode, approvalPolicy) && (latestPermissions is null || updated >= latestPermissions.UpdatedUtc))
-                latestPermissions = new CodexSessionPermissions(sandboxMode!, approvalPolicy!, updated);
+            if (isTurnContext && !IsSafeCodexPermissionProfile(permissionProfile) && IsSafeCodexPermissionProfile(latestPermissions?.PermissionProfile))
+                permissionProfile = latestPermissions!.PermissionProfile;
+            if (isTurnContext && !IsSafeCodexApprovalsReviewer(approvalsReviewer) && IsSafeCodexApprovalsReviewer(latestPermissions?.ApprovalsReviewer))
+                approvalsReviewer = latestPermissions!.ApprovalsReviewer;
+            if (IsSafeCodexPermissionState(permissionProfile, sandboxMode, approvalPolicy, approvalsReviewer)
+                && (latestPermissions is null || updated >= latestPermissions.UpdatedUtc))
+                latestPermissions = new CodexSessionPermissions(sandboxMode, approvalPolicy!, updated, permissionProfile, approvalsReviewer);
         }
         catch { }
     }
@@ -453,6 +492,13 @@ public static class CodexSessionLocator
             ":danger-full-access" => "danger-full-access",
             _ => null
         };
+    }
+
+    private static string? ReadPermissionProfile(JsonElement activeProfile)
+    {
+        if (activeProfile.ValueKind != JsonValueKind.Object || !activeProfile.TryGetProperty("id", out var id)) return null;
+        var value = id.GetString();
+        return IsSafeCodexPermissionProfile(value) ? value : null;
     }
 
     private sealed class ModelFileCursor(string sessionId)
@@ -483,6 +529,28 @@ public static class CodexActivityStore
     private const int SqliteOpenReadWrite = 0x00000002;
     private const int SqliteOpenCreate = 0x00000004;
     private static readonly IntPtr SqliteTransient = new(-1);
+
+    public static IReadOnlyList<CodexSessionMatch> FindAllActiveCliSessions(ISet<string>? excludedSessionIds = null,
+        string? logsDatabasePath = null, string? sessionsRoot = null)
+    {
+        var matches = new Dictionary<string, CodexSessionMatch>(StringComparer.OrdinalIgnoreCase);
+        foreach (var process in Process.GetProcesses())
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.HasExited || !ProcessTreeInspector.IsCodexExecutable(process.ProcessName)) continue;
+                    var match = FindActiveCliSession(process.Id, process.StartTime.ToUniversalTime(), excludedSessionIds, logsDatabasePath, sessionsRoot);
+                    if (match is null) continue;
+                    if (!matches.TryGetValue(match.SessionId, out var existing) || match.FileModifiedUtc > existing.FileModifiedUtc)
+                        matches[match.SessionId] = match;
+                }
+                catch { }
+            }
+        }
+        return matches.Values.OrderByDescending(value => value.FileModifiedUtc).ToList();
+    }
 
     public static CodexSessionMatch? FindActiveCliSession(int? processId, DateTime? processStartedUtc,
         ISet<string>? excludedSessionIds = null, string? logsDatabasePath = null, string? sessionsRoot = null)

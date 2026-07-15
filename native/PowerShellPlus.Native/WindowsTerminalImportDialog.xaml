@@ -1,0 +1,58 @@
+<Window x:Class="PowerShellPlus.Native.WindowsTerminalImportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Import Windows Terminal" Width="920" Height="620" MinWidth="760" MinHeight="480"
+        WindowStartupLocation="CenterOwner" WindowStyle="None" ResizeMode="CanResizeWithGrip"
+        Background="#11111B" Foreground="#CDD6F4">
+  <Border BorderBrush="#45475A" BorderThickness="1" CornerRadius="10" Background="#11111B">
+    <Grid>
+      <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Border Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1" MouseLeftButtonDown="TitleBarMouseDown">
+        <Grid Margin="18,0,10,0">
+          <TextBlock Text="Import Windows Terminal" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <Button Content="×" Width="40" Height="34" HorizontalAlignment="Right" VerticalAlignment="Center" Background="Transparent" BorderThickness="0" Foreground="#CDD6F4" FontSize="20" Click="CancelClick"/>
+        </Grid>
+      </Border>
+
+      <StackPanel Grid.Row="1" Margin="24,20,24,14">
+        <TextBlock x:Name="SourceTitleText" FontSize="20" FontWeight="SemiBold"/>
+        <TextBlock Text="Each Windows Terminal tab becomes one native PowerShellPlus session with the same tab name. Review every Codex match before the source window is closed." Foreground="#A6ADC8" Margin="0,7,0,0" TextWrapping="Wrap"/>
+      </StackPanel>
+
+      <ScrollViewer Grid.Row="2" Margin="24,0" VerticalScrollBarVisibility="Auto">
+        <ItemsControl x:Name="RowsList">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Background="#181825" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,10">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                  <StackPanel>
+                    <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{Binding Details}" Foreground="#A6ADC8" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding CodexStatus}" Foreground="#89B4FA" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                    <TextBlock Text="Resume behavior" Foreground="#A6ADC8" FontSize="11" Margin="0,0,0,5"/>
+                    <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding SelectedChoice, Mode=TwoWay}" DisplayMemberPath="DisplayName" MinHeight="34"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+
+      <Border Grid.Row="3" Background="#181825" BorderBrush="#313244" BorderThickness="0,1,0,0" Padding="24,16">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock MaxWidth="570" HorizontalAlignment="Left" VerticalAlignment="Center" Foreground="#F9E2AF" TextWrapping="Wrap"
+                     Text="The original PowerShell processes cannot be transferred. Closing the source ends variables, jobs, SSH connections, and other in-memory state. Captured scrollback is retained as previous output."/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <Button Content="Cancel" MinWidth="92" Height="36" Margin="0,0,8,0" Click="CancelClick"/>
+            <Button Content="Close source &amp; import" MinWidth="172" Height="36" Background="#89B4FA" Foreground="#11111B" FontWeight="SemiBold" Click="ImportClick"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+  </Border>
+</Window>

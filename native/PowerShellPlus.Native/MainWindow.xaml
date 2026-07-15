@@ -23,6 +23,13 @@
           </StackPanel>
         </Border>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <Button x:Name="TitleBarLanRemoteButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenLanRemoteClick" ToolTip="Share sessions on this LAN">
+            <Grid Width="21" Height="21">
+              <Ellipse Stroke="#89B4FA" StrokeThickness="1.2" Margin="2"/>
+              <Path Data="M3,10.5 H18 M10.5,3 C7.5,6 7.5,15 10.5,18 M10.5,3 C13.5,6 13.5,15 10.5,18" Stroke="#89B4FA" StrokeThickness="1.05" Fill="Transparent"/>
+              <Ellipse x:Name="LanRemoteStatusDot" Width="6" Height="6" Fill="#A6E3A1" Stroke="#11111B" StrokeThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed"/>
+            </Grid>
+          </Button>
           <Button x:Name="TitleBarOpenWindowsTerminalButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenWindowsTerminalClick" ToolTip="Open this profile in Windows Terminal">
             <Border Width="20" Height="15" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="2">
               <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
@@ -36,7 +43,7 @@
     </Border>
 
     <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="278"/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition x:Name="WorkspaceSidebarColumn" Width="278"/><ColumnDefinition/></Grid.ColumnDefinitions>
       <Border Grid.Column="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,1,0">
         <DockPanel Margin="0,6">
           <StackPanel DockPanel.Dock="Top">
@@ -58,7 +65,7 @@
         </DockPanel>
       </Border>
 
-      <Border Grid.Column="1" Background="{StaticResource Surface}" BorderBrush="#313244" BorderThickness="0,0,1,0">
+      <Border x:Name="WorkspaceSidebar" Grid.Column="1" Background="{StaticResource Surface}" BorderBrush="#313244" BorderThickness="0,0,1,0">
         <Grid Margin="14,18,14,12">
           <Grid x:Name="SessionsPanel">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
@@ -178,9 +185,9 @@
                 <CheckBox x:Name="SettingsSendAllModifierEnabled" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="SettingsSendAllChanged"><TextBlock Text="Use a modifier to send commands to every terminal" TextWrapping="Wrap" Width="178"/></CheckBox>
                 <TextBlock Text="Send-to-all modifier" Foreground="{StaticResource Muted}" Margin="49,10,0,5"/>
                 <ComboBox x:Name="SettingsSendAllModifier" Margin="49,0,0,0" SelectionChanged="SettingsSendAllChanged">
-                  <ComboBoxItem Content="Shift"/><ComboBoxItem Content="Ctrl"/><ComboBoxItem Content="Alt"/>
+                  <ComboBoxItem Content="Shift"/><ComboBoxItem Content="Alt"/>
                 </ComboBox>
-                <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. The button changes color before the command is sent." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
+                <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. Ctrl+Enter always adds the command to the queue." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
 
                 <TextBlock Text="SESSION RECOVERY" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsKeepSessionsInTray" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Keep live sessions running when the window closes" TextWrapping="Wrap" Width="178"/></CheckBox>
@@ -203,9 +210,23 @@
       <Grid Grid.Column="2">
         <Grid x:Name="TerminalHost" Background="#11111B"/>
       </Grid>
+      <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#E6242438" BorderBrush="#585B70" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
     </Grid>
 
     <Border Grid.Row="2" Background="#11111B" BorderBrush="#313244" BorderThickness="0,1,0,0"><Grid Margin="10,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="StatusText" Text="Ready" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center"/><TextBlock Grid.Column="1" x:Name="CountText" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center"/></Grid></Border>
+
+    <Grid x:Name="WindowsTerminalDropOverlay" Grid.RowSpan="3" Background="#ED11111B" Visibility="Collapsed" IsHitTestVisible="False" Panel.ZIndex="30">
+      <Border Width="570" Background="#181825" BorderBrush="#89B4FA" BorderThickness="2" CornerRadius="16" Padding="38" VerticalAlignment="Center" HorizontalAlignment="Center">
+        <StackPanel HorizontalAlignment="Center">
+          <Border Width="82" Height="60" BorderBrush="#89B4FA" BorderThickness="2" CornerRadius="8" HorizontalAlignment="Center">
+            <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="29" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <TextBlock x:Name="WindowsTerminalDropTitle" Text="Hold to import Windows Terminal" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,22,0,0"/>
+          <TextBlock x:Name="WindowsTerminalDropDetail" Text="Keep the window here for a moment, then release it." Foreground="#A6ADC8" FontSize="13" TextAlignment="Center" TextWrapping="Wrap" Margin="0,9,0,0"/>
+          <TextBlock Text="Each tab becomes a named PowerShellPlus session. Codex thread, model, permission profile, approval policy, and reviewer are verified before import." Foreground="#89B4FA" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,16,0,0"/>
+        </StackPanel>
+      </Border>
+    </Grid>
 
     <Grid x:Name="EditorOverlay" Grid.RowSpan="3" Background="#B0000000" Visibility="Collapsed" Panel.ZIndex="20">
       <Border x:Name="EditorCard" Width="580" MaxHeight="720" Background="#181825" BorderBrush="#45475A" BorderThickness="1" CornerRadius="12" Padding="24" VerticalAlignment="Center" HorizontalAlignment="Center">

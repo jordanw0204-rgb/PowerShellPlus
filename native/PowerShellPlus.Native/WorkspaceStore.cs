@@ -16,10 +16,11 @@ public static class WorkspaceStore
             if (File.Exists(FilePath))
             {
                 var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(FilePath), JsonOptions);
-                if (loaded is not null && loaded.Version is 3 or 4 or 5)
+                if (loaded is not null && loaded.Version is >= 3 and <= 6)
                 {
-                    loaded.Version = 5;
+                    loaded.Version = 6;
                     loaded.Settings ??= new WorkspaceSettings();
+                    if (string.Equals(loaded.Settings.SendToAllModifier, "Ctrl", StringComparison.OrdinalIgnoreCase)) loaded.Settings.SendToAllModifier = "Shift";
                     loaded.LayoutSizes ??= [];
                     foreach (var session in loaded.Sessions) session.PendingCommands ??= [];
                     return loaded;

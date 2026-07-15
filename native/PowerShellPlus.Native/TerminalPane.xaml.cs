@@ -16,15 +16,22 @@ public partial class TerminalPane : UserControl
 {
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
+    private const int WmKeyDown = 0x0100;
+    private const int VkControl = 0x11;
+    private const int VkMenu = 0x12;
+    private const int VkV = 0x56;
     private const int MaximumQueuedCommands = 100;
     private const int MaximumCommandLength = 32_768;
+    private const int MaximumClipboardCharacters = 1_000_000;
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
     public event EventHandler? EditRequested;
+    public event Action<TerminalPane, string>? RawOutputReceived;
     private SessionRecoveryEntry? startupRecovery;
     private string previousOutput = string.Empty;
     private TerminalContainer? terminalContainer;
+    private TermPTY? outputCaptureTerminal;
     private readonly Func<IEnumerable<CommandSnippet>> quickAccessProvider;
     private readonly Action commandStateChanged;
     private readonly Func<string, Task<bool>> sendAllCommand;
@@ -34,6 +41,8 @@ public partial class TerminalPane : UserControl
     private string queueNavigationDraft = string.Empty;
     private bool commandExecutionPending;
     private bool? sendButtonShowsAll;
+    private char configuredCursorStyleCode;
+    private long remoteOutputEventCount;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -58,9 +67,12 @@ public partial class TerminalPane : UserControl
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
         Terminal.Theme = appearance.Theme;
+        configuredCursorStyleCode = CursorStyleCode(appearance.Theme.CursorStyle);
+        AttachTerminalOutputFilter();
         Loaded += async (_, _) =>
         {
             AttachTerminalActivationHook();
+            AttachTerminalOutputFilter();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
             HideNativeScrollbar();
             StateText.Text = $"  {appearance.ProfileName} · native renderer";
@@ -82,6 +94,7 @@ public partial class TerminalPane : UserControl
                 }
             }
             StateDot.Fill = new SolidColorBrush(Color.FromRgb(166, 227, 161));
+            AttachTerminalOutputFilter();
             ConfigureRecoveryView();
         };
     }
@@ -122,16 +135,17 @@ public partial class TerminalPane : UserControl
             if (Terminal.ConPTYTerm?.Process?.HasExited == true)
             {
                 await Terminal.RestartTerm();
+                AttachTerminalOutputFilter();
                 restarted = true;
             }
         }
         catch (ArgumentException)
         {
-            try { await Terminal.RestartTerm(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); restarted = true; } catch { return false; }
         }
         catch (InvalidOperationException)
         {
-            try { await Terminal.RestartTerm(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); restarted = true; } catch { return false; }
         }
         if (restarted) await Task.Delay(900);
         var deadline = DateTime.UtcNow.AddSeconds(8);
@@ -244,8 +258,8 @@ public partial class TerminalPane : UserControl
         QueueCountBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         QueueCountText.Text = count > 99 ? "99+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
         QueueCommandButton.ToolTip = count == 0
-            ? "Add this command to the queue · Right-click to view the queue"
-            : $"Add to queue · {count} pending · Right-click to view · Up/Down browses";
+            ? "View command queue · Ctrl+Enter adds the current command"
+            : $"View queue · {count} pending · Ctrl+Enter adds · Up/Down browses";
     }
 
     private void ShowQueueMenu()
@@ -399,7 +413,7 @@ public partial class TerminalPane : UserControl
         if (!animate)
         {
             CommandBarContainer.Visibility = Visibility.Visible;
-            CommandBarContainer.Height = expanded ? 36 : 16;
+            CommandBarContainer.Height = expanded ? double.NaN : 16;
             CommandBarContent.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
             CommandBarContent.Opacity = 1;
         }
@@ -410,7 +424,7 @@ public partial class TerminalPane : UserControl
             CommandBarContent.Visibility = Visibility.Visible;
             CommandBarContent.Opacity = 0;
             var height = new DoubleAnimation(16, 36, TimeSpan.FromMilliseconds(150)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } };
-            height.Completed += (_, _) => { CommandBarContainer.BeginAnimation(HeightProperty, null); CommandBarContainer.Height = 36; };
+            height.Completed += (_, _) => { CommandBarContainer.BeginAnimation(HeightProperty, null); CommandBarContainer.Height = double.NaN; };
             CommandBarContainer.BeginAnimation(HeightProperty, height);
             CommandBarContent.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
             CommandInput.Focus();
@@ -439,6 +453,7 @@ public partial class TerminalPane : UserControl
         startupRecovery = null;
         Terminal.StartupCommandLine = BuildCommandLine(Profile, null);
         await Terminal.RestartTerm();
+        AttachTerminalOutputFilter();
         StateText.Text = "  Windows Terminal control";
         Terminal.Focus();
     }
@@ -454,6 +469,27 @@ public partial class TerminalPane : UserControl
     {
         try { return Terminal.ConPTYTerm?.GetConsoleText() ?? string.Empty; } catch { return string.Empty; }
     }
+
+    public string GetRawOutputForTest()
+    {
+        try { return Terminal.ConPTYTerm?.GetConsoleText(false) ?? string.Empty; } catch { return string.Empty; }
+    }
+
+    public bool WriteRemoteInput(string input)
+    {
+        if (string.IsNullOrEmpty(input) || input.Length > MaximumCommandLength) return false;
+        try
+        {
+            if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
+            Terminal.ConPTYTerm.WriteToTerm(input);
+            return true;
+        }
+        catch (ObjectDisposedException) { return false; }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    public void EnableRemoteOutputCapture() => AttachTerminalOutputFilter();
 
     public int? GetRootProcessId()
     {
@@ -490,6 +526,8 @@ public partial class TerminalPane : UserControl
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
         Terminal.Theme = appearance.Theme;
+        configuredCursorStyleCode = CursorStyleCode(appearance.Theme.CursorStyle);
+        AttachTerminalOutputFilter();
     }
 
     public void ApplyProfile(SessionProfile profile)
@@ -511,6 +549,9 @@ public partial class TerminalPane : UserControl
     public int QueuedCommandCountForTest => Profile.PendingCommands.Count;
     public string QueueCountTextForTest => QueueCountText.Text;
     public string CommandInputTextForTest => CommandInput.Text;
+    public bool CommandInputAutoGrowsForTest => CommandInput.TextWrapping == TextWrapping.Wrap && CommandInput.MinLines == 1
+        && CommandInput.MaxLines == 6 && CommandInput.VerticalContentAlignment == VerticalAlignment.Top;
+    public double CommandInputHeightForTest => CommandInput.ActualHeight;
     public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
     public string SendCommandToolTipForTest => RunCommandButton.ToolTip?.ToString() ?? string.Empty;
     public int QuickAccessCommandCountForTest => quickAccessProvider().Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
@@ -545,6 +586,13 @@ public partial class TerminalPane : UserControl
         ShowQueueMenu();
         return QueueCommandButton.ContextMenu?.Items.Count ?? 0;
     }
+    public int ClickQueueButtonForTest()
+    {
+        QueueCommandButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var count = QueueCommandButton.ContextMenu?.Items.Count ?? 0;
+        if (QueueCommandButton.ContextMenu is { } menu) menu.IsOpen = false;
+        return count;
+    }
     public bool SelectQueuedCommandForTest(int index)
     {
         SelectQueuedCommand(index);
@@ -553,6 +601,29 @@ public partial class TerminalPane : UserControl
             && string.Equals(CommandInput.Text, Profile.PendingCommands[index], StringComparison.Ordinal);
     }
     public double QueueMenuMaxHeightForTest => QueueCommandButton.ContextMenu?.MaxHeight ?? double.PositiveInfinity;
+    public static string FormatClipboardTextForTest(string text) => FormatClipboardText(text);
+    public string ForceCursorStyleForTest(string text)
+    {
+        var buffer = text.ToCharArray();
+        var span = buffer.AsSpan();
+        EnforceCursorStyle(ref span);
+        return new string(buffer);
+    }
+    public bool PasteTextForTest(string text)
+    {
+        var terminal = Terminal.ConPTYTerm;
+        if (terminal is null) return false;
+        terminal.WriteToTerm(FormatClipboardText(text));
+        return true;
+    }
+    public void SubmitTerminalInputForTest() => Terminal.ConPTYTerm?.WriteToTerm("\r");
+    public async Task<bool> QueueWithCtrlEnterForTestAsync(string command)
+    {
+        var before = Profile.PendingCommands.Count;
+        SetCommandInputForTest(command);
+        var handled = await HandleCommandInputKeyAsync(Key.Enter, ModifierKeys.Control);
+        return handled && Profile.PendingCommands.Count == before + 1 && string.IsNullOrEmpty(CommandInput.Text);
+    }
     public void RefreshCommandRoutingAppearance() => UpdateSendButtonVisual(IsSendToAllActive(Keyboard.Modifiers), true);
 
     private void HideNativeScrollbar()
@@ -582,6 +653,49 @@ public partial class TerminalPane : UserControl
         if (terminalContainer is not null) terminalContainer.MessageHook += TerminalMessageHook;
     }
 
+    private void AttachTerminalOutputFilter()
+    {
+        // Applied after the terminal process is ready; assigning the interceptor
+        // before TermPTY starts can suppress its initial read loop.
+        if (Terminal.ConPTYTerm is not { TermProcIsStarted: true } terminal) return;
+        terminal.InterceptOutputToUITerminal = EnforceCursorStyle;
+        if (ReferenceEquals(outputCaptureTerminal, terminal)) return;
+        if (outputCaptureTerminal is not null) outputCaptureTerminal.TerminalOutput -= CaptureTerminalOutput;
+        outputCaptureTerminal = terminal;
+        outputCaptureTerminal.TerminalOutput += CaptureTerminalOutput;
+    }
+
+    private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
+    {
+        Interlocked.Increment(ref remoteOutputEventCount);
+        try { RawOutputReceived?.Invoke(this, args.Data); }
+        catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
+    }
+
+    public long RemoteOutputEventsForTest => Interlocked.Read(ref remoteOutputEventCount);
+
+    private void EnforceCursorStyle(ref Span<char> output)
+    {
+        // DECSCUSR is ESC [ Ps SP q. Applications such as TUIs can emit it
+        // after the theme is applied, so normalize it to the user's setting.
+        for (var index = 0; index <= output.Length - 5; index++)
+        {
+            if (output[index] == '\u001b' && output[index + 1] == '[' && output[index + 2] is >= '0' and <= '6'
+                && output[index + 3] == ' ' && output[index + 4] == 'q')
+                output[index + 2] = configuredCursorStyleCode;
+        }
+    }
+
+    private static char CursorStyleCode(CursorStyle style) => style switch
+    {
+        CursorStyle.SteadyBlock => '2',
+        CursorStyle.BlinkingUnderline => '3',
+        CursorStyle.SteadyUnderline => '4',
+        CursorStyle.BlinkingBar => '5',
+        CursorStyle.SteadyBar => '6',
+        _ => '1'
+    };
+
     private IntPtr TerminalMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (message == WmLeftButtonDown)
@@ -589,8 +703,38 @@ public partial class TerminalPane : UserControl
             Activated?.Invoke(this, EventArgs.Empty);
             SetFocus(hwnd);
         }
+        else if (message == WmKeyDown && wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText())
+        {
+            handled = true;
+        }
         return IntPtr.Zero;
     }
+
+    private bool TryPasteClipboardText()
+    {
+        try
+        {
+            if (!Clipboard.ContainsText(TextDataFormat.UnicodeText)) return false;
+            var text = Clipboard.GetText(TextDataFormat.UnicodeText);
+            if (string.IsNullOrEmpty(text)) return false;
+            var terminal = Terminal.ConPTYTerm;
+            if (terminal is null) return false;
+            terminal.WriteToTerm(FormatClipboardText(text));
+            return true;
+        }
+        catch (ExternalException) { return false; }
+        catch (ObjectDisposedException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private static string FormatClipboardText(string text)
+    {
+        var safeText = text.Length > MaximumClipboardCharacters ? text[..MaximumClipboardCharacters] : text;
+        safeText = safeText.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Replace("\u001b", string.Empty, StringComparison.Ordinal);
+        return $"\u001b[200~{safeText}\u001b[201~";
+    }
+
+    private static bool IsKeyDown(int virtualKey) => (GetKeyState(virtualKey) & 0x8000) != 0;
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
@@ -600,6 +744,9 @@ public partial class TerminalPane : UserControl
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -616,9 +763,15 @@ public partial class TerminalPane : UserControl
         var escaped = validDirectory ? startupDirectory.Replace("'", "''") : string.Empty;
         var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $" '{recovery!.CodexSessionId}'" : " --all";
         var modelArgument = resumeCodex && CodexSessionLocator.IsSafeCodexModel(recovery?.CodexModel) ? $" --model '{recovery!.CodexModel}'" : string.Empty;
-        var permissionsArgument = resumeCodex && CodexSessionLocator.IsSafeCodexPermissions(recovery?.CodexSandboxMode, recovery?.CodexApprovalPolicy)
-            ? $" --sandbox '{recovery!.CodexSandboxMode}' --ask-for-approval '{recovery.CodexApprovalPolicy}'"
+        var reviewerArgument = resumeCodex && CodexSessionLocator.IsSafeCodexApprovalsReviewer(recovery?.CodexApprovalsReviewer)
+            ? $" --config 'approvals_reviewer=\"{recovery!.CodexApprovalsReviewer}\"'"
             : string.Empty;
+        var permissionsArgument = resumeCodex && CodexSessionLocator.IsSafeCodexPermissionProfile(recovery?.CodexPermissionProfile)
+            && CodexSessionLocator.IsSafeCodexApprovalPolicy(recovery?.CodexApprovalPolicy)
+                ? $" --config 'default_permissions=\"{recovery!.CodexPermissionProfile}\"'{reviewerArgument} --ask-for-approval '{recovery.CodexApprovalPolicy}'"
+                : resumeCodex && CodexSessionLocator.IsSafeCodexPermissions(recovery?.CodexSandboxMode, recovery?.CodexApprovalPolicy)
+                    ? $" --sandbox '{recovery!.CodexSandboxMode}'{reviewerArgument} --ask-for-approval '{recovery.CodexApprovalPolicy}'"
+                    : string.Empty;
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
@@ -678,25 +831,23 @@ public partial class TerminalPane : UserControl
         return false;
     }
     private void QuickAccessClick(object sender, RoutedEventArgs e) { ShowQuickAccessMenu(); e.Handled = true; }
-    private void QueueCommandClick(object sender, RoutedEventArgs e) { QueueCurrentCommand(); e.Handled = true; }
-    private void QueueCommandRightClick(object sender, MouseButtonEventArgs e) { ShowQueueMenu(); e.Handled = true; }
+    private void QueueCommandClick(object sender, RoutedEventArgs e) { ShowQueueMenu(); e.Handled = true; }
     private async void RunCommandClick(object sender, RoutedEventArgs e) { await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); e.Handled = true; }
     private async void CommandInputPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter) { e.Handled = true; await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); }
-        else if (e.Key == Key.Up) { e.Handled = true; NavigateQueue(-1); }
-        else if (e.Key == Key.Down) { e.Handled = true; NavigateQueue(1); }
-    }
-    private void PanePreviewKeyDown(object sender, KeyEventArgs e)
-    {
         RefreshSendButtonVisual();
+        e.Handled = await HandleCommandInputKeyAsync(e.Key, e.KeyboardDevice.Modifiers);
     }
-    private void PanePreviewKeyUp(object sender, KeyEventArgs e)
+    private async Task<bool> HandleCommandInputKeyAsync(Key key, ModifierKeys modifiers)
     {
-        Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
+        if (key == Key.Enter && modifiers.HasFlag(ModifierKeys.Control)) { QueueCurrentCommand(); return true; }
+        if (key == Key.Enter) { await RunCommandInputAsync(IsSendToAllActive(modifiers)); return true; }
+        if (key == Key.Up) { NavigateQueue(-1); return true; }
+        if (key == Key.Down) { NavigateQueue(1); return true; }
+        return false;
     }
+    private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
-    private void RunCommandMouseMove(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
     private void ToggleCommandBarClick(object sender, RoutedEventArgs e) { SetCommandBarExpanded(!Profile.CommandBarExpanded, true, true); e.Handled = true; }
     private void PreviousOutputClick(object sender, RoutedEventArgs e) { ConfigureRecoveryView(true); RecoveryOverlay.Visibility = Visibility.Visible; }
     private void CloseRecoveryClick(object sender, RoutedEventArgs e) { RecoveryOverlay.Visibility = Visibility.Collapsed; Terminal.Focus(); }

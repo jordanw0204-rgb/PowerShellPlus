@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$SkipTests,
-    [switch]$BuildElectronFallback
+    [switch]$BuildElectronFallback,
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,15 @@ $project = Join-Path $root 'native\PowerShellPlus.Native\PowerShellPlus.Native.c
 $nugetConfig = Join-Path $root 'native\NuGet.config'
 $publish = Join-Path $root 'release-native'
 $buildOutput = Join-Path $root 'native\PowerShellPlus.Native\bin\Release\net8.0-windows10.0.19041.0\win-x64\PowerShellPlus.exe'
+$xtermAsset = Join-Path $root 'node_modules\@xterm\xterm\lib\xterm.js'
+
+if (-not (Test-Path -LiteralPath $xtermAsset)) {
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+        throw 'The LAN Remote web terminal assets require Node.js/npm for the first build. Install the current Node.js LTS release, reopen PowerShell, and run build.ps1 again.'
+    }
+    & npm.cmd ci --ignore-scripts --omit=dev
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $xtermAsset)) { throw 'Pinned xterm.js asset restore failed.' }
+}
 
 if (-not (Test-Path -LiteralPath $dotnet)) {
     $installer = Join-Path $env:TEMP 'dotnet-install.ps1'
@@ -42,10 +52,12 @@ if (-not $SkipTests) {
     Invoke-NativeGate $buildOutput 'multi-smoke' 'native-multi-pane.txt'
     Invoke-NativeGate $buildOutput 'codex-smoke' 'native-codex.txt'
     Invoke-NativeGate $buildOutput 'persistence-smoke' 'native-persistence.txt'
+    Invoke-NativeGate $buildOutput 'lan-remote-smoke' 'native-lan-remote.txt'
 }
 
 & $dotnet publish $project -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=false -o $publish
 if ($LASTEXITCODE -ne 0) { throw 'Native self-contained publish failed.' }
+Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $publish 'README.md') -Force
 
 $publishedExecutable = Join-Path $publish 'PowerShellPlus.exe'
 if (-not $SkipTests) {
@@ -53,20 +65,26 @@ if (-not $SkipTests) {
     Invoke-NativeGate $publishedExecutable 'multi-smoke' 'published-native-multi-pane.txt'
     Invoke-NativeGate $publishedExecutable 'codex-smoke' 'published-native-codex.txt'
     Invoke-NativeGate $publishedExecutable 'persistence-smoke' 'published-native-persistence.txt'
+    Invoke-NativeGate $publishedExecutable 'lan-remote-smoke' 'published-native-lan-remote.txt'
 }
 
 $dist = [IO.Path]::GetFullPath((Join-Path $root 'dist'))
-$expectedDist = [IO.Path]::GetFullPath("$root\dist")
-if ($dist -ne $expectedDist -or -not $dist.StartsWith([IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to clean unexpected output directory: $dist"
+$packageSource = $publish
+if (-not $StageOnly) {
+    $expectedDist = [IO.Path]::GetFullPath("$root\dist")
+    if ($dist -ne $expectedDist -or -not $dist.StartsWith([IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean unexpected output directory: $dist"
+    }
+    New-Item -ItemType Directory -Force -Path $dist | Out-Null
+    Get-ChildItem -LiteralPath $dist -Force | Remove-Item -Recurse -Force
+    Copy-Item -Path (Join-Path $publish '*') -Destination $dist -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $dist 'README.md') -Force
+    $packageSource = $dist
 }
-New-Item -ItemType Directory -Force -Path $dist | Out-Null
-Get-ChildItem -LiteralPath $dist -Force | Remove-Item -Recurse -Force
-Copy-Item -Path (Join-Path $publish '*') -Destination $dist -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $dist 'README.md') -Force
 
-$zip = Join-Path $root 'PowerShellPlus-win-x64.zip'
-Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -Force
+$zipName = if ($StageOnly) { 'PowerShellPlus-win-x64-staged.zip' } else { 'PowerShellPlus-win-x64.zip' }
+$zip = Join-Path $root $zipName
+Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $zip -Force
 
 if ($BuildElectronFallback) {
     & npm.cmd install
@@ -79,6 +97,7 @@ if ($BuildElectronFallback) {
 
 Write-Host ''
 Write-Host 'PowerShellPlus Native build complete.' -ForegroundColor Green
-Write-Host "Application: $dist\PowerShellPlus.exe"
+Write-Host "Application: $packageSource\PowerShellPlus.exe"
 Write-Host "ZIP package: $zip"
+if ($StageOnly) { Write-Host 'Deployment: staged only (dist was left untouched)' }
 Write-Host 'Renderer: Microsoft TerminalControl (WPF) + ConPTY'

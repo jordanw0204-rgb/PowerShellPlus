@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#11111b">
+  <title>PowerShellPlus Remote</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">›_</span><div><strong>PowerShellPlus</strong><small>LAN Remote</small></div></div>
+    <div class="header-actions">
+      <span id="connectionState" class="status"><i></i>Connecting</span>
+      <button id="layoutButton" class="icon-button" type="button" aria-label="Toggle session layout">Grid</button>
+      <button id="fontDown" class="icon-button" type="button" aria-label="Decrease terminal font">A−</button>
+      <button id="fontUp" class="icon-button" type="button" aria-label="Increase terminal font">A+</button>
+    </div>
+  </header>
+
+  <nav id="sessionTabs" class="session-tabs" aria-label="Terminal sessions"></nav>
+  <main id="sessionGrid" class="session-grid" aria-live="polite"></main>
+
+  <div id="emptyState" class="empty-state" hidden>
+    <strong>No terminal sessions are open.</strong>
+    <span>New PowerShellPlus sessions will appear here automatically.</span>
+  </div>
+
+  <footer>
+    <span id="accessMode">Read-only</span>
+    <button id="keyboardButton" type="button">Focus keyboard</button>
+  </footer>
+
+  <section id="pairingOverlay" class="overlay" aria-labelledby="pairingTitle">
+    <form id="pairingForm" class="pairing-card">
+      <span class="pairing-icon">◎</span>
+      <h1 id="pairingTitle">Connect to PowerShellPlus</h1>
+      <p>Enter the pairing code shown on the computer. Access lasts only while LAN sharing is running.</p>
+      <label for="pairingCode">Pairing code</label>
+      <input id="pairingCode" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" required>
+      <button id="pairButton" type="submit">Connect</button>
+      <p id="pairingError" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <script src="/vendor/xterm.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

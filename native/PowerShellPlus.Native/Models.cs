@@ -7,9 +7,10 @@ namespace PowerShellPlus.Native;
 
 public sealed class WorkspaceState
 {
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 6;
     public string Name { get; set; } = "Main workspace";
     public string Layout { get; set; } = "Grid";
+    public bool WorkspaceSidebarExpanded { get; set; } = true;
     public string? ActiveSessionId { get; set; }
     public ObservableCollection<SessionProfile> Sessions { get; set; } = [];
     public ObservableCollection<CommandSnippet> Snippets { get; set; } = [];
