@@ -5,12 +5,17 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Automation;
+using System.Windows.Automation.Text;
 using System.Text;
 using System.Runtime.InteropServices;
 using EasyWindowsTerminalControl;
 using Microsoft.Terminal.Wpf;
 
 namespace PowerShellPlus.Native;
+
+internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
+internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
 
 public partial class TerminalPane : UserControl
 {
@@ -484,6 +489,90 @@ public partial class TerminalPane : UserControl
     {
         try { return Terminal.ConPTYTerm?.GetConsoleText(false) ?? string.Empty; } catch { return string.Empty; }
     }
+
+    internal RemoteTerminalSnapshotSource GetRemoteSnapshotSource()
+    {
+        AttachTerminalActivationHook();
+        RefreshRemoteDimensions();
+        var dimensions = GetRemoteDimensions();
+        var handle = terminalContainer?.Handle ?? IntPtr.Zero;
+        return new RemoteTerminalSnapshotSource(handle, GetOutput(), dimensions.Columns, dimensions.Rows);
+    }
+
+    internal static RemoteTerminalSnapshot CaptureRemoteScreen(RemoteTerminalSnapshotSource source)
+    {
+        var text = string.Empty;
+        int? cursorOffset = null;
+        var composed = false;
+        if (source.WindowHandle != IntPtr.Zero)
+        {
+            try
+            {
+                var element = AutomationElement.FromHandle(source.WindowHandle);
+                if (element.TryGetCurrentPattern(TextPattern.Pattern, out var patternObject) && patternObject is TextPattern pattern)
+                {
+                    text = pattern.DocumentRange.GetText(-1);
+                    var selections = pattern.GetSelection();
+                    if (selections.Length > 0 && selections[0].GetText(-1).Length == 0)
+                    {
+                        var beforeCursor = pattern.DocumentRange.Clone();
+                        beforeCursor.MoveEndpointByRange(TextPatternRangeEndpoint.End, selections[0], TextPatternRangeEndpoint.Start);
+                        cursorOffset = beforeCursor.GetText(-1).Length;
+                    }
+                    composed = true;
+                }
+            }
+            catch (ElementNotAvailableException) { }
+            catch (InvalidOperationException) { }
+            catch (COMException) { }
+        }
+
+        if (!composed)
+        {
+            text = TailFallbackTranscript(source.FallbackText, source.Rows);
+            cursorOffset = text.Length;
+            composed = false;
+        }
+        return BuildRemoteSnapshot(text, source.Columns, source.Rows, cursorOffset, composed);
+    }
+
+    internal void RequestRemoteRedraw()
+    {
+        var dimensions = GetRemoteDimensions();
+        try { Terminal.ConPTYTerm?.Resize(dimensions.Columns, dimensions.Rows); }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+        catch (ArgumentException) { }
+    }
+
+    private static RemoteTerminalSnapshot BuildRemoteSnapshot(string text, int columns, int rows, int? cursorOffset, bool composed)
+    {
+        text = text.Replace("\0", string.Empty, StringComparison.Ordinal);
+        var boundedOffset = Math.Clamp(cursorOffset ?? text.Length, 0, text.Length);
+        var beforeCursor = NormalizeRemoteNewlines(text[..boundedOffset]);
+        var normalized = NormalizeRemoteNewlines(text);
+        var cursorLine = beforeCursor.Count(value => value == '\n');
+        var lastNewline = beforeCursor.LastIndexOf('\n');
+        var cursorColumn = beforeCursor.Length - lastNewline - 1;
+        var totalLines = normalized.Count(value => value == '\n') + 1;
+        var viewportStart = Math.Max(0, totalLines - rows);
+        var viewportRow = Math.Clamp(cursorLine - viewportStart + 1, 1, rows);
+        cursorColumn = Math.Clamp(cursorColumn + 1, 1, columns);
+        return new RemoteTerminalSnapshot(
+            normalized.Replace("\n", "\r\n", StringComparison.Ordinal),
+            columns, rows, cursorColumn, viewportRow, composed);
+    }
+
+    private static string TailFallbackTranscript(string text, int rows)
+    {
+        var normalized = NormalizeRemoteNewlines(text);
+        var lines = normalized.Split('\n');
+        var keep = Math.Max(rows, rows * 3);
+        return string.Join('\n', lines.Skip(Math.Max(0, lines.Length - keep)));
+    }
+
+    private static string NormalizeRemoteNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 
     public bool WriteRemoteInput(string input)
     {

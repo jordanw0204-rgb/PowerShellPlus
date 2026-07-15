@@ -117,19 +117,19 @@ footer.control-enabled span { color: var(--green); }
   .popover-list { max-height: calc(min(52dvh, 380px) - 36px); }
 }
 
-@media (orientation: landscape) and (max-height: 560px) {
-  body { padding-bottom: calc(42px + env(safe-area-inset-bottom)); }
-  .app-header { min-height: 44px; padding-block: 5px; }
-  .brand small { display: none; }
-  .status { position: static; }
-  .session-tabs { padding: 4px 7px 1px; }
-  .session-tabs button { padding-block: 4px; }
-  .session-grid { gap: 5px; padding: 5px; }
-  .session-grid.focus-mode .terminal-card,
-  .terminal-card { height: calc(var(--visual-height, 100dvh) - 100px); min-height: 210px; }
-  .terminal-header { height: 28px; }
-  .terminal-card { grid-template-rows: 28px minmax(0,1fr) auto; }
-  .terminal-host { padding-block: 4px; }
-  footer { min-height: 40px; padding-block: 4px calc(4px + env(safe-area-inset-bottom)); }
-  footer button { min-height: 30px; }
+@media (max-height: 560px) {
+  html.is-landscape body { padding-bottom: calc(42px + env(safe-area-inset-bottom)); }
+  html.is-landscape .app-header { min-height: 44px; padding-block: 5px; }
+  html.is-landscape .brand small { display: none; }
+  html.is-landscape .status { position: static; }
+  html.is-landscape .session-tabs { padding: 4px 7px 1px; }
+  html.is-landscape .session-tabs button { padding-block: 4px; }
+  html.is-landscape .session-grid { gap: 5px; padding: 5px; }
+  html.is-landscape .session-grid.focus-mode .terminal-card,
+  html.is-landscape .terminal-card { height: calc(var(--visual-height, 100dvh) - 100px); min-height: 210px; }
+  html.is-landscape .terminal-header { height: 28px; }
+  html.is-landscape .terminal-card { grid-template-rows: 28px minmax(0,1fr) auto; }
+  html.is-landscape .terminal-host { padding-block: 4px; }
+  html.is-landscape footer { min-height: 40px; padding-block: 4px calc(4px + env(safe-area-inset-bottom)); }
+  html.is-landscape footer button { min-height: 30px; }
 }

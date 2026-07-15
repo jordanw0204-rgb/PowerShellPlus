@@ -1,0 +1,10 @@
+{
+  "name": "PowerShellPlus LAN Remote",
+  "short_name": "PowerShellPlus",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#11111b",
+  "theme_color": "#11111b"
+}

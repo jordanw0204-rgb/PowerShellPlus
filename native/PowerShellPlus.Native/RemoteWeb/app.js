@@ -14,7 +14,7 @@
   let socket;
   let activeSessionId;
   let allowInput = false;
-  let focusMode = matchMedia('(max-width: 650px)').matches;
+  let focusMode = matchMedia('(max-width: 650px), (pointer: coarse) and (max-height: 650px)').matches;
   let fontOffset = 0;
   let quickCommands = [];
   let reconnectTimer;
@@ -84,8 +84,10 @@
       value.columns = next.columns;
       value.rows = next.rows;
       value.terminal.resize(next.columns, next.rows);
+      scheduleFit(value);
+      return true;
     }
-    scheduleFit(value);
+    return false;
   }
 
   function scheduleFit(value) {
@@ -96,25 +98,28 @@
   function fitTerminal(value) {
     if (!value.card.isConnected || value.card.offsetParent === null || value.host.clientWidth < 20 || value.host.clientHeight < 20) return;
     const preferred = Math.max(8, Math.min(24, value.nativeFontSize));
-    value.terminal.options.fontFamily = fontStack(value.fontFace);
-    value.terminal.options.fontSize = preferred;
-    value.terminal.resize(value.columns, value.rows);
-    value.fitFrame = requestAnimationFrame(() => {
-      const screen = value.terminal.element?.querySelector('.xterm-screen');
-      if (!screen) return;
-      const hostStyle = getComputedStyle(value.host);
-      const availableWidth = value.host.clientWidth - parseFloat(hostStyle.paddingLeft) - parseFloat(hostStyle.paddingRight);
-      const availableHeight = value.host.clientHeight - parseFloat(hostStyle.paddingTop) - parseFloat(hostStyle.paddingBottom);
-      const bounds = screen.getBoundingClientRect();
-      if (bounds.width <= 0 || bounds.height <= 0 || availableWidth <= 0 || availableHeight <= 0) return;
-      const scale = Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height);
-      const zoom = Math.pow(1.12, fontOffset);
-      const fitted = Math.max(5, Math.min(24, Math.floor(preferred * scale * zoom * 10) / 10));
-      if (Math.abs(value.terminal.options.fontSize - fitted) > 0.05) {
-        value.terminal.options.fontSize = fitted;
-        value.terminal.resize(value.columns, value.rows);
-      }
-    });
+    const expectedFamily = fontStack(value.fontFace);
+    if (value.terminal.options.fontFamily !== expectedFamily) {
+      value.terminal.options.fontFamily = expectedFamily;
+      value.terminal.resize(value.columns, value.rows);
+      value.fitFrame = requestAnimationFrame(() => fitTerminal(value));
+      return;
+    }
+    const screen = value.terminal.element?.querySelector('.xterm-screen');
+    if (!screen) return;
+    const hostStyle = getComputedStyle(value.host);
+    const availableWidth = value.host.clientWidth - parseFloat(hostStyle.paddingLeft) - parseFloat(hostStyle.paddingRight);
+    const availableHeight = value.host.clientHeight - parseFloat(hostStyle.paddingTop) - parseFloat(hostStyle.paddingBottom);
+    const bounds = screen.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0 || availableWidth <= 0 || availableHeight <= 0) return;
+    const current = Math.max(5, Number(value.terminal.options.fontSize) || preferred);
+    const scale = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
+    const preferredMaximum = Math.max(5, Math.min(24, preferred * Math.pow(1.12, fontOffset)));
+    const fitted = Math.max(5, Math.min(preferredMaximum, Math.floor(current * scale * 10) / 10));
+    if (Math.abs(current - fitted) > 0.05) {
+      value.terminal.options.fontSize = fitted;
+      value.terminal.resize(value.columns, value.rows);
+    }
   }
 
   function scheduleAllFits() {
@@ -392,9 +397,13 @@
       value.directory.textContent = session.workingDirectory;
       value.tab.textContent = session.name;
       value.pendingCommands = Array.isArray(session.pendingCommands) ? session.pendingCommands : [];
-      value.fontFace = session.fontFace || value.fontFace;
-      value.nativeFontSize = Number(session.fontSize) || value.nativeFontSize;
+      const nextFontFace = session.fontFace || value.fontFace;
+      const nextFontSize = Number(session.fontSize) || value.nativeFontSize;
+      const appearanceChanged = value.fontFace !== nextFontFace || value.nativeFontSize !== nextFontSize;
+      value.fontFace = nextFontFace;
+      value.nativeFontSize = nextFontSize;
       applyGrid(value, session.columns, session.rows);
+      if (appearanceChanged) scheduleFit(value);
       updateQueueDisplay(value);
     }
     emptyState.hidden = sessions.length !== 0;
@@ -428,7 +437,10 @@
         applyGrid(value, message.columns, message.rows);
         value.terminal.reset();
         value.terminal.resize(value.columns, value.rows);
-        value.terminal.write(message.data || '', () => { value.terminal.scrollToBottom(); scheduleFit(value); });
+        const cursorRow = Math.max(1, Math.min(value.rows, Number(message.cursorRow) || value.rows));
+        const cursorColumn = Math.max(1, Math.min(value.columns, Number(message.cursorColumn) || 1));
+        const screen = `\x1b[2J\x1b[H${message.data || ''}\x1b[${cursorRow};${cursorColumn}H`;
+        value.terminal.write(screen, () => value.terminal.scrollToBottom());
       }
     } else if (message.type === 'output') {
       const value = runtime.get(message.sessionId);
@@ -519,19 +531,32 @@
   document.addEventListener('pointerdown', event => {
     if (!event.target.closest('.command-area')) runtime.forEach(closePopover);
   });
+  let viewportSettleTimers = [];
   const refitViewport = () => {
-    document.documentElement.style.setProperty('--visual-height', `${window.visualViewport?.height || window.innerHeight}px`);
+    const viewport = window.visualViewport;
+    const visualWidth = viewport?.width || window.innerWidth;
+    const visualHeight = viewport?.height || window.innerHeight;
+    const angle = Number(screen.orientation?.angle ?? window.orientation ?? 0);
+    const landscape = Math.abs(angle) === 90 || window.innerWidth > window.innerHeight;
+    document.documentElement.style.setProperty('--visual-width', `${visualWidth}px`);
+    document.documentElement.style.setProperty('--visual-height', `${visualHeight}px`);
+    document.documentElement.classList.toggle('is-landscape', landscape);
     scheduleAllFits();
-    setTimeout(scheduleAllFits, 120);
   };
-  window.addEventListener('resize', refitViewport);
-  window.addEventListener('orientationchange', refitViewport);
-  window.visualViewport?.addEventListener('resize', refitViewport);
-  screen.orientation?.addEventListener('change', refitViewport);
+  const settleViewport = () => {
+    viewportSettleTimers.forEach(clearTimeout);
+    refitViewport();
+    viewportSettleTimers = [80, 240, 600].map(delay => setTimeout(refitViewport, delay));
+  };
+  window.addEventListener('resize', settleViewport);
+  window.addEventListener('orientationchange', settleViewport);
+  window.visualViewport?.addEventListener('resize', settleViewport);
+  screen.orientation?.addEventListener('change', settleViewport);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) settleViewport(); });
   window.addEventListener('beforeunload', () => { intentionallyClosed = true; socket?.close(1000, 'Page closed'); });
 
   document.getElementById('layoutButton').textContent = focusMode ? 'All' : 'Focus';
-  refitViewport();
+  settleViewport();
   hasSession().then(authenticated => {
     pairingOverlay.hidden = authenticated;
     if (authenticated) connectSocket(); else setConnection('Pairing required', 'offline');

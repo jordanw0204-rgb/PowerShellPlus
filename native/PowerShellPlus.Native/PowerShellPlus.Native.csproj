@@ -11,7 +11,7 @@
     <SelfContained>true</SelfContained>
     <AssemblyName>PowerShellPlus</AssemblyName>
     <RootNamespace>PowerShellPlus.Native</RootNamespace>
-    <Version>3.7.1</Version>
+    <Version>3.7.2</Version>
     <ApplicationIcon>Assets\PowerShellPlus.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -28,6 +28,7 @@
     <EmbeddedResource Include="RemoteWeb\index.html" LogicalName="PowerShellPlus.Native.RemoteWeb.index.html" />
     <EmbeddedResource Include="RemoteWeb\app.js" LogicalName="PowerShellPlus.Native.RemoteWeb.app.js" />
     <EmbeddedResource Include="RemoteWeb\styles.css" LogicalName="PowerShellPlus.Native.RemoteWeb.styles.css" />
+    <EmbeddedResource Include="RemoteWeb\manifest.webmanifest" LogicalName="PowerShellPlus.Native.RemoteWeb.manifest.webmanifest" />
     <EmbeddedResource Include="..\..\node_modules\@xterm\xterm\lib\xterm.js" LogicalName="PowerShellPlus.Native.RemoteWeb.xterm.js" />
     <EmbeddedResource Include="..\..\node_modules\@xterm\xterm\css\xterm.css" LogicalName="PowerShellPlus.Native.RemoteWeb.xterm.css" />
     <EmbeddedResource Include="..\..\node_modules\@xterm\xterm\LICENSE" LogicalName="PowerShellPlus.Native.RemoteWeb.xterm.LICENSE" />

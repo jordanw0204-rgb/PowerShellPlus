@@ -117,6 +117,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         app.MapGet("/", () => AssetResult("index.html", "text/html; charset=utf-8"));
         app.MapGet("/app.js", () => AssetResult("app.js", "text/javascript; charset=utf-8"));
         app.MapGet("/styles.css", () => AssetResult("styles.css", "text/css; charset=utf-8"));
+        app.MapGet("/manifest.webmanifest", () => AssetResult("manifest.webmanifest", "application/manifest+json; charset=utf-8"));
         app.MapGet("/vendor/xterm.js", () => AssetResult("xterm.js", "text/javascript; charset=utf-8"));
         app.MapGet("/vendor/xterm.css", () => AssetResult("xterm.css", "text/css; charset=utf-8"));
         app.MapGet("/vendor/xterm-license", () => AssetResult("xterm.LICENSE", "text/plain; charset=utf-8"));
@@ -358,13 +359,29 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                 sessions = workspace.Views,
                 quickCommands = workspace.QuickCommands
             });
-            var views = workspace.Views.ToDictionary(value => value.Id, StringComparer.Ordinal);
             foreach (var session in forceSnapshots ? sessions : added)
             {
-                var snapshot = await dispatcher.InvokeAsync(session.Pane.GetRawOutputForTest, DispatcherPriority.Background);
-                if (snapshot.Length > MaximumSnapshotCharacters) snapshot = snapshot[^MaximumSnapshotCharacters..];
-                var view = views[session.Id];
-                await SendAsync(new { type = "snapshot", sessionId = session.Id, data = snapshot, columns = view.Columns, rows = view.Rows });
+                var source = await dispatcher.InvokeAsync(session.Pane.GetRemoteSnapshotSource, DispatcherPriority.Background);
+                var snapshot = await Task.Run(() => TerminalPane.CaptureRemoteScreen(source), cancellationToken);
+                if (snapshot.Text.Length > MaximumSnapshotCharacters)
+                {
+                    var text = snapshot.Text[^MaximumSnapshotCharacters..];
+                    var firstCompleteLine = text.IndexOf('\n');
+                    if (firstCompleteLine >= 0) text = text[(firstCompleteLine + 1)..];
+                    snapshot = snapshot with { Text = text };
+                }
+                await SendAsync(new
+                {
+                    type = "snapshot",
+                    sessionId = session.Id,
+                    data = snapshot.Text,
+                    columns = snapshot.Columns,
+                    rows = snapshot.Rows,
+                    cursorColumn = snapshot.CursorColumn,
+                    cursorRow = snapshot.CursorRow,
+                    composed = snapshot.IsComposed
+                });
+                await dispatcher.InvokeAsync(session.Pane.RequestRemoteRedraw, DispatcherPriority.Background);
             }
         }
 
@@ -548,7 +565,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private static void ApplySecurityHeaders(HttpResponse response)
     {
         response.Headers.CacheControl = "no-store";
-        response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; img-src 'self' data:; font-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+        response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; img-src 'self' data:; font-src 'self'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
         response.Headers.XContentTypeOptions = "nosniff";
         response.Headers.XFrameOptions = "DENY";
         response.Headers["Referrer-Policy"] = "no-referrer";

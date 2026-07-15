@@ -98,17 +98,24 @@ public partial class MainWindow
             var index = await indexResponse.Content.ReadAsStringAsync();
             var appResponse = await client.GetAsync("app.js");
             var appScript = await appResponse.Content.ReadAsStringAsync();
+            var manifestResponse = await client.GetAsync("manifest.webmanifest");
+            var manifest = await manifestResponse.Content.ReadAsStringAsync();
             var assetsEmbedded = indexResponse.IsSuccessStatusCode && index.Contains("/vendor/xterm.js", StringComparison.Ordinal)
                 && index.Contains("PowerShellPlus Remote", StringComparison.Ordinal);
             var responsiveClientEmbedded = appResponse.IsSuccessStatusCode
                 && appScript.Contains("ResizeObserver", StringComparison.Ordinal)
                 && appScript.Contains("orientationchange", StringComparison.Ordinal)
+                && appScript.Contains("is-landscape", StringComparison.Ordinal)
+                && appScript.Contains("preferredMaximum", StringComparison.Ordinal)
                 && appScript.Contains("queue-add", StringComparison.Ordinal)
                 && appScript.Contains("command-input", StringComparison.Ordinal);
+            var rotationManifestEmbedded = manifestResponse.IsSuccessStatusCode
+                && manifest.Contains("\"orientation\": \"any\"", StringComparison.Ordinal);
             var securityHeadersPresent = indexResponse.Headers.TryGetValues("Content-Security-Policy", out var policies)
                 && policies.Any(value => value.Contains("frame-ancestors 'none'", StringComparison.Ordinal));
             details.Add($"AssetsEmbedded={assetsEmbedded}");
             details.Add($"ResponsiveCommandClientEmbedded={responsiveClientEmbedded}");
+            details.Add($"RotationManifestEmbedded={rotationManifestEmbedded}");
             details.Add($"SecurityHeadersPresent={securityHeadersPresent}");
 
             var unauthorizedResponse = await client.GetAsync("api/sessions");
@@ -158,6 +165,8 @@ public partial class MainWindow
             var snapshotSeen = false;
             var sessionGridSeen = false;
             var snapshotGridSeen = false;
+            var snapshotComposedSeen = false;
+            var snapshotCursorSeen = false;
             var initialDeadline = DateTime.UtcNow.AddSeconds(8);
             while (DateTime.UtcNow < initialDeadline && (!sessionFrameSeen || !snapshotSeen))
             {
@@ -179,6 +188,12 @@ public partial class MainWindow
                     snapshotSeen = true;
                     snapshotGridSeen = document.RootElement.GetProperty("columns").GetInt32() >= 2
                         && document.RootElement.GetProperty("rows").GetInt32() >= 2;
+                    snapshotComposedSeen = document.RootElement.TryGetProperty("composed", out var composedElement)
+                        && composedElement.ValueKind == JsonValueKind.True;
+                    snapshotCursorSeen = document.RootElement.TryGetProperty("cursorColumn", out var cursorColumn)
+                        && cursorColumn.GetInt32() >= 1
+                        && document.RootElement.TryGetProperty("cursorRow", out var cursorRow)
+                        && cursorRow.GetInt32() >= 1;
                 }
             }
 
@@ -211,11 +226,35 @@ public partial class MainWindow
             details.Add($"WebSocketSnapshot={snapshotSeen}");
             details.Add($"WebSocketSessionGrid={sessionGridSeen}");
             details.Add($"WebSocketSnapshotGrid={snapshotGridSeen}");
+            details.Add($"WebSocketSnapshotComposed={snapshotComposedSeen}");
+            details.Add($"WebSocketSnapshotCursor={snapshotCursorSeen}");
             details.Add($"RemoteInputAccepted={remoteInputAccepted}");
             details.Add($"LiveConPtyOutput={liveOutputSeen}");
             details.Add($"LiveOutputGrid={outputGridSeen}");
             details.Add($"TerminalOutputEvents={pane.RemoteOutputEventsForTest - outputEventsBefore}");
             details.Add($"TerminalTranscriptContainsMarker={pane.GetRawOutputForTest().Contains(marker, StringComparison.Ordinal)}");
+
+            var resync = JsonSerializer.SerializeToUtf8Bytes(new { type = "sync", snapshots = true });
+            await socket.SendAsync(resync, WebSocketMessageType.Text, true, CancellationToken.None);
+            var composedSnapshotContainsMarker = false;
+            var snapshotDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < snapshotDeadline && !composedSnapshotContainsMarker)
+            {
+                var remaining = snapshotDeadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero) break;
+                var message = await ReceiveWebSocketTextAsync(socket, remaining);
+                if (message is null) break;
+                using var document = JsonDocument.Parse(message);
+                composedSnapshotContainsMarker = document.RootElement.TryGetProperty("type", out var typeElement)
+                    && typeElement.GetString() == "snapshot"
+                    && document.RootElement.TryGetProperty("sessionId", out var idElement)
+                    && idElement.GetString() == pane.Profile.Id
+                    && document.RootElement.TryGetProperty("composed", out var composedElement)
+                    && composedElement.ValueKind == JsonValueKind.True
+                    && document.RootElement.TryGetProperty("data", out var dataElement)
+                    && dataElement.GetString()?.Contains(marker, StringComparison.Ordinal) == true;
+            }
+            details.Add($"ComposedResyncContainsMarker={composedSnapshotContainsMarker}");
 
             const string queuedMarker = "PSPLUS_LAN_QUEUE_OK_371";
             var queuedCommand = $"Write-Output '{queuedMarker}'";
@@ -305,12 +344,13 @@ public partial class MainWindow
             var stoppedCleanly = !server.IsRunning;
             details.Add($"StoppedCleanly={stoppedCleanly}");
 
-            var success = assetsEmbedded && responsiveClientEmbedded && securityHeadersPresent && unauthenticatedRejected && wrongCodeRejected && pairingAccepted
+            var success = assetsEmbedded && responsiveClientEmbedded && rotationManifestEmbedded && securityHeadersPresent && unauthenticatedRejected && wrongCodeRejected && pairingAccepted
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
-                && sessionFrameSeen && snapshotSeen && sessionGridSeen && snapshotGridSeen && remoteInputAccepted && liveOutputSeen && outputGridSeen
+                && sessionFrameSeen && snapshotSeen && sessionGridSeen && snapshotGridSeen && snapshotComposedSeen && snapshotCursorSeen
+                && remoteInputAccepted && liveOutputSeen && outputGridSeen && composedSnapshotContainsMarker
                 && queueAccepted && queueVisible && queuedCommandAccepted && queuedCommandOutputSeen && queueRemoved
                 && rfc1918Accepted && publicAddressRejected && subnetEnforced && stoppedCleanly;
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Embedded LAN Remote preserves native terminal dimensions, supports responsive command controls, pairing, live ConPTY streaming, origin validation, and subnet policy.\n{string.Join(Environment.NewLine, details)}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Embedded LAN Remote snapshots the native composed terminal and caret, preserves dimensions, adapts orientation without font churn, supports command controls, pairing, live ConPTY streaming, origin validation, and subnet policy.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
         catch (Exception exception)
