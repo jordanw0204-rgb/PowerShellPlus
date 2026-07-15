@@ -110,7 +110,8 @@ public partial class MainWindow
                 && appScript.Contains("is-landscape", StringComparison.Ordinal)
                 && appScript.Contains("preferredMaximum", StringComparison.Ordinal)
                 && appScript.Contains("queue-add", StringComparison.Ordinal)
-                && appScript.Contains("command-input", StringComparison.Ordinal);
+                && appScript.Contains("command-input", StringComparison.Ordinal)
+                && appScript.Contains("deviceName", StringComparison.Ordinal);
             var stableTerminalSizingEmbedded = stylesResponse.IsSuccessStatusCode
                 && appScript.Contains("lastFitKey", StringComparison.Ordinal)
                 && appScript.Contains("terminalFits", StringComparison.Ordinal)
@@ -126,14 +127,25 @@ public partial class MainWindow
             details.Add($"StableTerminalSizingEmbedded={stableTerminalSizingEmbedded}");
             details.Add($"RotationManifestEmbedded={rotationManifestEmbedded}");
             details.Add($"SecurityHeadersPresent={securityHeadersPresent}");
+            var addressMetadataVisible = server.Addresses.Count == 1 && server.Addresses[0].IsRecommended
+                && server.Addresses[0].AdapterName == "This PC";
+            details.Add($"AddressMetadataVisible={addressMetadataVisible}");
 
             var unauthorizedResponse = await client.GetAsync("api/sessions");
             var unauthenticatedRejected = unauthorizedResponse.StatusCode == HttpStatusCode.Unauthorized;
             var wrongCode = server.PairingCode == "99999999" ? "88888888" : "99999999";
             var wrongPairResponse = await client.PostAsJsonAsync("api/pair", new { code = wrongCode });
             var wrongCodeRejected = wrongPairResponse.StatusCode == HttpStatusCode.Unauthorized;
-            var pairResponse = await client.PostAsJsonAsync("api/pair", new { code = server.PairingCode });
+            var pairResponse = await client.PostAsJsonAsync("api/pair", new { code = server.PairingCode, deviceName = "LAN smoke browser" });
             var pairingAccepted = pairResponse.IsSuccessStatusCode;
+            var pairedCookieState = cookies.GetCookies(baseAddress)["psp_lan_device"];
+            var pairedCookie = pairedCookieState?.Value ?? string.Empty;
+            var persistentHttpOnlyCookieIssued = pairedCookieState is { HttpOnly: true }
+                && pairedCookieState.Expires.ToUniversalTime() > DateTime.UtcNow.AddDays(300);
+            var savedPairingListed = server.PairedDevices.Count == 1 && server.PairedDevices[0].Name == "LAN smoke browser";
+            var pairingStoreText = File.Exists(LanRemotePairingStore.FilePath) ? File.ReadAllText(LanRemotePairingStore.FilePath) : string.Empty;
+            var credentialStoredAsHashOnly = pairedCookie.Length > 40 && !pairingStoreText.Contains(pairedCookie, StringComparison.Ordinal)
+                && pairingStoreText.Contains("secretHash", StringComparison.OrdinalIgnoreCase);
             var sessionsResponse = await client.GetAsync("api/sessions");
             var sessionsJson = await sessionsResponse.Content.ReadAsStringAsync();
             var sessionInventoryVisible = sessionsResponse.IsSuccessStatusCode && sessionsJson.Contains(pane.Profile.Id, StringComparison.Ordinal)
@@ -152,6 +164,9 @@ public partial class MainWindow
             details.Add($"UnauthenticatedRejected={unauthenticatedRejected}");
             details.Add($"WrongCodeRejected={wrongCodeRejected}");
             details.Add($"PairingAccepted={pairingAccepted}");
+            details.Add($"SavedPairingListed={savedPairingListed}");
+            details.Add($"PersistentHttpOnlyCookieIssued={persistentHttpOnlyCookieIssued}");
+            details.Add($"CredentialStoredAsHashOnly={credentialStoredAsHashOnly}");
             details.Add($"SessionInventoryVisible={sessionInventoryVisible}");
             details.Add($"GridMetadataVisible={gridMetadataVisible}");
             details.Add($"CommandMetadataVisible={commandMetadataVisible}");
@@ -349,17 +364,51 @@ public partial class MainWindow
                 try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Smoke complete", closeCancellation.Token); }
                 catch (OperationCanceledException) { }
             }
+            var firstServer = server;
+            await firstServer.StopAsync();
+            var stoppedCleanly = !firstServer.IsRunning;
+            await firstServer.DisposeAsync();
+
+            server = new LanRemoteServer(Dispatcher, GetLanRemoteSessions) { AllowInput = true };
+            await server.StartAsync(loopbackOnly: true);
+            var restartBaseAddress = new Uri(server.Urls.Single() + "/");
+            using var restartHandler = new HttpClientHandler { CookieContainer = cookies, UseCookies = true, UseProxy = false };
+            using var restartClient = new HttpClient(restartHandler) { BaseAddress = restartBaseAddress, Timeout = TimeSpan.FromSeconds(10) };
+            var restartSessionsResponse = await restartClient.GetAsync("api/sessions");
+            var pairingSurvivedRestart = restartSessionsResponse.IsSuccessStatusCode;
+            var savedDeviceAfterRestart = server.PairedDevices.SingleOrDefault(value => value.Name == "LAN smoke browser");
+            var savedDeviceVisibleAfterRestart = savedDeviceAfterRestart is not null;
+            using var revocationSocket = new ClientWebSocket();
+            revocationSocket.Options.Cookies = cookies;
+            revocationSocket.Options.SetRequestHeader("Origin", restartBaseAddress.GetLeftPart(UriPartial.Authority));
+            await revocationSocket.ConnectAsync(ToWebSocketUri(restartBaseAddress), CancellationToken.None);
+            var pairingRevoked = savedDeviceAfterRestart is not null && await server.RevokePairedDeviceAsync(savedDeviceAfterRestart.Id);
+            var revocationDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < revocationDeadline && revocationSocket.State == WebSocketState.Open)
+                _ = await ReceiveWebSocketTextAsync(revocationSocket, TimeSpan.FromSeconds(1));
+            var activeSocketRevoked = revocationSocket.State is WebSocketState.CloseReceived or WebSocketState.Closed;
+            if (revocationSocket.State == WebSocketState.CloseReceived)
+                await revocationSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Revocation received", CancellationToken.None);
+            var revokedSessionsResponse = await restartClient.GetAsync("api/sessions");
+            var revokedCredentialRejected = revokedSessionsResponse.StatusCode == HttpStatusCode.Unauthorized;
+            details.Add($"PairingSurvivedRestart={pairingSurvivedRestart}");
+            details.Add($"SavedDeviceVisibleAfterRestart={savedDeviceVisibleAfterRestart}");
+            details.Add($"PairingRevoked={pairingRevoked}");
+            details.Add($"ActiveSocketRevoked={activeSocketRevoked}");
+            details.Add($"RevokedCredentialRejected={revokedCredentialRejected}");
             await server.StopAsync();
-            var stoppedCleanly = !server.IsRunning;
+            stoppedCleanly &= !server.IsRunning;
             details.Add($"StoppedCleanly={stoppedCleanly}");
 
-            var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && unauthenticatedRejected && wrongCodeRejected && pairingAccepted
+            var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
+                && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
                 && sessionFrameSeen && snapshotSeen && sessionGridSeen && snapshotGridSeen && snapshotComposedSeen && snapshotCursorSeen
                 && remoteInputAccepted && liveOutputSeen && outputGridSeen && composedSnapshotContainsMarker
                 && queueAccepted && queueVisible && queuedCommandAccepted && queuedCommandOutputSeen && queueRemoved
-                && rfc1918Accepted && publicAddressRejected && subnetEnforced && stoppedCleanly;
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Embedded LAN Remote snapshots the native composed terminal and caret, preserves dimensions, adapts orientation without font churn, supports command controls, pairing, live ConPTY streaming, origin validation, and subnet policy.\n{string.Join(Environment.NewLine, details)}");
+                && rfc1918Accepted && publicAddressRejected && subnetEnforced
+                && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected && stoppedCleanly;
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Embedded LAN Remote persists hashed per-device pairing across restart, revokes saved access, labels adapter addresses, mirrors composed terminals, and preserves its security boundaries.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
         catch (Exception exception)

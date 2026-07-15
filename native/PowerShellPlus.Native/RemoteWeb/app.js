@@ -531,17 +531,34 @@
     } catch { return false; }
   }
 
+  function suggestedDeviceName() {
+    const agent = navigator.userAgent;
+    const platform = /iPhone/i.test(agent) ? 'iPhone'
+      : /iPad/i.test(agent) ? 'iPad'
+      : /Android/i.test(agent) ? 'Android device'
+      : /Windows/i.test(agent) ? 'Windows PC'
+      : /Macintosh/i.test(agent) ? 'Mac'
+      : 'LAN device';
+    const browser = /Edg\//i.test(agent) ? 'Edge'
+      : /Firefox\//i.test(agent) ? 'Firefox'
+      : /Chrome\//i.test(agent) ? 'Chrome'
+      : /Safari\//i.test(agent) ? 'Safari'
+      : '';
+    return browser ? `${platform} · ${browser}` : platform;
+  }
+
   document.getElementById('pairingForm').addEventListener('submit', async event => {
     event.preventDefault();
     const button = document.getElementById('pairButton');
     const error = document.getElementById('pairingError');
     const code = document.getElementById('pairingCode').value.trim();
+    const deviceName = document.getElementById('deviceName').value.trim();
     button.disabled = true;
     error.textContent = '';
     try {
       const response = await fetch('/api/pair', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code, deviceName })
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -592,6 +609,7 @@
   window.addEventListener('beforeunload', () => { intentionallyClosed = true; socket?.close(1000, 'Page closed'); });
 
   document.getElementById('layoutButton').textContent = focusMode ? 'All' : 'Focus';
+  document.getElementById('deviceName').value = suggestedDeviceName();
   settleViewport();
   hasSession().then(authenticated => {
     pairingOverlay.hidden = authenticated;

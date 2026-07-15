@@ -1,8 +1,8 @@
 <Window x:Class="PowerShellPlus.Native.LanRemoteDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LAN Remote" Icon="Assets/PowerShellPlus.ico" Width="560" Height="620"
-        MinWidth="500" MinHeight="560" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Title="LAN Remote" Icon="Assets/PowerShellPlus.ico" Width="620" Height="760"
+        MinWidth="560" MinHeight="650" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
   <Grid Margin="24">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -10,17 +10,25 @@
     <StackPanel>
       <TextBlock Text="LAN REMOTE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold"/>
       <TextBlock Text="Your terminals, on this network" FontSize="24" FontWeight="SemiBold" Margin="0,5,0,0"/>
-      <TextBlock Text="Open one of these addresses on your phone, then enter the pairing code. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
+      <TextBlock Text="Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
     </StackPanel>
 
     <Border Grid.Row="1" Margin="0,20,0,0" Padding="16" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9">
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions>
         <StackPanel>
-          <TextBlock Text="PHONE ADDRESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
-          <ListBox x:Name="AddressList" Margin="-10,5,0,0" MaxHeight="112" ScrollViewer.VerticalScrollBarVisibility="Auto">
-            <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" FontFamily="Cascadia Mono,Consolas" FontSize="12" Foreground="#94E2D5"/></DataTemplate></ListBox.ItemTemplate>
+          <TextBlock Text="LAN ADDRESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+          <ListBox x:Name="AddressList" Margin="-10,5,0,0" MaxHeight="142" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Margin="0,3,8,5">
+                  <TextBlock Text="{Binding Heading}" FontSize="11" FontWeight="SemiBold" Foreground="#CDD6F4"/>
+                  <TextBlock Text="{Binding Details}" FontFamily="Cascadia Mono,Consolas" FontSize="10" Foreground="#94E2D5" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
           </ListBox>
+          <TextBlock Text="Wi-Fi or Ethernet with an internet gateway is listed first. VMware, Hyper-V, WSL, and VPN adapters are shown only for devices attached to those networks." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,10,0"/>
         </StackPanel>
         <StackPanel Grid.Column="1" HorizontalAlignment="Right">
           <TextBlock Text="PAIRING CODE" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Right"/>
@@ -31,25 +39,45 @@
 
     <Grid Grid.Row="2" Margin="0,11,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <TextBlock x:Name="ConnectionCountText" Text="0 phones connected" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+      <TextBlock x:Name="ConnectionCountText" Text="0 devices connected" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
       <Button Grid.Column="1" Content="Copy address" Margin="0,0,8,0" Click="CopyAddressClick"/>
       <Button Grid.Column="2" Content="Open on this PC" Click="OpenBrowserClick"/>
     </Grid>
 
-    <StackPanel Grid.Row="3" Margin="0,22,0,0">
-      <TextBlock Text="ACCESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,9"/>
-      <CheckBox x:Name="AllowInputToggle" Style="{StaticResource ToggleSwitch}" Content="Allow paired phones to type in terminals" Click="AllowInputChanged"/>
-      <TextBlock Text="Read-only is the default. When enabled, phone keystrokes go directly to the selected live ConPTY session, so they have the same PowerShell and Codex permissions as that session." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="49,7,0,0"/>
+    <ScrollViewer Grid.Row="3" Margin="0,22,0,0" VerticalScrollBarVisibility="Auto">
+      <StackPanel Margin="0,0,8,0">
+        <TextBlock Text="ACCESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,9"/>
+        <CheckBox x:Name="AllowInputToggle" Style="{StaticResource ToggleSwitch}" Content="Allow paired devices to type in terminals" Click="AllowInputChanged"/>
+        <TextBlock Text="Read-only is the default. When enabled, remote keystrokes go directly to the selected live ConPTY session, so they have the same PowerShell and Codex permissions as that session." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="49,7,0,0"/>
 
-      <Border Margin="0,22,0,0" Padding="14" Background="#2A202C" BorderBrush="#5A3947" BorderThickness="1" CornerRadius="8">
-        <StackPanel>
-          <TextBlock Text="Trusted private network only" Foreground="#F9E2AF" FontWeight="SemiBold"/>
-          <TextBlock Text="This first LAN release uses local HTTP, so traffic is not encrypted. Use it only on a trusted Private Wi-Fi/Ethernet network. If Windows asks, allow PowerShellPlus on Private networks only—never Public networks. Stop sharing when finished." Foreground="#C9A9B6" TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0"/>
-        </StackPanel>
-      </Border>
+        <TextBlock Text="SAVED PAIRED DEVICES" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
+        <TextBlock x:Name="PairedDevicesEmptyText" Text="No devices are saved yet. Pair a browser once and it will appear here." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,8"/>
+        <ListBox x:Name="PairedDeviceList" MaxHeight="190" HorizontalContentAlignment="Stretch" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" ScrollViewer.VerticalScrollBarVisibility="Auto">
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid Margin="8,7">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="#CDD6F4"/>
+                  <TextBlock Text="{Binding Details}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button Grid.Column="1" Content="Remove" Tag="{Binding Id}" Foreground="#F38BA8" BorderBrush="#5A3947" Background="#2A202C" Margin="12,0,0,0" Padding="10,4" Click="RemovePairedDeviceClick"/>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Text="Pairing is saved in that browser for up to one year. Removing a device here immediately invalidates its saved credential." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,0,0"/>
 
-      <TextBlock Text="For future away-from-home access, this server can be placed behind a private HTTPS tailnet proxy without changing the terminal protocol. Direct router port-forwarding is intentionally blocked by the LAN subnet policy." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
-    </StackPanel>
+        <Border Margin="0,22,0,0" Padding="14" Background="#2A202C" BorderBrush="#5A3947" BorderThickness="1" CornerRadius="8">
+          <StackPanel>
+            <TextBlock Text="Trusted private network only" Foreground="#F9E2AF" FontWeight="SemiBold"/>
+            <TextBlock Text="LAN Remote uses local HTTP, so traffic and the saved browser credential are not encrypted in transit. Use it only on trusted Private Wi-Fi/Ethernet. If Windows asks, allow Private networks only—never Public networks." Foreground="#C9A9B6" TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0"/>
+          </StackPanel>
+        </Border>
+
+        <TextBlock Text="For future away-from-home access, this server can be placed behind a private HTTPS tailnet proxy without changing the terminal protocol. Direct router port-forwarding is intentionally blocked by the LAN subnet policy." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
+      </StackPanel>
+    </ScrollViewer>
 
     <Grid Grid.Row="4" Margin="0,20,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>

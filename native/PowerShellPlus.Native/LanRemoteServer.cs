@@ -21,20 +21,29 @@ using Microsoft.Extensions.Logging;
 namespace PowerShellPlus.Native;
 
 internal sealed record LanRemoteSession(string Id, string Name, string WorkingDirectory, TerminalPane Pane);
+internal sealed record LanRemoteAddress(string Url, string IpAddress, string AdapterName, string AdapterKind, bool IsRecommended)
+{
+    public string Heading => IsRecommended ? $"{AdapterName} · Recommended" : AdapterName;
+    public string Details => $"{Url} · {AdapterKind}";
+}
 
 internal sealed class LanRemoteServer : IAsyncDisposable
 {
-    private const string SessionCookieName = "psp_lan_session";
+    private const string SessionCookieName = "psp_lan_device";
     private const int MaximumConnections = 8;
+    private const int MaximumPairedDevices = 32;
     private const int MaximumInputMessageBytes = 32_768;
     private const int MaximumSnapshotCharacters = 1_000_000;
+    private static readonly TimeSpan PairedDeviceLifetime = TimeSpan.FromDays(365);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly ConcurrentDictionary<string, byte[]> AssetCache = new(StringComparer.Ordinal);
     private readonly Dispatcher dispatcher;
     private readonly Func<IReadOnlyList<LanRemoteSession>> sessionProvider;
-    private readonly ConcurrentDictionary<string, DateTimeOffset> authenticatedTokens = new(StringComparer.Ordinal);
+    private readonly object pairedDevicesGate = new();
+    private readonly Dictionary<string, LanRemotePairedDevice> pairedDevices = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> persistedLastSeen = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PairingFailures> pairingFailures = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<Guid, WebSocket> activeSockets = [];
+    private readonly ConcurrentDictionary<Guid, ActiveRemoteSocket> activeSockets = [];
     private readonly SemaphoreSlim connectionSlots = new(MaximumConnections, MaximumConnections);
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private WebApplication? application;
@@ -49,6 +58,12 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     {
         this.dispatcher = dispatcher;
         this.sessionProvider = sessionProvider;
+        foreach (var device in LanRemotePairingStore.Load())
+        {
+            pairedDevices[device.Id] = device;
+            persistedLastSeen[device.Id] = device.LastSeenUtc;
+        }
+        PruneExpiredPairedDevices(saveChanges: true);
         PairingCode = CreatePairingCode();
     }
 
@@ -58,6 +73,23 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     public string PairingCode { get; private set; }
     public string? LastError { get; private set; }
     public IReadOnlyList<string> Urls { get; private set; } = [];
+    public IReadOnlyList<LanRemoteAddress> Addresses { get; private set; } = [];
+    public IReadOnlyList<LanRemotePairedDeviceView> PairedDevices
+    {
+        get
+        {
+            var connected = activeSockets.Values.Select(value => value.DeviceId).ToHashSet(StringComparer.Ordinal);
+            lock (pairedDevicesGate)
+            {
+                return pairedDevices.Values
+                    .OrderByDescending(value => connected.Contains(value.Id))
+                    .ThenByDescending(value => value.LastSeenUtc)
+                    .Select(value => new LanRemotePairedDeviceView(value.Id, value.Name, value.CreatedUtc, value.LastSeenUtc,
+                        value.ExpiresUtc, value.LastAddress, connected.Contains(value.Id)))
+                    .ToArray();
+            }
+        }
+    }
 
     public async Task StartAsync(bool loopbackOnly = false, CancellationToken cancellationToken = default)
     {
@@ -96,11 +128,15 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         listenAddresses = addresses;
         port = selectedPort;
         PairingCode = CreatePairingCode();
-        authenticatedTokens.Clear();
         pairingFailures.Clear();
-        Urls = (loopbackOnly ? new[] { IPAddress.Loopback } : policy.PrivateAddresses)
-            .Select(address => $"http://{address}:{selectedPort}")
-            .ToArray();
+        PruneExpiredPairedDevices(saveChanges: true);
+        Addresses = loopbackOnly
+            ? [new LanRemoteAddress($"http://{IPAddress.Loopback}:{selectedPort}", IPAddress.Loopback.ToString(), "This PC", "Loopback test address", true)]
+            : policy.AddressDetails.Select((address, index) => new LanRemoteAddress(
+                $"http://{address.Address}:{selectedPort}", address.Address.ToString(), address.AdapterName,
+                address.IsVirtual ? "Virtual adapter" : address.HasGateway ? "Wi-Fi/Ethernet with internet gateway" : "Private network adapter",
+                index == 0)).ToArray();
+        Urls = Addresses.Select(value => value.Url).ToArray();
 
         app.Use(async (context, next) =>
         {
@@ -138,6 +174,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             networkPolicy = null;
             listenAddresses = [];
             Urls = [];
+            Addresses = [];
             throw;
         }
     }
@@ -147,14 +184,13 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         var app = application;
         application = null;
         if (app is null) return;
-        authenticatedTokens.Clear();
         PairingCode = CreatePairingCode();
         foreach (var socket in activeSockets.Values)
         {
             try
             {
-                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                    await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "LAN sharing stopped", CancellationToken.None);
+                if (socket.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    await socket.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "LAN sharing stopped", CancellationToken.None);
             }
             catch { }
         }
@@ -164,6 +200,36 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         networkPolicy = null;
         listenAddresses = [];
         Urls = [];
+        Addresses = [];
+        SavePairedDevicesNoThrow();
+    }
+
+    public async Task<bool> RevokePairedDeviceAsync(string deviceId)
+    {
+        LanRemotePairedDevice? removed;
+        lock (pairedDevicesGate)
+        {
+            if (!pairedDevices.Remove(deviceId, out removed)) return false;
+            persistedLastSeen.Remove(deviceId);
+            try { LanRemotePairingStore.Save(pairedDevices.Values); }
+            catch
+            {
+                pairedDevices[deviceId] = removed;
+                persistedLastSeen[deviceId] = removed.LastSeenUtc;
+                throw;
+            }
+        }
+
+        foreach (var connection in activeSockets.Values.Where(value => value.DeviceId == deviceId))
+        {
+            try
+            {
+                if (connection.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    await connection.Socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "Paired device removed", CancellationToken.None);
+            }
+            catch { }
+        }
+        return true;
     }
 
     private bool IsAllowedRequest(HttpContext context)
@@ -201,25 +267,50 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         }
 
         failures.Reset();
-        PruneExpiredTokens();
-        if (authenticatedTokens.Count >= 16)
+        var now = DateTimeOffset.UtcNow;
+        PruneExpiredPairedDevices(saveChanges: true);
+        var deviceName = NormalizeDeviceName(request.DeviceName, context.Request.Headers.UserAgent.ToString());
+        var deviceId = Guid.NewGuid().ToString("N");
+        var secret = CreateSessionToken();
+        var token = $"{deviceId}.{secret}";
+        var expires = now.Add(PairedDeviceLifetime);
+        var device = new LanRemotePairedDevice
         {
-            var oldest = authenticatedTokens.OrderBy(value => value.Value).FirstOrDefault();
-            if (!string.IsNullOrEmpty(oldest.Key)) authenticatedTokens.TryRemove(oldest.Key, out _);
+            Id = deviceId,
+            Name = deviceName,
+            SecretHash = LanRemotePairingStore.HashSecret(secret),
+            CreatedUtc = now,
+            LastSeenUtc = now,
+            ExpiresUtc = expires,
+            LastAddress = remoteKey,
+            UserAgent = Limit(context.Request.Headers.UserAgent.ToString(), 256)
+        };
+        lock (pairedDevicesGate)
+        {
+            if (pairedDevices.Count >= MaximumPairedDevices)
+                return Results.Json(new { error = "The saved-device list is full. Remove a device in the LAN Remote window, then try again." }, statusCode: StatusCodes.Status409Conflict);
+            pairedDevices[device.Id] = device;
+            persistedLastSeen[device.Id] = now;
+            try { LanRemotePairingStore.Save(pairedDevices.Values); }
+            catch
+            {
+                pairedDevices.Remove(device.Id);
+                persistedLastSeen.Remove(device.Id);
+                return Results.Json(new { error = "PowerShellPlus could not save this paired device." }, statusCode: StatusCodes.Status500InternalServerError);
+            }
         }
-        var token = CreateSessionToken();
-        var expires = DateTimeOffset.UtcNow.AddHours(12);
-        authenticatedTokens[token] = expires;
         context.Response.Cookies.Append(SessionCookieName, token, new CookieOptions
         {
             HttpOnly = true,
             Secure = false,
             SameSite = SameSiteMode.Strict,
             Path = "/",
-            MaxAge = TimeSpan.FromHours(12),
+            Expires = expires,
+            MaxAge = PairedDeviceLifetime,
             IsEssential = true
         });
-        return Results.Json(new { paired = true, expiresUtc = expires });
+        PairingCode = CreatePairingCode();
+        return Results.Json(new { paired = true, deviceId, deviceName, expiresUtc = expires });
     }
 
     private async Task<IResult> SessionsAsync(HttpContext context)
@@ -248,7 +339,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
-        if (!TryAuthorize(context, out var expiresUtc))
+        if (!TryAuthorize(context, out var authorization))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
@@ -269,9 +360,10 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         try
         {
             socket = await context.WebSockets.AcceptWebSocketAsync();
-            activeSockets[socketId] = socket;
+            activeSockets[socketId] = new ActiveRemoteSocket(socket, authorization.DeviceId);
             Interlocked.Increment(ref connectedClients);
-            using var expiryCancellation = new CancellationTokenSource(expiresUtc - DateTimeOffset.UtcNow);
+            var remaining = authorization.ExpiresUtc - DateTimeOffset.UtcNow;
+            using var expiryCancellation = new CancellationTokenSource(remaining < TimeSpan.FromHours(24) ? remaining : TimeSpan.FromHours(24));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetimeCancellation.Token, expiryCancellation.Token);
             await RunConnectionAsync(socket, linked.Token);
         }
@@ -514,14 +606,40 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         return new RemoteWorkspaceState(sessions, views, quickCommands);
     }
 
-    private bool TryAuthorize(HttpContext context, out DateTimeOffset expiresUtc)
+    private bool TryAuthorize(HttpContext context, out DeviceAuthorization authorization)
     {
-        expiresUtc = default;
+        authorization = default;
         if (!context.Request.Cookies.TryGetValue(SessionCookieName, out var token) || string.IsNullOrWhiteSpace(token)) return false;
-        if (!authenticatedTokens.TryGetValue(token, out expiresUtc)) return false;
-        if (expiresUtc > DateTimeOffset.UtcNow) return true;
-        authenticatedTokens.TryRemove(token, out _);
-        return false;
+        var separator = token.IndexOf('.');
+        if (separator != 32 || separator == token.Length - 1) return false;
+        var deviceId = token[..separator];
+        var secret = token[(separator + 1)..];
+        var now = DateTimeOffset.UtcNow;
+        var saveLastSeen = false;
+        var removedExpired = false;
+        lock (pairedDevicesGate)
+        {
+            if (!pairedDevices.TryGetValue(deviceId, out var device) || !LanRemotePairingStore.SecretMatches(device.SecretHash, secret)) return false;
+            if (device.ExpiresUtc <= now)
+            {
+                pairedDevices.Remove(deviceId);
+                persistedLastSeen.Remove(deviceId);
+                removedExpired = true;
+            }
+            else
+            {
+                device.LastSeenUtc = now;
+                device.LastAddress = NormalizeAddress(context.Connection.RemoteIpAddress)?.ToString() ?? device.LastAddress;
+                authorization = new DeviceAuthorization(device.Id, device.ExpiresUtc);
+                if (!persistedLastSeen.TryGetValue(deviceId, out var persisted) || now - persisted >= TimeSpan.FromMinutes(2))
+                {
+                    persistedLastSeen[deviceId] = now;
+                    saveLastSeen = true;
+                }
+            }
+        }
+        if (removedExpired || saveLastSeen) SavePairedDevicesNoThrow();
+        return authorization.DeviceId is not null;
     }
 
     private bool HasAllowedOrigin(HttpContext context)
@@ -541,12 +659,52 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         return CryptographicOperations.FixedTimeEquals(expectedBytes, candidateBytes);
     }
 
-    private void PruneExpiredTokens()
+    private void PruneExpiredPairedDevices(bool saveChanges)
     {
         var now = DateTimeOffset.UtcNow;
-        foreach (var token in authenticatedTokens.Where(value => value.Value <= now).Select(value => value.Key).ToArray())
-            authenticatedTokens.TryRemove(token, out _);
+        var changed = false;
+        lock (pairedDevicesGate)
+        {
+            foreach (var deviceId in pairedDevices.Values.Where(value => value.ExpiresUtc <= now).Select(value => value.Id).ToArray())
+            {
+                changed |= pairedDevices.Remove(deviceId);
+                persistedLastSeen.Remove(deviceId);
+            }
+        }
+        if (changed && saveChanges) SavePairedDevicesNoThrow();
     }
+
+    private void SavePairedDevicesNoThrow()
+    {
+        try
+        {
+            LanRemotePairedDevice[] snapshot;
+            lock (pairedDevicesGate) snapshot = pairedDevices.Values.Select(value => value.Clone()).ToArray();
+            LanRemotePairingStore.Save(snapshot);
+        }
+        catch (Exception exception) { LastError = exception.ToString(); }
+    }
+
+    private static string NormalizeDeviceName(string? requested, string userAgent)
+    {
+        var value = string.Concat((requested ?? string.Empty).Where(character => !char.IsControl(character))).Trim();
+        if (value.Length > 60) value = value[..60];
+        if (value.Length > 0) return value;
+        var platform = userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase) ? "iPhone"
+            : userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase) ? "iPad"
+            : userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase) ? "Android device"
+            : userAgent.Contains("Windows", StringComparison.OrdinalIgnoreCase) ? "Windows PC"
+            : userAgent.Contains("Macintosh", StringComparison.OrdinalIgnoreCase) ? "Mac"
+            : "LAN device";
+        var browser = userAgent.Contains("Edg/", StringComparison.OrdinalIgnoreCase) ? "Edge"
+            : userAgent.Contains("Firefox/", StringComparison.OrdinalIgnoreCase) ? "Firefox"
+            : userAgent.Contains("Chrome/", StringComparison.OrdinalIgnoreCase) ? "Chrome"
+            : userAgent.Contains("Safari/", StringComparison.OrdinalIgnoreCase) ? "Safari"
+            : string.Empty;
+        return browser.Length == 0 ? platform : $"{platform} · {browser}";
+    }
+
+    private static string Limit(string value, int maximum) => value.Length <= maximum ? value : value[..maximum];
 
     private static IResult AssetResult(string assetName, string contentType)
     {
@@ -638,7 +796,9 @@ internal sealed class LanRemoteServer : IAsyncDisposable
 
     public void SignalShutdown() => lifetimeCancellation.Cancel();
 
-    private sealed record PairRequest(string Code);
+    private sealed record PairRequest(string Code, string? DeviceName = null);
+    private readonly record struct DeviceAuthorization(string DeviceId, DateTimeOffset ExpiresUtc);
+    private sealed record ActiveRemoteSocket(WebSocket Socket, string DeviceId);
     private sealed record OutputFrame(string SessionId, string Data, int Columns, int Rows);
     private sealed record RemoteSessionView(string Id, string Name, string WorkingDirectory, int Columns, int Rows,
         string FontFace, int FontSize, IReadOnlyList<string> PendingCommands);
@@ -681,12 +841,14 @@ internal sealed class LanNetworkPolicy
     private readonly bool loopbackOnly;
     private LanNetworkPolicy(IReadOnlyList<LanNetwork> networks, bool loopbackOnly)
     {
-        this.networks = networks;
+        this.networks = networks.OrderByDescending(value => value.Priority).ThenBy(value => value.AdapterName, StringComparer.OrdinalIgnoreCase).ToArray();
         this.loopbackOnly = loopbackOnly;
-        PrivateAddresses = networks.Select(value => value.Address).Distinct().ToArray();
+        AddressDetails = this.networks.GroupBy(value => value.Address).Select(value => value.First()).ToArray();
+        PrivateAddresses = AddressDetails.Select(value => value.Address).ToArray();
     }
 
     public IReadOnlyList<IPAddress> PrivateAddresses { get; }
+    public IReadOnlyList<LanNetwork> AddressDetails { get; }
     public bool Allows(IPAddress address) => IPAddress.IsLoopback(address) || (!loopbackOnly && networks.Any(network => network.Contains(address)));
 
     public static LanNetworkPolicy CreateLoopbackOnly() => new([], true);
@@ -700,12 +862,15 @@ internal sealed class LanNetworkPolicy
             IPInterfaceProperties properties;
             try { properties = adapter.GetIPProperties(); }
             catch (NetworkInformationException) { continue; }
+            var hasGateway = properties.GatewayAddresses.Any(value => value.Address.AddressFamily == AddressFamily.InterNetwork
+                && !value.Address.Equals(IPAddress.Any));
+            var isVirtual = IsVirtualAdapter(adapter);
             foreach (var unicast in properties.UnicastAddresses)
             {
                 var address = unicast.Address;
                 var mask = unicast.IPv4Mask;
                 if (address.AddressFamily != AddressFamily.InterNetwork || mask is null || !IsRfc1918(address)) continue;
-                networks.Add(new LanNetwork(address, mask));
+                networks.Add(new LanNetwork(address, mask, adapter.Name, adapter.Description, adapter.NetworkInterfaceType, hasGateway, isVirtual));
             }
         }
         return new LanNetworkPolicy(networks, false);
@@ -719,8 +884,26 @@ internal sealed class LanNetworkPolicy
             || (bytes[0] == 192 && bytes[1] == 168));
     }
 
-    internal sealed record LanNetwork(IPAddress Address, IPAddress Mask)
+    private static bool IsVirtualAdapter(NetworkInterface adapter)
     {
+        var identity = $"{adapter.Name} {adapter.Description}";
+        return identity.Contains("virtual", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("vmware", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("hyper-v", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("vethernet", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("docker", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("wsl", StringComparison.OrdinalIgnoreCase)
+            || identity.Contains("host-only", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal sealed record LanNetwork(IPAddress Address, IPAddress Mask, string AdapterName = "Private network",
+        string AdapterDescription = "", NetworkInterfaceType InterfaceType = NetworkInterfaceType.Unknown,
+        bool HasGateway = false, bool IsVirtual = false)
+    {
+        public int Priority => (IsVirtual ? -1000 : 0) + (HasGateway ? 500 : 0)
+            + (InterfaceType == NetworkInterfaceType.Wireless80211 ? 200
+                : InterfaceType is NetworkInterfaceType.Ethernet or NetworkInterfaceType.GigabitEthernet ? 150 : 0);
+
         public bool Contains(IPAddress candidate)
         {
             if (candidate.AddressFamily != AddressFamily.InterNetwork) return false;

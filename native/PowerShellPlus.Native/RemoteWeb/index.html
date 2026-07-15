@@ -39,7 +39,9 @@
     <form id="pairingForm" class="pairing-card">
       <span class="pairing-icon">◎</span>
       <h1 id="pairingTitle">Connect to PowerShellPlus</h1>
-      <p>Enter the pairing code shown on the computer. Access lasts only while LAN sharing is running.</p>
+      <p>Name this browser and enter the code shown on the computer. It will stay paired across PowerShellPlus restarts until you remove it from the LAN Remote window.</p>
+      <label for="deviceName">This device name</label>
+      <input id="deviceName" class="pairing-device-name" name="deviceName" maxlength="60" autocomplete="off" required>
       <label for="pairingCode">Pairing code</label>
       <input id="pairingCode" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="one-time-code" required>
       <button id="pairButton" type="submit">Connect</button>
