@@ -1101,6 +1101,18 @@ public partial class MainWindow : Window
             if (output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase)) break;
             if (output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase)) break;
         }
+        if (output.Contains("Update available!", StringComparison.OrdinalIgnoreCase)
+            && output.Contains("Press enter to continue", StringComparison.OrdinalIgnoreCase)
+            && await pane.SendCommandAsync("2"))
+        {
+            deadline = DateTime.UtcNow.AddSeconds(14);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(200); output = pane.GetOutput();
+                if (output.Contains("stdin is not a terminal", StringComparison.OrdinalIgnoreCase)) break;
+                if (output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase)) break;
+            }
+        }
         await Task.Delay(350);
         var codexDetected = pane.GetCodexProcessState().IsActive;
         var launchMarker = CodexLaunchStore.Load(pane.Profile.Id);
