@@ -28,8 +28,9 @@ internal sealed record TailscaleCommandResult(int ExitCode, string StandardOutpu
 
 internal sealed class TailscaleFunnelManager : IAsyncDisposable
 {
-    internal const int HttpsPort = 8443;
+    internal const int HttpsPort = 443;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan FunnelApprovalTimeout = TimeSpan.FromMinutes(3.25);
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly object outputGate = new();
     private readonly StringBuilder foregroundOutput = new();
@@ -91,6 +92,7 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
             standardErrorPump = PumpAsync(process.StandardError);
 
             var deadline = DateTime.UtcNow.AddSeconds(45);
+            var approvalBrowserOpened = false;
             while (DateTime.UtcNow < deadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -101,6 +103,13 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
                 }
 
                 await Task.Delay(250, cancellationToken);
+                if (!approvalBrowserOpened
+                    && TailscaleLoginManager.TryParseLoginUri(GetForegroundOutput(), out var approvalUri))
+                {
+                    TailscaleLoginManager.OpenOfficialBrowser(approvalUri);
+                    approvalBrowserOpened = true;
+                    deadline = DateTime.UtcNow.Add(FunnelApprovalTimeout);
+                }
                 var status = await RunCommandAsync(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
                 if (status.ExitCode == 0 && FunnelStatusHasMapping(status.StandardOutput, preflight.DnsName, HttpsPort, localTarget))
                 {
@@ -109,7 +118,8 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
                 }
             }
 
-            throw new TimeoutException($"Tailscale Funnel did not become ready within 45 seconds. Approve Funnel/HTTPS in the browser window Tailscale opens, then try again. Public DNS can take a few minutes on first use.{Environment.NewLine}{GetForegroundOutput()}");
+            var waitDescription = approvalBrowserOpened ? "the three-minute browser approval window" : "45 seconds";
+            throw new TimeoutException($"Tailscale Funnel did not become ready within {waitDescription}. Approve Funnel/HTTPS in the browser, then try again. Public DNS can take a few minutes on first use.{Environment.NewLine}{GetForegroundOutput()}");
         }
         catch
         {

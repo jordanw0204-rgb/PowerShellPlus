@@ -25,12 +25,24 @@ internal static partial class TailscaleLoginManager
     internal static Uri ParseLoginUri(string output)
     {
         ArgumentNullException.ThrowIfNull(output);
+        if (TryParseLoginUri(output, out var uri)) return uri;
+        throw new InvalidOperationException("Tailscale did not provide a valid official browser sign-in address.");
+    }
+
+    internal static bool TryParseLoginUri(string output, out Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(output);
         foreach (Match match in LoginUrlPattern().Matches(output))
         {
             var candidate = match.Value.TrimEnd('.', ',', ';', ')', ']', '}', '\'', '"');
-            if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && IsOfficialLoginUri(uri)) return uri;
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var parsed) && IsOfficialLoginUri(parsed))
+            {
+                uri = parsed;
+                return true;
+            }
         }
-        throw new InvalidOperationException("Tailscale did not provide a valid official browser sign-in address.");
+        uri = null!;
+        return false;
     }
 
     internal static ProcessStartInfo CreateLoginStartInfo(string executable)
@@ -98,7 +110,7 @@ internal static partial class TailscaleLoginManager
                 throw new TimeoutException("Tailscale did not provide a browser sign-in address within 20 seconds.");
             }
 
-            (openBrowser ?? OpenBrowser)(loginUri);
+            (openBrowser ?? OpenOfficialBrowser)(loginUri);
             try { await exitTask.WaitAsync(LoginCompletionTimeout, cancellationToken); }
             catch (TimeoutException)
             {
@@ -115,11 +127,12 @@ internal static partial class TailscaleLoginManager
         }
     }
 
-    private static void OpenBrowser(Uri loginUri)
+    internal static void OpenOfficialBrowser(Uri loginUri)
     {
         if (!IsOfficialLoginUri(loginUri))
             throw new InvalidOperationException("PowerShellPlus refused a non-Tailscale sign-in address.");
-        if (Process.Start(new ProcessStartInfo(loginUri.AbsoluteUri) { UseShellExecute = true }) is null)
+        using var browser = Process.Start(new ProcessStartInfo(loginUri.AbsoluteUri) { UseShellExecute = true });
+        if (browser is null)
             throw new InvalidOperationException("Windows did not open Tailscale's browser sign-in page.");
     }
 

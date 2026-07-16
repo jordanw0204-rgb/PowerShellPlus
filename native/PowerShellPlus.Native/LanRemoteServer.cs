@@ -276,13 +276,17 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         var host = context.Request.Host;
         if (trustedExternalOrigin is not null && IsLoopback(remote)
             && host.Host.Equals(trustedExternalOrigin.Host, StringComparison.OrdinalIgnoreCase)
-            && host.Port == trustedExternalOrigin.Port)
+            && (host.Port ?? DefaultPort(trustedExternalOrigin.Scheme)) == trustedExternalOrigin.Port)
             return true;
         if (host.Port != port || string.IsNullOrWhiteSpace(host.Host)) return false;
         if (host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return IsLoopback(remote);
         return IPAddress.TryParse(host.Host, out var hostAddress)
             && listenAddresses.Contains(NormalizeAddress(hostAddress));
     }
+
+    private static int DefaultPort(string scheme) => scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+        ? 443
+        : 80;
 
     private async Task<IResult> PairAsync(HttpContext context)
     {

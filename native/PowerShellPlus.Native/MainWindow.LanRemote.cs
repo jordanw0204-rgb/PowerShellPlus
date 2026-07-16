@@ -562,7 +562,7 @@ public partial class MainWindow
 
             const string tailscaleStatusFixture = "{\"BackendState\":\"Running\",\"Self\":{\"Online\":true,\"DNSName\":\"psplus-smoke.example.ts.net.\"}}";
             const string tailscaleNeedsLoginFixture = "{\"BackendState\":\"NeedsLogin\",\"Self\":{\"Online\":false}}";
-            const string funnelStatusFixture = "{\"TCP\":{\"8443\":{\"HTTPS\":true}},\"Web\":{\"psplus-smoke.example.ts.net:8443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:43199\"}}}}}";
+            const string funnelStatusFixture = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"psplus-smoke.example.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:43199\"}}}}}";
             var parsedIdentity = TailscaleFunnelManager.ParseIdentity(tailscaleStatusFixture, @"C:\Program Files\Tailscale\tailscale.exe");
             var loginRequiredDetected = false;
             try { _ = TailscaleFunnelManager.ParseIdentity(tailscaleNeedsLoginFixture, @"C:\Program Files\Tailscale\tailscale.exe"); }
@@ -571,9 +571,12 @@ public partial class MainWindow
                 loginRequiredDetected = exception.ExecutablePath == @"C:\Program Files\Tailscale\tailscale.exe";
             }
             var loginUri = TailscaleLoginManager.ParseLoginUri("To authenticate, visit: https://login.tailscale.com/a/psplus-smoke-token");
+            var funnelApprovalUri = TailscaleLoginManager.ParseLoginUri("Funnel is disabled. To enable, visit: https://login.tailscale.com/f/funnel?node=psplus-smoke-node");
             var loginStartInfo = TailscaleLoginManager.CreateLoginStartInfo(@"C:\Program Files\Tailscale\tailscale.exe");
             var loginBoundary = loginUri == new Uri("https://login.tailscale.com/a/psplus-smoke-token")
                 && TailscaleLoginManager.IsOfficialLoginUri(loginUri)
+                && TailscaleLoginManager.IsOfficialLoginUri(funnelApprovalUri)
+                && funnelApprovalUri.AbsolutePath == "/f/funnel"
                 && !TailscaleLoginManager.IsOfficialLoginUri(new Uri("http://login.tailscale.com/a/token"))
                 && !TailscaleLoginManager.IsOfficialLoginUri(new Uri("https://login.tailscale.com.evil.example/a/token"))
                 && TailscaleLoginManager.BuildLoginArguments().SequenceEqual(["login", "--timeout=3m"])
@@ -589,9 +592,9 @@ public partial class MainWindow
                     TailscaleFunnelManager.HttpsPort, "http://127.0.0.1:43199")
                 && !TailscaleFunnelManager.FunnelPortInUse("{}", TailscaleFunnelManager.HttpsPort);
             var funnelArgumentsSafe = TailscaleFunnelManager.BuildFunnelArguments(43199)
-                    .SequenceEqual(["funnel", "--yes", "--https=8443", "http://127.0.0.1:43199"])
+                    .SequenceEqual(["funnel", "--yes", "--https=443", "http://127.0.0.1:43199"])
                 && TailscaleFunnelManager.BuildStopArguments(43199)
-                    .SequenceEqual(["funnel", "--https=8443", "http://127.0.0.1:43199", "off"])
+                    .SequenceEqual(["funnel", "--https=443", "http://127.0.0.1:43199", "off"])
                 && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
             details.Add($"FunnelContractParsed={funnelContract}");
             details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
