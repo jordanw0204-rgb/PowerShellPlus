@@ -1,23 +1,29 @@
 <Window x:Class="PowerShellPlus.Native.LanRemoteDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LAN Remote" Icon="Assets/PowerShellPlus.ico" Width="620" Height="760"
-        MinWidth="560" MinHeight="650" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Title="Remote Access" Icon="Assets/PowerShellPlus.ico" Width="650" Height="790"
+        MinWidth="580" MinHeight="680" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
   <Grid Margin="24">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 
     <StackPanel>
-      <TextBlock Text="LAN REMOTE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold"/>
-      <TextBlock Text="Your terminals, on this network" FontSize="24" FontWeight="SemiBold" Margin="0,5,0,0"/>
-      <TextBlock Text="Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
+      <TextBlock x:Name="ModeEyebrowText" Text="LAN REMOTE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold"/>
+      <TextBlock x:Name="ModeTitleText" Text="Your terminals, on this network" FontSize="24" FontWeight="SemiBold" Margin="0,5,0,0"/>
+      <TextBlock x:Name="ModeDescriptionText" Text="Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
+      <Border Margin="0,14,0,0" Padding="5" HorizontalAlignment="Left" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="8">
+        <StackPanel x:Name="ModeControls" Orientation="Horizontal">
+          <Button x:Name="LanModeButton" Content="LAN" MinWidth="92" Click="LanModeClick"/>
+          <Button x:Name="GlobalModeButton" Content="GLOBAL" MinWidth="108" Margin="6,0,0,0" Click="GlobalModeClick"/>
+        </StackPanel>
+      </Border>
     </StackPanel>
 
     <Border Grid.Row="1" Margin="0,20,0,0" Padding="16" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9">
       <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions>
         <StackPanel>
-          <TextBlock Text="LAN ADDRESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+          <TextBlock x:Name="AddressLabelText" Text="LAN ADDRESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
           <ListBox x:Name="AddressList" Margin="-10,5,0,0" MaxHeight="142" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
             <ListBox.ItemTemplate>
               <DataTemplate>
@@ -28,11 +34,11 @@
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
-          <TextBlock Text="Wi-Fi or Ethernet with an internet gateway is listed first. VMware, Hyper-V, WSL, and VPN adapters are shown only for devices attached to those networks." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,10,0"/>
+          <TextBlock x:Name="AddressHelpText" Text="Wi-Fi or Ethernet with an internet gateway is listed first. Virtual adapters work only for devices attached to those networks." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,10,0"/>
         </StackPanel>
         <StackPanel Grid.Column="1" HorizontalAlignment="Right">
           <TextBlock Text="PAIRING CODE" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Right"/>
-          <TextBlock x:Name="PairingCodeText" FontFamily="Cascadia Mono,Consolas" FontSize="25" FontWeight="SemiBold" Foreground="#F9E2AF" HorizontalAlignment="Right" Margin="0,5,0,0"/>
+          <TextBlock x:Name="PairingCodeText" FontFamily="Cascadia Mono,Consolas" FontSize="23" FontWeight="SemiBold" Foreground="#F9E2AF" HorizontalAlignment="Right" Margin="0,5,0,0"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -70,12 +76,13 @@
 
         <Border Margin="0,22,0,0" Padding="14" Background="#2A202C" BorderBrush="#5A3947" BorderThickness="1" CornerRadius="8">
           <StackPanel>
-            <TextBlock Text="Trusted private network only" Foreground="#F9E2AF" FontWeight="SemiBold"/>
-            <TextBlock Text="LAN Remote uses local HTTP, so traffic and the saved browser credential are not encrypted in transit. Use it only on trusted Private Wi-Fi/Ethernet. If Windows asks, allow Private networks only—never Public networks." Foreground="#C9A9B6" TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0"/>
+            <TextBlock x:Name="SecurityTitleText" Text="Trusted private network only" Foreground="#F9E2AF" FontWeight="SemiBold"/>
+            <TextBlock x:Name="SecurityBodyText" Text="LAN mode uses local HTTP. Use it only on trusted Private Wi-Fi/Ethernet and never forward its port through your router." Foreground="#C9A9B6" TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0"/>
           </StackPanel>
         </Border>
 
-        <TextBlock Text="For future away-from-home access, this server can be placed behind a private HTTPS tailnet proxy without changing the terminal protocol. Direct router port-forwarding is intentionally blocked by the LAN subnet policy." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
+        <TextBlock x:Name="ModeHelpText" Text="Switch to Global for browser-only access away from home. Direct router port-forwarding remains blocked." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
+        <Button x:Name="TailscaleSetupButton" Content="Install / open Tailscale on this PC" HorizontalAlignment="Left" Margin="0,10,0,0" Click="TailscaleSetupClick"/>
       </StackPanel>
     </ScrollViewer>
 

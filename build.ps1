@@ -17,7 +17,7 @@ $xtermAsset = Join-Path $root 'node_modules\@xterm\xterm\lib\xterm.js'
 
 if (-not (Test-Path -LiteralPath $xtermAsset)) {
     if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-        throw 'The LAN Remote web terminal assets require Node.js/npm for the first build. Install the current Node.js LTS release, reopen PowerShell, and run build.ps1 again.'
+        throw 'The Remote Access web terminal assets require Node.js/npm for the first build. Install the current Node.js LTS release, reopen PowerShell, and run build.ps1 again.'
     }
     & npm.cmd ci --ignore-scripts --omit=dev
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $xtermAsset)) { throw 'Pinned xterm.js asset restore failed.' }

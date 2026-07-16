@@ -23,7 +23,7 @@
           </StackPanel>
         </Border>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-          <Button x:Name="TitleBarLanRemoteButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenLanRemoteClick" ToolTip="Share sessions on this LAN">
+          <Button x:Name="TitleBarLanRemoteButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenLanRemoteClick" ToolTip="Open LAN / Global Remote Access">
             <Grid Width="21" Height="21">
               <Ellipse Stroke="#89B4FA" StrokeThickness="1.2" Margin="2"/>
               <Path Data="M3,10.5 H18 M10.5,3 C7.5,6 7.5,15 10.5,18 M10.5,3 C13.5,6 13.5,15 10.5,18" Stroke="#89B4FA" StrokeThickness="1.05" Fill="Transparent"/>

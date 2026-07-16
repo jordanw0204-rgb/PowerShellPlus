@@ -12,6 +12,7 @@ namespace PowerShellPlus.Native;
 public partial class MainWindow
 {
     private LanRemoteServer? lanRemoteServer;
+    private TailscaleFunnelManager? globalRemoteTunnel;
 
     private IReadOnlyList<LanRemoteSession> GetLanRemoteSessions() => state.Sessions
         .Where(profile => panes.TryGetValue(profile.Id, out _))
@@ -32,20 +33,20 @@ public partial class MainWindow
                 UpdateLanRemoteTitleBarState();
                 UpdateStatus($"LAN Remote ready at {lanRemoteServer.Urls.FirstOrDefault()}");
             }
-            var dialog = new LanRemoteDialog(lanRemoteServer) { Owner = this };
+            var dialog = new LanRemoteDialog(lanRemoteServer, SwitchRemoteAccessModeAsync, StopRemoteAccessAsync) { Owner = this };
             dialog.ShowDialog();
             UpdateLanRemoteTitleBarState();
             UpdateStatus(lanRemoteServer.IsRunning
-                ? $"LAN Remote is sharing {panes.Count} session{(panes.Count == 1 ? string.Empty : "s")}"
-                : "LAN Remote stopped");
+                ? $"{(lanRemoteServer.Mode == RemoteAccessMode.Global ? "Global Remote" : "LAN Remote")} is sharing {panes.Count} session{(panes.Count == 1 ? string.Empty : "s")}"
+                : "Remote Access stopped");
         }
         catch (Exception exception)
         {
-            LogNativeError("LAN Remote", exception);
+            LogNativeError("Remote Access", exception);
             MessageBox.Show(this,
                 $"PowerShellPlus could not start LAN Remote.\n\n{exception.Message}\n\nMake sure this PC is connected to a private Wi-Fi or Ethernet network. If Windows Firewall prompts, allow Private networks only.",
-                "LAN Remote unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
-            UpdateStatus("LAN Remote could not start");
+                "Remote Access unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
+            UpdateStatus("Remote Access could not start");
         }
         finally
         {
@@ -59,20 +60,95 @@ public partial class MainWindow
         var running = lanRemoteServer?.IsRunning == true;
         LanRemoteStatusDot.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         TitleBarLanRemoteButton.ToolTip = running
-            ? $"LAN Remote active · {lanRemoteServer!.ConnectedClients} connected"
-            : "Share sessions on this LAN";
+            ? $"{(lanRemoteServer!.Mode == RemoteAccessMode.Global ? "Global" : "LAN")} Remote active · {lanRemoteServer.ConnectedClients} connected"
+            : "Open LAN / Global Remote Access";
+    }
+
+    private async Task SwitchRemoteAccessModeAsync(RemoteAccessMode mode)
+    {
+        lanRemoteServer ??= new LanRemoteServer(Dispatcher, GetLanRemoteSessions);
+        var server = lanRemoteServer;
+        if (server.IsRunning && server.Mode == mode) return;
+        var previousMode = server.IsRunning ? server.Mode : (RemoteAccessMode?)null;
+        var previousAllowInput = server.AllowInput;
+
+        if (mode == RemoteAccessMode.Global)
+        {
+            globalRemoteTunnel ??= new TailscaleFunnelManager();
+            UpdateStatus("Checking secure browser-only Global access…");
+            var preflight = await globalRemoteTunnel.PreflightAsync();
+            if (server.IsRunning) await server.StopAsync();
+            try
+            {
+                server.AllowInput = false;
+                await server.StartGlobalAsync(preflight.PublicUrl);
+                UpdateStatus("Opening encrypted Global HTTPS tunnel…");
+                await globalRemoteTunnel.StartAsync(server.Port, preflight);
+                UpdateStatus($"Global Remote ready at {preflight.PublicUrl.AbsoluteUri.TrimEnd('/')}");
+            }
+            catch
+            {
+                try { await globalRemoteTunnel.StopAsync(); } catch { }
+                try { await server.StopAsync(); } catch { }
+                if (previousMode == RemoteAccessMode.Lan)
+                {
+                    try
+                    {
+                        server.AllowInput = previousAllowInput;
+                        await server.StartAsync();
+                    }
+                    catch { }
+                }
+                UpdateLanRemoteTitleBarState();
+                throw;
+            }
+        }
+        else
+        {
+            Exception? tunnelCleanupError = null;
+            try
+            {
+                if (globalRemoteTunnel is not null) await globalRemoteTunnel.StopAsync();
+            }
+            catch (Exception exception) { tunnelCleanupError = exception; }
+            if (server.IsRunning) await server.StopAsync();
+            await server.StartAsync();
+            UpdateStatus($"LAN Remote ready at {server.Urls.FirstOrDefault()}");
+            if (tunnelCleanupError is not null) throw tunnelCleanupError;
+        }
+        UpdateLanRemoteTitleBarState();
+    }
+
+    private async Task StopRemoteAccessAsync()
+    {
+        Exception? tunnelCleanupError = null;
+        try
+        {
+            if (globalRemoteTunnel is not null) await globalRemoteTunnel.StopAsync();
+        }
+        catch (Exception exception) { tunnelCleanupError = exception; }
+        if (lanRemoteServer?.IsRunning == true) await lanRemoteServer.StopAsync();
+        UpdateLanRemoteTitleBarState();
+        if (tunnelCleanupError is not null) throw tunnelCleanupError;
     }
 
     private void StopLanRemoteForShutdown()
     {
-        if (lanRemoteServer is null) return;
+        if (lanRemoteServer is null && globalRemoteTunnel is null) return;
         var server = lanRemoteServer;
+        var tunnel = globalRemoteTunnel;
         lanRemoteServer = null;
-        server.SignalShutdown();
+        globalRemoteTunnel = null;
+        server?.SignalShutdown();
+        tunnel?.SignalShutdown();
         _ = Task.Run(async () =>
         {
-            try { await server.DisposeAsync(); }
-            catch (Exception exception) { LogNativeError("LAN Remote shutdown", exception); }
+            try
+            {
+                if (tunnel is not null) await tunnel.DisposeAsync();
+                if (server is not null) await server.DisposeAsync();
+            }
+            catch (Exception exception) { LogNativeError("Remote Access shutdown", exception); }
         });
     }
 
@@ -103,7 +179,9 @@ public partial class MainWindow
             var manifestResponse = await client.GetAsync("manifest.webmanifest");
             var manifest = await manifestResponse.Content.ReadAsStringAsync();
             var assetsEmbedded = indexResponse.IsSuccessStatusCode && index.Contains("/vendor/xterm.js", StringComparison.Ordinal)
-                && index.Contains("PowerShellPlus Remote", StringComparison.Ordinal);
+                && index.Contains("PowerShellPlus Remote", StringComparison.Ordinal)
+                && index.Contains("maxlength=\"12\"", StringComparison.Ordinal)
+                && index.Contains("Remote Access", StringComparison.Ordinal);
             var responsiveClientEmbedded = appResponse.IsSuccessStatusCode
                 && appScript.Contains("ResizeObserver", StringComparison.Ordinal)
                 && appScript.Contains("orientationchange", StringComparison.Ordinal)
@@ -400,6 +478,105 @@ public partial class MainWindow
             stoppedCleanly &= !server.IsRunning;
             details.Add($"StoppedCleanly={stoppedCleanly}");
 
+            var externalAddress = new Uri($"https://psplus-smoke.example.ts.net:{TailscaleFunnelManager.HttpsPort}/");
+            await server.StartGlobalAsync(externalAddress);
+            var globalLocalAddress = new Uri(server.LocalUrl + "/");
+            var globalBoundary = server.Mode == RemoteAccessMode.Global
+                && server.PairingCode.Length == 12
+                && server.Urls.SequenceEqual([externalAddress.AbsoluteUri.TrimEnd('/')])
+                && server.Addresses.Count == 1
+                && server.Addresses[0].AdapterName == "Global HTTPS address"
+                && globalLocalAddress.Host == IPAddress.Loopback.ToString();
+            using var globalHandler = new HttpClientHandler { UseCookies = false, UseProxy = false };
+            using var globalClient = new HttpClient(globalHandler) { Timeout = TimeSpan.FromSeconds(10) };
+            using var globalIndexRequest = new HttpRequestMessage(HttpMethod.Get, globalLocalAddress);
+            globalIndexRequest.Headers.Host = externalAddress.Authority;
+            var globalIndexResponse = await globalClient.SendAsync(globalIndexRequest);
+            var globalHostAccepted = globalIndexResponse.IsSuccessStatusCode;
+            var globalHsts = globalIndexResponse.Headers.TryGetValues("Strict-Transport-Security", out var hstsValues)
+                && hstsValues.Any(value => value.Contains("max-age=31536000", StringComparison.Ordinal));
+            using var badHostRequest = new HttpRequestMessage(HttpMethod.Get, globalLocalAddress);
+            badHostRequest.Headers.Host = $"evil.example:{TailscaleFunnelManager.HttpsPort}";
+            var badHostResponse = await globalClient.SendAsync(badHostRequest);
+            var globalBadHostRejected = badHostResponse.StatusCode == HttpStatusCode.Forbidden;
+
+            using var globalPairRequest = new HttpRequestMessage(HttpMethod.Post, new Uri(globalLocalAddress, "api/pair"));
+            globalPairRequest.Headers.Host = externalAddress.Authority;
+            globalPairRequest.Content = JsonContent.Create(new { code = server.PairingCode, deviceName = "Global smoke browser" });
+            var globalPairResponse = await globalClient.SendAsync(globalPairRequest);
+            var globalPairAccepted = globalPairResponse.IsSuccessStatusCode;
+            var setCookie = globalPairResponse.Headers.TryGetValues("Set-Cookie", out var setCookieValues)
+                ? setCookieValues.FirstOrDefault(value => value.StartsWith("psp_lan_device=", StringComparison.Ordinal))
+                : null;
+            var globalSecureCookie = setCookie is not null
+                && setCookie.Contains("secure", StringComparison.OrdinalIgnoreCase)
+                && setCookie.Contains("httponly", StringComparison.OrdinalIgnoreCase)
+                && setCookie.Contains("samesite=strict", StringComparison.OrdinalIgnoreCase);
+            var cookiePair = setCookie?.Split(';', 2)[0].Split('=', 2);
+            var globalCookies = new CookieContainer();
+            if (cookiePair is { Length: 2 }) globalCookies.Add(globalLocalAddress, new Cookie(cookiePair[0], cookiePair[1], "/"));
+
+            var globalBadOriginRejected = false;
+            using (var globalBadOriginSocket = new ClientWebSocket())
+            {
+                globalBadOriginSocket.Options.Cookies = globalCookies;
+                globalBadOriginSocket.Options.SetRequestHeader("Origin", "https://evil.example");
+                try { await globalBadOriginSocket.ConnectAsync(ToWebSocketUri(globalLocalAddress), CancellationToken.None); }
+                catch (WebSocketException) { globalBadOriginRejected = true; }
+            }
+            using var globalSocket = new ClientWebSocket();
+            globalSocket.Options.Cookies = globalCookies;
+            globalSocket.Options.SetRequestHeader("Origin", externalAddress.GetLeftPart(UriPartial.Authority));
+            await globalSocket.ConnectAsync(ToWebSocketUri(globalLocalAddress), CancellationToken.None);
+            var globalExactOriginAccepted = globalSocket.State == WebSocketState.Open;
+            if (globalSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                using var closeCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                try { await globalSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Global smoke complete", closeCancellation.Token); }
+                catch (OperationCanceledException) { }
+            }
+
+            var globalThrottleResponses = new List<HttpStatusCode>();
+            var invalidGlobalCode = new string('9', 12);
+            if (invalidGlobalCode == server.PairingCode) invalidGlobalCode = new string('8', 12);
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(globalLocalAddress, "api/pair"));
+                request.Headers.Host = externalAddress.Authority;
+                request.Content = JsonContent.Create(new { code = invalidGlobalCode, deviceName = "Attacker" });
+                globalThrottleResponses.Add((await globalClient.SendAsync(request)).StatusCode);
+            }
+            var globalAttemptLimit = globalThrottleResponses.Take(5).All(value => value == HttpStatusCode.Unauthorized)
+                && globalThrottleResponses[5] == HttpStatusCode.TooManyRequests;
+            details.Add($"GlobalLoopbackBoundary={globalBoundary}");
+            details.Add($"GlobalHostAccepted={globalHostAccepted}");
+            details.Add($"GlobalBadHostRejected={globalBadHostRejected}");
+            details.Add($"GlobalHsts={globalHsts}");
+            details.Add($"GlobalPairAccepted={globalPairAccepted}");
+            details.Add($"GlobalSecureCookie={globalSecureCookie}");
+            details.Add($"GlobalBadOriginRejected={globalBadOriginRejected}");
+            details.Add($"GlobalExactOriginAccepted={globalExactOriginAccepted}");
+            details.Add($"GlobalAttemptLimit={globalAttemptLimit}");
+            await server.StopAsync();
+            stoppedCleanly &= !server.IsRunning;
+
+            const string tailscaleStatusFixture = "{\"BackendState\":\"Running\",\"Self\":{\"Online\":true,\"DNSName\":\"psplus-smoke.example.ts.net.\"}}";
+            const string funnelStatusFixture = "{\"TCP\":{\"8443\":{\"HTTPS\":true}},\"Web\":{\"psplus-smoke.example.ts.net:8443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:43199\"}}}}}";
+            var parsedIdentity = TailscaleFunnelManager.ParseIdentity(tailscaleStatusFixture, @"C:\Program Files\Tailscale\tailscale.exe");
+            var funnelContract = parsedIdentity.DnsName == "psplus-smoke.example.ts.net"
+                && parsedIdentity.PublicUrl == externalAddress
+                && TailscaleFunnelManager.FunnelPortInUse(funnelStatusFixture, TailscaleFunnelManager.HttpsPort)
+                && TailscaleFunnelManager.FunnelStatusHasMapping(funnelStatusFixture, parsedIdentity.DnsName,
+                    TailscaleFunnelManager.HttpsPort, "http://127.0.0.1:43199")
+                && !TailscaleFunnelManager.FunnelPortInUse("{}", TailscaleFunnelManager.HttpsPort);
+            var funnelArgumentsSafe = TailscaleFunnelManager.BuildFunnelArguments(43199)
+                    .SequenceEqual(["funnel", "--yes", "--https=8443", "http://127.0.0.1:43199"])
+                && TailscaleFunnelManager.BuildStopArguments(43199)
+                    .SequenceEqual(["funnel", "--https=8443", "http://127.0.0.1:43199", "off"])
+                && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
+            details.Add($"FunnelContractParsed={funnelContract}");
+            details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
+
             var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
                 && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
@@ -407,13 +584,15 @@ public partial class MainWindow
                 && remoteInputAccepted && liveOutputSeen && outputGridSeen && composedSnapshotContainsMarker
                 && queueAccepted && queueVisible && queuedCommandAccepted && queuedCommandOutputSeen && queueRemoved
                 && rfc1918Accepted && publicAddressRejected && subnetEnforced
-                && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected && stoppedCleanly;
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Embedded LAN Remote persists hashed per-device pairing across restart, revokes saved access, labels adapter addresses, mirrors composed terminals, and preserves its security boundaries.\n{string.Join(Environment.NewLine, details)}");
+                && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected
+                && globalBoundary && globalHostAccepted && globalBadHostRejected && globalHsts && globalPairAccepted && globalSecureCookie
+                && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe && stoppedCleanly;
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
         catch (Exception exception)
         {
-            File.WriteAllText(reportPath, $"FAIL LAN Remote smoke test threw an exception.\n{string.Join(Environment.NewLine, details)}\nServerError={server?.LastError}\n{exception}");
+            File.WriteAllText(reportPath, $"FAIL Remote Access smoke test threw an exception.\n{string.Join(Environment.NewLine, details)}\nServerError={server?.LastError}\n{exception}");
             return false;
         }
         finally

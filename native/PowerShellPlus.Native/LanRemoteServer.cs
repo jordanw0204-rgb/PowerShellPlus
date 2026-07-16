@@ -27,6 +27,12 @@ internal sealed record LanRemoteAddress(string Url, string IpAddress, string Ada
     public string Details => $"{Url} · {AdapterKind}";
 }
 
+internal enum RemoteAccessMode
+{
+    Lan,
+    Global
+}
+
 internal sealed class LanRemoteServer : IAsyncDisposable
 {
     private const string SessionCookieName = "psp_lan_device";
@@ -53,6 +59,8 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private int port;
     private bool disposed;
     private volatile bool allowInput;
+    private Uri? trustedExternalOrigin;
+    private bool secureCookies;
 
     public LanRemoteServer(Dispatcher dispatcher, Func<IReadOnlyList<LanRemoteSession>> sessionProvider)
     {
@@ -64,11 +72,14 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             persistedLastSeen[device.Id] = device.LastSeenUtc;
         }
         PruneExpiredPairedDevices(saveChanges: true);
-        PairingCode = CreatePairingCode();
+        PairingCode = CreatePairingCode(RemoteAccessMode.Lan);
     }
 
     public bool IsRunning => application is not null;
     public bool AllowInput { get => allowInput; set => allowInput = value; }
+    public int Port => port;
+    public string? LocalUrl => port > 0 ? $"http://{IPAddress.Loopback}:{port}" : null;
+    public RemoteAccessMode Mode { get; private set; } = RemoteAccessMode.Lan;
     public int ConnectedClients => Volatile.Read(ref connectedClients);
     public string PairingCode { get; private set; }
     public string? LastError { get; private set; }
@@ -91,7 +102,20 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         }
     }
 
-    public async Task StartAsync(bool loopbackOnly = false, CancellationToken cancellationToken = default)
+    public Task StartAsync(bool loopbackOnly = false, CancellationToken cancellationToken = default) =>
+        StartCoreAsync(loopbackOnly, null, RemoteAccessMode.Lan, cancellationToken);
+
+    public Task StartGlobalAsync(Uri externalUrl, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(externalUrl);
+        if (!externalUrl.IsAbsoluteUri || externalUrl.Scheme != Uri.UriSchemeHttps
+            || !string.IsNullOrEmpty(externalUrl.Query) || !string.IsNullOrEmpty(externalUrl.Fragment)
+            || externalUrl.AbsolutePath != "/")
+            throw new ArgumentException("Global mode requires a root HTTPS address.", nameof(externalUrl));
+        return StartCoreAsync(loopbackOnly: true, externalUrl, RemoteAccessMode.Global, cancellationToken);
+    }
+
+    private async Task StartCoreAsync(bool loopbackOnly, Uri? externalUrl, RemoteAccessMode mode, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (application is not null) return;
@@ -127,10 +151,15 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         networkPolicy = policy;
         listenAddresses = addresses;
         port = selectedPort;
-        PairingCode = CreatePairingCode();
+        trustedExternalOrigin = externalUrl;
+        secureCookies = mode == RemoteAccessMode.Global;
+        Mode = mode;
+        PairingCode = CreatePairingCode(mode);
         pairingFailures.Clear();
         PruneExpiredPairedDevices(saveChanges: true);
-        Addresses = loopbackOnly
+        Addresses = externalUrl is not null
+            ? [new LanRemoteAddress(externalUrl.AbsoluteUri.TrimEnd('/'), "Tailscale Funnel", "Global HTTPS address", "Browser-only encrypted tunnel", true)]
+            : loopbackOnly
             ? [new LanRemoteAddress($"http://{IPAddress.Loopback}:{selectedPort}", IPAddress.Loopback.ToString(), "This PC", "Loopback test address", true)]
             : policy.AddressDetails.Select((address, index) => new LanRemoteAddress(
                 $"http://{address.Address}:{selectedPort}", address.Address.ToString(), address.AdapterName,
@@ -144,7 +173,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             if (!IsAllowedRequest(context))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                await context.Response.WriteAsync("LAN access denied.");
+                await context.Response.WriteAsync("Remote access denied.");
                 return;
             }
             await next();
@@ -173,6 +202,10 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             await app.DisposeAsync();
             networkPolicy = null;
             listenAddresses = [];
+            trustedExternalOrigin = null;
+            secureCookies = false;
+            Mode = RemoteAccessMode.Lan;
+            port = 0;
             Urls = [];
             Addresses = [];
             throw;
@@ -184,13 +217,13 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         var app = application;
         application = null;
         if (app is null) return;
-        PairingCode = CreatePairingCode();
+        PairingCode = CreatePairingCode(Mode);
         foreach (var socket in activeSockets.Values)
         {
             try
             {
                 if (socket.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                    await socket.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "LAN sharing stopped", CancellationToken.None);
+                    await socket.Socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Remote sharing stopped", CancellationToken.None);
             }
             catch { }
         }
@@ -199,6 +232,10 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         await app.DisposeAsync();
         networkPolicy = null;
         listenAddresses = [];
+        trustedExternalOrigin = null;
+        secureCookies = false;
+        Mode = RemoteAccessMode.Lan;
+        port = 0;
         Urls = [];
         Addresses = [];
         SavePairedDevicesNoThrow();
@@ -237,6 +274,10 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         var remote = NormalizeAddress(context.Connection.RemoteIpAddress);
         if (remote is null || networkPolicy?.Allows(remote) != true) return false;
         var host = context.Request.Host;
+        if (trustedExternalOrigin is not null && IsLoopback(remote)
+            && host.Host.Equals(trustedExternalOrigin.Host, StringComparison.OrdinalIgnoreCase)
+            && host.Port == trustedExternalOrigin.Port)
+            return true;
         if (host.Port != port || string.IsNullOrWhiteSpace(host.Host)) return false;
         if (host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return IsLoopback(remote);
         return IPAddress.TryParse(host.Host, out var hostAddress)
@@ -245,7 +286,9 @@ internal sealed class LanRemoteServer : IAsyncDisposable
 
     private async Task<IResult> PairAsync(HttpContext context)
     {
-        var remoteKey = NormalizeAddress(context.Connection.RemoteIpAddress)?.ToString() ?? "unknown";
+        var remoteKey = Mode == RemoteAccessMode.Global
+            ? "global-funnel"
+            : NormalizeAddress(context.Connection.RemoteIpAddress)?.ToString() ?? "unknown";
         var failures = pairingFailures.GetOrAdd(remoteKey, _ => new PairingFailures());
         if (failures.IsBlocked(DateTimeOffset.UtcNow))
             return Results.Json(new { error = "Too many attempts. Wait one minute and try again." }, statusCode: StatusCodes.Status429TooManyRequests);
@@ -288,7 +331,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         lock (pairedDevicesGate)
         {
             if (pairedDevices.Count >= MaximumPairedDevices)
-                return Results.Json(new { error = "The saved-device list is full. Remove a device in the LAN Remote window, then try again." }, statusCode: StatusCodes.Status409Conflict);
+                return Results.Json(new { error = "The saved-device list is full. Remove a device in the Remote Access window, then try again." }, statusCode: StatusCodes.Status409Conflict);
             pairedDevices[device.Id] = device;
             persistedLastSeen[device.Id] = now;
             try { LanRemotePairingStore.Save(pairedDevices.Values); }
@@ -302,14 +345,14 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         context.Response.Cookies.Append(SessionCookieName, token, new CookieOptions
         {
             HttpOnly = true,
-            Secure = false,
+            Secure = secureCookies,
             SameSite = SameSiteMode.Strict,
             Path = "/",
             Expires = expires,
             MaxAge = PairedDeviceLifetime,
             IsEssential = true
         });
-        PairingCode = CreatePairingCode();
+        PairingCode = CreatePairingCode(Mode);
         return Results.Json(new { paired = true, deviceId, deviceName, expiresUtc = expires });
     }
 
@@ -329,7 +372,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     {
         if (!IsLoopback(context.Connection.RemoteIpAddress)) return Results.NotFound();
         var sessions = await GetSessionsAsync();
-        return Results.Json(new { status = "ok", mode = "lan", sessions = sessions.Count });
+        return Results.Json(new { status = "ok", mode = Mode == RemoteAccessMode.Global ? "global" : "lan", sessions = sessions.Count });
     }
 
     private async Task HandleWebSocketAsync(HttpContext context)
@@ -645,7 +688,13 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private bool HasAllowedOrigin(HttpContext context)
     {
         var origin = context.Request.Headers.Origin.ToString();
-        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp || uri.Port != port) return false;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        if (trustedExternalOrigin is not null)
+            return IsLoopback(context.Connection.RemoteIpAddress)
+                && uri.Scheme == Uri.UriSchemeHttps
+                && uri.Host.Equals(trustedExternalOrigin.Host, StringComparison.OrdinalIgnoreCase)
+                && uri.Port == trustedExternalOrigin.Port;
+        if (uri.Scheme != Uri.UriSchemeHttp || uri.Port != port) return false;
         if (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             return IsLoopback(context.Connection.RemoteIpAddress);
         return IPAddress.TryParse(uri.Host, out var address) && listenAddresses.Contains(NormalizeAddress(address));
@@ -720,15 +769,17 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         return Results.Bytes(bytes, contentType);
     }
 
-    private static void ApplySecurityHeaders(HttpResponse response)
+    private void ApplySecurityHeaders(HttpResponse response)
     {
         response.Headers.CacheControl = "no-store";
-        response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws:; img-src 'self' data:; font-src 'self'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+        response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; font-src 'self'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
         response.Headers.XContentTypeOptions = "nosniff";
         response.Headers.XFrameOptions = "DENY";
         response.Headers["Referrer-Policy"] = "no-referrer";
         response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
         response.Headers["Cross-Origin-Resource-Policy"] = "same-origin";
+        if (Mode == RemoteAccessMode.Global)
+            response.Headers.StrictTransportSecurity = "max-age=31536000";
     }
 
     private static async Task<JsonDocument?> ReceiveMessageAsync(WebSocket socket, CancellationToken cancellationToken)
@@ -779,7 +830,15 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         throw new InvalidOperationException("PowerShellPlus could not find an available LAN Remote port in the reserved 43170-43239 range.");
     }
 
-    private static string CreatePairingCode() => RandomNumberGenerator.GetInt32(0, 100_000_000).ToString("D8", System.Globalization.CultureInfo.InvariantCulture);
+    private static string CreatePairingCode(RemoteAccessMode mode)
+    {
+        if (mode == RemoteAccessMode.Lan)
+            return RandomNumberGenerator.GetInt32(0, 100_000_000).ToString("D8", System.Globalization.CultureInfo.InvariantCulture);
+        Span<byte> random = stackalloc byte[8];
+        RandomNumberGenerator.Fill(random);
+        var value = BitConverter.ToUInt64(random) % 1_000_000_000_000UL;
+        return value.ToString("D12", System.Globalization.CultureInfo.InvariantCulture);
+    }
     private static string CreateSessionToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static IPAddress? NormalizeAddress(IPAddress? address) => address?.IsIPv4MappedToIPv6 == true ? address.MapToIPv4() : address;
     private static bool IsLoopback(IPAddress? address) => NormalizeAddress(address) is { } normalized && IPAddress.IsLoopback(normalized);
