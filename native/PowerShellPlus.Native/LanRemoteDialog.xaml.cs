@@ -140,6 +140,17 @@ public partial class LanRemoteDialog : Window
             if (action == PowerShellPlusDialogResult.Primary) await DownloadAndOpenTailscaleAsync();
             else if (action == PowerShellPlusDialogResult.Secondary) OpenOfficialTailscaleDownloadPage();
         }
+        catch (TailscaleLoginRequiredException exception)
+        {
+            BindAddresses();
+            ApplyModePresentation();
+            var action = PowerShellPlusDialog.ShowActions(this,
+                $"PowerShellPlus found a healthy Tailscale installation, but this PC is logged out.\n\n{exception.Message}\n\nSign in now will open a one-time page on login.tailscale.com. Your password and identity-provider login never pass through PowerShellPlus.",
+                "Tailscale sign-in required", PowerShellPlusDialogKind.Information,
+                "Sign in now", null, "Not now");
+            if (action == PowerShellPlusDialogResult.Primary)
+                await SignInAndRetryGlobalAsync(exception.ExecutablePath);
+        }
         catch (Exception exception)
         {
             PowerShellPlusDialog.ShowMessage(this,
@@ -149,6 +160,35 @@ public partial class LanRemoteDialog : Window
             ApplyModePresentation();
         }
         finally { ModeControls.IsEnabled = true; }
+    }
+
+    private async Task SignInAndRetryGlobalAsync(string executablePath)
+    {
+        TailscaleSetupButton.IsEnabled = false;
+        TailscaleSetupButton.Content = "Waiting for browser sign-in…";
+        try
+        {
+            await TailscaleLoginManager.SignInAsync(executablePath);
+            TailscaleSetupButton.Content = "Starting secure Global access…";
+            await switchMode(RemoteAccessMode.Global);
+            pairedDevicesSignature = string.Empty;
+            BindAddresses();
+            ApplyModePresentation();
+            RefreshConnectionCount();
+        }
+        catch (Exception exception)
+        {
+            PowerShellPlusDialog.ShowMessage(this,
+                $"PowerShellPlus could not complete Tailscale sign-in or start Global mode. Your previous sharing mode was restored when possible.\n\n{exception.Message}",
+                "Tailscale sign-in incomplete", PowerShellPlusDialogKind.Warning);
+            BindAddresses();
+            ApplyModePresentation();
+        }
+        finally
+        {
+            TailscaleSetupButton.IsEnabled = true;
+            ApplyModePresentation();
+        }
     }
 
     private async void RemovePairedDeviceClick(object sender, RoutedEventArgs e)
@@ -193,7 +233,7 @@ public partial class LanRemoteDialog : Window
         {
             var launch = await TailscaleInstaller.DownloadAndLaunchAsync(progress);
             PowerShellPlusDialog.ShowMessage(this,
-                $"Windows opened {launch.FileName} after verifying its trusted signature and '{launch.Publisher}' publisher.\n\nFinish the installer, sign in to Tailscale on this PC, then choose GLOBAL again. Nothing needs to be installed on your phone.",
+                $"Windows opened {launch.FileName} after verifying its trusted signature and '{launch.Publisher}' publisher.\n\nFinish the installer, then choose GLOBAL again. If this PC is logged out, PowerShellPlus will open the official browser sign-in for you. Nothing needs to be installed on your phone.",
                 "Tailscale installer opened", PowerShellPlusDialogKind.Success, "Got it");
         }
         catch (Exception exception)

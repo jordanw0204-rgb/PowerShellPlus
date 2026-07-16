@@ -10,6 +10,16 @@ internal sealed class TailscaleNotInstalledException : InvalidOperationException
     public TailscaleNotInstalledException() : base(
         "Global mode requires Tailscale only on this PC. PowerShellPlus can download and open the verified installer for you. Nothing needs to be installed on the phone.") { }
 }
+internal sealed class TailscaleLoginRequiredException : InvalidOperationException
+{
+    public string ExecutablePath { get; }
+
+    public TailscaleLoginRequiredException(string executablePath) : base(
+        "Tailscale is installed and running, but this PC has not been signed in yet. The Windows client lives in the system tray instead of opening a normal app window.")
+    {
+        ExecutablePath = executablePath;
+    }
+}
 internal sealed record TailscaleCommandResult(int ExitCode, string StandardOutput, string StandardError)
 {
     public string CombinedOutput => string.Join(Environment.NewLine, new[] { StandardOutput, StandardError }
@@ -208,6 +218,8 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
             using var document = JsonDocument.Parse(statusJson);
             var root = document.RootElement;
             var backend = root.TryGetProperty("BackendState", out var backendElement) ? backendElement.GetString() : null;
+            if (string.Equals(backend, "NeedsLogin", StringComparison.OrdinalIgnoreCase))
+                throw new TailscaleLoginRequiredException(executable);
             if (!string.Equals(backend, "Running", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Tailscale is not connected. Open Tailscale and sign in on this PC, then try again.");
             if (!root.TryGetProperty("Self", out var self) || self.ValueKind != JsonValueKind.Object)

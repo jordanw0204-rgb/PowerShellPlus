@@ -561,8 +561,27 @@ public partial class MainWindow
             stoppedCleanly &= !server.IsRunning;
 
             const string tailscaleStatusFixture = "{\"BackendState\":\"Running\",\"Self\":{\"Online\":true,\"DNSName\":\"psplus-smoke.example.ts.net.\"}}";
+            const string tailscaleNeedsLoginFixture = "{\"BackendState\":\"NeedsLogin\",\"Self\":{\"Online\":false}}";
             const string funnelStatusFixture = "{\"TCP\":{\"8443\":{\"HTTPS\":true}},\"Web\":{\"psplus-smoke.example.ts.net:8443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:43199\"}}}}}";
             var parsedIdentity = TailscaleFunnelManager.ParseIdentity(tailscaleStatusFixture, @"C:\Program Files\Tailscale\tailscale.exe");
+            var loginRequiredDetected = false;
+            try { _ = TailscaleFunnelManager.ParseIdentity(tailscaleNeedsLoginFixture, @"C:\Program Files\Tailscale\tailscale.exe"); }
+            catch (TailscaleLoginRequiredException exception)
+            {
+                loginRequiredDetected = exception.ExecutablePath == @"C:\Program Files\Tailscale\tailscale.exe";
+            }
+            var loginUri = TailscaleLoginManager.ParseLoginUri("To authenticate, visit: https://login.tailscale.com/a/psplus-smoke-token");
+            var loginStartInfo = TailscaleLoginManager.CreateLoginStartInfo(@"C:\Program Files\Tailscale\tailscale.exe");
+            var loginBoundary = loginUri == new Uri("https://login.tailscale.com/a/psplus-smoke-token")
+                && TailscaleLoginManager.IsOfficialLoginUri(loginUri)
+                && !TailscaleLoginManager.IsOfficialLoginUri(new Uri("http://login.tailscale.com/a/token"))
+                && !TailscaleLoginManager.IsOfficialLoginUri(new Uri("https://login.tailscale.com.evil.example/a/token"))
+                && TailscaleLoginManager.BuildLoginArguments().SequenceEqual(["login", "--timeout=3m"])
+                && !loginStartInfo.UseShellExecute
+                && loginStartInfo.RedirectStandardOutput
+                && loginStartInfo.RedirectStandardError
+                && loginStartInfo.CreateNoWindow
+                && loginStartInfo.ArgumentList.SequenceEqual(["login", "--timeout=3m"]);
             var funnelContract = parsedIdentity.DnsName == "psplus-smoke.example.ts.net"
                 && parsedIdentity.PublicUrl == externalAddress
                 && TailscaleFunnelManager.FunnelPortInUse(funnelStatusFixture, TailscaleFunnelManager.HttpsPort)
@@ -576,6 +595,8 @@ public partial class MainWindow
                 && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
             details.Add($"FunnelContractParsed={funnelContract}");
             details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
+            details.Add($"TailscaleLoginRequiredDetected={loginRequiredDetected}");
+            details.Add($"TailscaleLoginBoundary={loginBoundary}");
 
             const string installerIndexFixture = "<a href=\"tailscale-setup-1.98.8.exe\">old</a><a href=\"tailscale-setup-1.98.9.exe\">latest</a>";
             var parsedInstallerUri = TailscaleInstaller.ParseLatestInstallerUri(installerIndexFixture);
@@ -628,6 +649,7 @@ public partial class MainWindow
                 && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected
                 && globalBoundary && globalHostAccepted && globalBadHostRejected && globalHsts && globalPairAccepted && globalSecureCookie
                 && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe
+                && loginRequiredDetected && loginBoundary
                 && installerUrlBoundary && installerLaunchBoundary && installerRetryBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");
             return success;
