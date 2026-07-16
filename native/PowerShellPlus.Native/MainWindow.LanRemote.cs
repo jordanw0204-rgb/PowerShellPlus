@@ -83,7 +83,8 @@ public partial class MainWindow
                 server.AllowInput = false;
                 await server.StartGlobalAsync(preflight.PublicUrl);
                 UpdateStatus("Opening encrypted Global HTTPS tunnel…");
-                await globalRemoteTunnel.StartAsync(server.Port, preflight);
+                var readinessProgress = new Progress<string>(UpdateStatus);
+                await globalRemoteTunnel.StartAsync(server.Port, preflight, readinessProgress);
                 UpdateStatus($"Global Remote ready at {preflight.PublicUrl.AbsoluteUri.TrimEnd('/')}");
             }
             catch
@@ -591,12 +592,23 @@ public partial class MainWindow
                 && TailscaleFunnelManager.FunnelStatusHasMapping(funnelStatusFixture, parsedIdentity.DnsName,
                     TailscaleFunnelManager.HttpsPort, "http://127.0.0.1:43199")
                 && !TailscaleFunnelManager.FunnelPortInUse("{}", TailscaleFunnelManager.HttpsPort);
+            const string publicDnsFixture = """{"Status":0,"Answer":[{"name":"psplus-smoke.example.ts.net.","type":1,"TTL":300,"data":"100.90.75.9"},{"name":"psplus-smoke.example.ts.net.","type":1,"TTL":300,"data":"199.38.181.54"}]}""";
+            var publicDnsAddresses = TailscaleFunnelManager.ParsePublicDnsAddresses(publicDnsFixture);
+            var publicDnsContract = publicDnsAddresses.Count == 2
+                && publicDnsAddresses.Any(value => value.Equals(IPAddress.Parse("100.90.75.9")))
+                && publicDnsAddresses.Any(value => value.Equals(IPAddress.Parse("199.38.181.54")));
+            var publicAddressBoundary = !TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Parse("100.90.75.9"))
+                && !TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Loopback)
+                && !TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Parse("192.168.1.2"))
+                && TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Parse("199.38.181.54"));
             var funnelArgumentsSafe = TailscaleFunnelManager.BuildFunnelArguments(43199)
                     .SequenceEqual(["funnel", "--yes", "--https=443", "http://127.0.0.1:43199"])
                 && TailscaleFunnelManager.BuildStopArguments(43199)
                     .SequenceEqual(["funnel", "--https=443", "http://127.0.0.1:43199", "off"])
                 && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
             details.Add($"FunnelContractParsed={funnelContract}");
+            details.Add($"FunnelPublicDnsParsed={publicDnsContract}");
+            details.Add($"FunnelPublicAddressBoundary={publicAddressBoundary}");
             details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
             details.Add($"TailscaleLoginRequiredDetected={loginRequiredDetected}");
             details.Add($"TailscaleLoginBoundary={loginBoundary}");

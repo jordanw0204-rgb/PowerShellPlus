@@ -52,7 +52,7 @@ public partial class LanRemoteDialog : Window
             : "Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process.";
         AddressLabelText.Text = global ? "GLOBAL HTTPS ADDRESS" : "LAN ADDRESS";
         AddressHelpText.Text = global
-            ? "This stable ts.net address works over cellular or any Wi-Fi. Tailscale Funnel hides your home IP and forwards only this loopback-only web server."
+            ? "This stable ts.net address works over cellular or any Wi-Fi. PowerShellPlus verifies public DNS, TLS, and the Funnel relay before listing it as ready. If a phone cached an earlier not-found response, toggle Airplane Mode once or fully reopen the browser."
             : "Wi-Fi or Ethernet with an internet gateway is listed first. Virtual adapters work only for devices attached to those networks.";
         SecurityTitleText.Text = global ? "Public URL, protected application" : "Trusted private network only";
         SecurityBodyText.Text = global

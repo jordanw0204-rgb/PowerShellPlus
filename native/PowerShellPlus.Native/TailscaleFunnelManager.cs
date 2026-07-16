@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 
@@ -31,6 +34,14 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
     internal const int HttpsPort = 443;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan FunnelApprovalTimeout = TimeSpan.FromMinutes(3.25);
+    private static readonly TimeSpan PublicReadinessTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan PublicProbeTimeout = TimeSpan.FromSeconds(8);
+    private static readonly Uri[] PublicDnsResolvers =
+    [
+        new("https://dns.google/resolve"),
+        new("https://cloudflare-dns.com/dns-query")
+    ];
+    private static readonly HttpClient PublicDnsClient = CreatePublicDnsClient();
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly object outputGate = new();
     private readonly StringBuilder foregroundOutput = new();
@@ -66,7 +77,8 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
         return identity;
     }
 
-    public async Task StartAsync(int localPort, TailscaleFunnelPreflight preflight, CancellationToken cancellationToken = default)
+    public async Task StartAsync(int localPort, TailscaleFunnelPreflight preflight,
+        IProgress<string>? progress = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (localPort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(localPort));
@@ -113,6 +125,8 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
                 var status = await RunCommandAsync(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
                 if (status.ExitCode == 0 && FunnelStatusHasMapping(status.StandardOutput, preflight.DnsName, HttpsPort, localTarget))
                 {
+                    progress?.Report("Funnel is active; verifying public DNS and HTTPS from outside the tailnet…");
+                    await WaitForPublicEndpointAsync(preflight.PublicUrl, process, progress, cancellationToken);
                     PublicUrl = preflight.PublicUrl;
                     return;
                 }
@@ -127,6 +141,167 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
             throw;
         }
         finally { lifecycleGate.Release(); }
+    }
+
+    private static async Task WaitForPublicEndpointAsync(Uri publicUrl, Process funnelProcess,
+        IProgress<string>? progress, CancellationToken cancellationToken)
+    {
+        var started = DateTime.UtcNow;
+        var deadline = started.Add(PublicReadinessTimeout);
+        var lastProgressSecond = -1;
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (funnelProcess.HasExited)
+                throw new InvalidOperationException("Tailscale Funnel stopped while PowerShellPlus was checking its public internet path.");
+
+            var addresses = await ResolvePublicAddressesAsync(publicUrl.DnsSafeHost, cancellationToken);
+            foreach (var address in addresses.Where(IsPublicInternetAddress))
+            {
+                if (await ProbePublicIngressAsync(publicUrl, address, cancellationToken)) return;
+            }
+
+            var elapsedSeconds = Math.Max(0, (int)(DateTime.UtcNow - started).TotalSeconds);
+            if (elapsedSeconds / 10 != lastProgressSecond / 10)
+            {
+                lastProgressSecond = elapsedSeconds;
+                progress?.Report($"Global tunnel is active; waiting for public DNS/HTTPS… {elapsedSeconds}s");
+            }
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+        }
+
+        throw new TimeoutException(
+            "Tailscale's public Funnel address did not become reachable within 10 minutes. " +
+            "PowerShellPlus kept the mapping active for the full documented DNS propagation window, but public DNS or HTTPS never passed. " +
+            "Check whether your network blocks dns.google and cloudflare-dns.com, then try Global mode again.");
+    }
+
+    private static async Task<IReadOnlyList<IPAddress>> ResolvePublicAddressesAsync(string dnsName,
+        CancellationToken cancellationToken)
+    {
+        foreach (var resolver in PublicDnsResolvers)
+        {
+            try
+            {
+                var builder = new UriBuilder(resolver)
+                {
+                    Query = $"name={Uri.EscapeDataString(dnsName)}&type=A"
+                };
+                using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
+                request.Headers.Accept.ParseAdd("application/dns-json");
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(PublicProbeTimeout);
+                using var response = await PublicDnsClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                if (!response.IsSuccessStatusCode) continue;
+                var json = await response.Content.ReadAsStringAsync(timeout.Token);
+                var addresses = ParsePublicDnsAddresses(json);
+                if (addresses.Count > 0) return addresses;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }
+            catch (HttpRequestException) { }
+            catch (JsonException) { }
+        }
+        return [];
+    }
+
+    internal static IReadOnlyList<IPAddress> ParsePublicDnsAddresses(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.TryGetProperty("Status", out var status) && status.TryGetInt32(out var statusCode) && statusCode != 0)
+            return [];
+        if (!root.TryGetProperty("Answer", out var answers) || answers.ValueKind != JsonValueKind.Array) return [];
+
+        var result = new List<IPAddress>();
+        foreach (var answer in answers.EnumerateArray())
+        {
+            if (!answer.TryGetProperty("type", out var type) || !type.TryGetInt32(out var recordType)
+                || recordType is not (1 or 28)
+                || !answer.TryGetProperty("data", out var data)
+                || !IPAddress.TryParse(data.GetString(), out var address))
+                continue;
+            if (!result.Contains(address)) result.Add(address);
+        }
+        return result;
+    }
+
+    internal static bool IsPublicInternetAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any)
+            || address.Equals(IPAddress.None) || address.Equals(IPAddress.IPv6None))
+            return false;
+        var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            return bytes[0] is not (0 or 10 or 127)
+                && !(bytes[0] == 100 && bytes[1] is >= 64 and <= 127)
+                && !(bytes[0] == 169 && bytes[1] == 254)
+                && !(bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+                && !(bytes[0] == 192 && bytes[1] == 168)
+                && bytes[0] < 224;
+        }
+        return address.AddressFamily == AddressFamily.InterNetworkV6
+            && !address.IsIPv6LinkLocal
+            && !address.IsIPv6Multicast
+            && !address.IsIPv6SiteLocal
+            && (bytes[0] & 0xfe) != 0xfc;
+    }
+
+    private static async Task<bool> ProbePublicIngressAsync(Uri publicUrl, IPAddress address,
+        CancellationToken cancellationToken)
+    {
+        using var handler = new SocketsHttpHandler
+        {
+            UseProxy = false,
+            ConnectTimeout = PublicProbeTimeout,
+            ConnectCallback = async (_, connectCancellationToken) =>
+            {
+                var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                try
+                {
+                    await socket.ConnectAsync(new IPEndPoint(address, publicUrl.Port), connectCancellationToken);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            }
+        };
+        using var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(PublicProbeTimeout);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, publicUrl);
+            request.Headers.UserAgent.ParseAdd("PowerShellPlus-PublicReadiness/1.0");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (response.StatusCode != HttpStatusCode.OK) return false;
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            var buffer = new byte[8192];
+            var read = await stream.ReadAsync(buffer.AsMemory(), timeout.Token);
+            return read > 0 && Encoding.UTF8.GetString(buffer, 0, read).Contains("PowerShellPlus", StringComparison.Ordinal);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return false; }
+        catch (HttpRequestException) { return false; }
+        catch (SocketException) { return false; }
+    }
+
+    private static HttpClient CreatePublicDnsClient()
+    {
+        var client = new HttpClient(new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = PublicProbeTimeout
+        })
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("PowerShellPlus-PublicReadiness/1.0");
+        return client;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
