@@ -579,7 +579,15 @@ public partial class MainWindow
 
             const string installerIndexFixture = "<a href=\"tailscale-setup-1.98.8.exe\">old</a><a href=\"tailscale-setup-1.98.9.exe\">latest</a>";
             var parsedInstallerUri = TailscaleInstaller.ParseLatestInstallerUri(installerIndexFixture);
+            const string installerManifestFixture = """
+                {"Exes":["tailscale-setup-1.98.8.exe","https://evil.example/tailscale-setup-9.9.9.exe","tailscale-setup-full-1.98.9.exe","tailscale-setup-1.98.9.exe"]}
+                """;
+            var manifestInstallerUri = TailscaleInstaller.ParseManifestInstallerUri(installerManifestFixture);
             var installerUrlBoundary = parsedInstallerUri == new Uri("https://pkgs.tailscale.com/stable/tailscale-setup-1.98.9.exe")
+                && manifestInstallerUri == parsedInstallerUri
+                && TailscaleInstaller.PackageManifestUri == new Uri("https://pkgs.tailscale.com/stable/?mode=json&os=windows")
+                && TailscaleInstaller.BundledFallbackInstallerUri == parsedInstallerUri
+                && TailscaleInstaller.IsOfficialInstallerUri(TailscaleInstaller.BundledFallbackInstallerUri)
                 && TailscaleInstaller.IsOfficialInstallerUri(parsedInstallerUri)
                 && !TailscaleInstaller.IsOfficialInstallerUri(new Uri("http://pkgs.tailscale.com/stable/tailscale-setup-1.98.9.exe"))
                 && !TailscaleInstaller.IsOfficialInstallerUri(new Uri("https://evil.example/stable/tailscale-setup-1.98.9.exe"))
@@ -588,6 +596,12 @@ public partial class MainWindow
             var installerLaunchBoundary = installerStartInfo.UseShellExecute
                 && installerStartInfo.FileName == @"C:\Temp\tailscale-setup-1.98.9.exe"
                 && installerStartInfo.WorkingDirectory == @"C:\Temp";
+            var installerRetryBoundary = TailscaleInstaller.IsTransient(HttpStatusCode.RequestTimeout)
+                && TailscaleInstaller.IsTransient(HttpStatusCode.TooManyRequests)
+                && TailscaleInstaller.IsTransient(HttpStatusCode.BadGateway)
+                && TailscaleInstaller.IsTransient(HttpStatusCode.GatewayTimeout)
+                && !TailscaleInstaller.IsTransient(HttpStatusCode.BadRequest)
+                && !TailscaleInstaller.IsTransient(HttpStatusCode.Unauthorized);
             var unsignedInstallerRejected = false;
             var unsignedFixture = Path.Combine(WorkspaceStore.DirectoryPath, "unsigned-tailscale-fixture.exe");
             try
@@ -599,6 +613,7 @@ public partial class MainWindow
             finally { try { File.Delete(unsignedFixture); } catch { } }
             details.Add($"TailscaleInstallerUrlBoundary={installerUrlBoundary}");
             details.Add($"TailscaleInstallerLaunchBoundary={installerLaunchBoundary}");
+            details.Add($"TailscaleInstallerRetryBoundary={installerRetryBoundary}");
             details.Add($"UnsignedInstallerRejected={unsignedInstallerRejected}");
             var themedDialogContract = PowerShellPlusDialog.ValidateThemeContract();
             details.Add($"ThemedDialogContract={themedDialogContract}");
@@ -613,7 +628,7 @@ public partial class MainWindow
                 && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected
                 && globalBoundary && globalHostAccepted && globalBadHostRejected && globalHsts && globalPairAccepted && globalSecureCookie
                 && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe
-                && installerUrlBoundary && installerLaunchBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
+                && installerUrlBoundary && installerLaunchBoundary && installerRetryBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
