@@ -50,15 +50,18 @@ public partial class App : Application
         var persistenceSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--persistence-smoke", StringComparison.OrdinalIgnoreCase));
         var windowsTerminalSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--windows-terminal-smoke", StringComparison.OrdinalIgnoreCase));
         var lanRemoteSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--lan-remote-smoke", StringComparison.OrdinalIgnoreCase));
-        if (smoke is not null || codexSmoke is not null || multiSmoke is not null || persistenceSmoke is not null || windowsTerminalSmoke is not null || lanRemoteSmoke is not null)
+        var handoffSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--handoff-smoke", StringComparison.OrdinalIgnoreCase));
+        if (smoke is not null || codexSmoke is not null || multiSmoke is not null || persistenceSmoke is not null || windowsTerminalSmoke is not null || lanRemoteSmoke is not null || handoffSmoke is not null)
         {
             ParkAutomationWindow(window);
-            var argument = lanRemoteSmoke ?? windowsTerminalSmoke ?? persistenceSmoke ?? multiSmoke ?? codexSmoke ?? smoke!;
-            var defaultName = lanRemoteSmoke is not null ? "native-lan-remote-smoke.txt" : windowsTerminalSmoke is not null ? "native-windows-terminal-smoke.txt" : persistenceSmoke is not null ? "native-persistence-smoke.txt" : multiSmoke is not null ? "native-multi-smoke.txt" : codexSmoke is not null ? "native-codex-smoke.txt" : "native-smoke.txt";
+            var argument = handoffSmoke ?? lanRemoteSmoke ?? windowsTerminalSmoke ?? persistenceSmoke ?? multiSmoke ?? codexSmoke ?? smoke!;
+            var defaultName = handoffSmoke is not null ? "native-handoff-smoke.txt" : lanRemoteSmoke is not null ? "native-lan-remote-smoke.txt" : windowsTerminalSmoke is not null ? "native-windows-terminal-smoke.txt" : persistenceSmoke is not null ? "native-persistence-smoke.txt" : multiSmoke is not null ? "native-multi-smoke.txt" : codexSmoke is not null ? "native-codex-smoke.txt" : "native-smoke.txt";
             var report = argument.Contains('=') ? argument[(argument.IndexOf('=') + 1)..] : Path.Combine(AppContext.BaseDirectory, defaultName);
             window.Loaded += async (_, _) =>
             {
-                var success = lanRemoteSmoke is not null
+                var success = handoffSmoke is not null
+                    ? await window.RunHandoffSmokeTestAsync(Path.GetFullPath(report))
+                    : lanRemoteSmoke is not null
                     ? await window.RunLanRemoteSmokeTestAsync(Path.GetFullPath(report))
                     : windowsTerminalSmoke is not null
                     ? await window.RunWindowsTerminalCaptureSmokeTestAsync(Path.GetFullPath(report))
@@ -135,7 +138,8 @@ public partial class App : Application
         || value.StartsWith("--multi-smoke", StringComparison.OrdinalIgnoreCase)
         || value.StartsWith("--persistence-smoke", StringComparison.OrdinalIgnoreCase)
         || value.StartsWith("--windows-terminal-smoke", StringComparison.OrdinalIgnoreCase)
-        || value.StartsWith("--lan-remote-smoke", StringComparison.OrdinalIgnoreCase);
+        || value.StartsWith("--lan-remote-smoke", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("--handoff-smoke", StringComparison.OrdinalIgnoreCase);
 
     private static void ParkAutomationWindow(Window window)
     {

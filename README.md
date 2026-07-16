@@ -25,6 +25,7 @@ The main application is native WPF on .NET 8. Its terminals are backed by Window
 - Keep the real PowerShell, Codex, SSH, job, and native-program processes alive when the window is closed.
 - Recover pane output after a full app or Windows restart, including the exact Codex thread selected through an in-session `/resume`, its model, and its last permission level.
 - Drag an existing Windows Terminal window onto PowerShellPlus to recreate every tab as a named native session, retain its scrollback, and resume verified Codex threads with their model and complete `/permissions` selection.
+- Click **>_** in a pane header to move that session back into a new Windows Terminal window through a verified two-phase handoff. Exact Codex threads, models, permission settings, working folders, transcripts, and queued commands are retained wherever the underlying tools expose them safely.
 - Click the globe in the title bar to mirror every live session to a phone or browser on the same private LAN, with pairing, a responsive xterm.js view, and optional remote typing.
 
 PowerShellPlus stores its workspace locally under `%APPDATA%\PowerShellPlus`. It does not require an account, an API key, or a cloud service.
@@ -138,6 +139,14 @@ Each imported session uses the Windows Terminal tab's name. A transient Codex ac
 
 This is a recreation, not a transfer of the original PowerShell process. Variables, loaded modules, jobs, SSH connections, and other in-memory state end when the source window closes. The review dialog calls this out before making any change.
 
+### Move a session back to Windows Terminal
+
+Click **>_** in a session pane header. PowerShellPlus verifies Windows Terminal and PowerShell first. If Codex is running, it also requires a live, unambiguous top-level thread ID and a complete validated permission state; if another non-Codex child program is running, the handoff is blocked until that program exits. The confirmation shows the exact thread, model, permission selection, working folder, transcript location, and queued-command copy that will be used.
+
+After confirmation, PowerShellPlus opens a new Windows Terminal window whose PowerShell bootstrap writes a proof-of-life marker and waits. The source ConPTY is stopped and removed only after that marker identifies a live PowerShell process. PowerShellPlus then atomically releases the new shell, which runs `codex resume <thread-id>` with the captured model, approval policy, reviewer, and permission profile or legacy sandbox. If startup or verification fails, the source pane remains untouched; this avoids running two copies of one Codex thread.
+
+The local transfer bundle is kept under `%APPDATA%\PowerShellPlus\session-handoffs` for 30 days and includes a plain-text terminal transcript plus any queued commands. As with import, this is a controlled reconstruction because Windows cannot move an existing ConPTY client process into a different terminal host. PowerShell variables, functions, loaded modules, jobs, SSH connections, live child programs, and process memory cannot be transferred. An active Codex turn or tool command is interrupted when its old process stops, but its durable conversation continues from the verified thread.
+
 ## How session recovery works
 
 PowerShellPlus uses two kinds of recovery because a live Windows process cannot be serialized and recreated perfectly.
@@ -205,7 +214,7 @@ The normal build command is also the complete release gate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted and scrollable queues, queue navigation, quick-access filtering, configurable send-to-all routing, and real fan-out to every live pane, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, and runs an embedded LAN Remote integration test covering persistent hash-only pairing across a fresh server instance, live-device revocation, adapter metadata, unauthenticated rejection, WebSocket origin validation, dimension-faithful session snapshots and output, responsive web controls, remote command queues, direct input, live VT output, subnet enforcement, and clean shutdown. It publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted and scrollable queues, queue navigation, quick-access filtering, configurable send-to-all routing, and real fan-out to every live pane, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, validates the Windows Terminal handoff's structured resume arguments, proof-of-life wait, atomic release, transcript/queue preservation, unsafe-permission rejection, and cancellation path, and runs an embedded LAN Remote integration test covering persistent hash-only pairing across a fresh server instance, live-device revocation, adapter metadata, unauthenticated rejection, WebSocket origin validation, dimension-faithful session snapshots and output, responsive web controls, remote command queues, direct input, live VT output, subnet enforcement, and clean shutdown. It publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
 
 - `dist\PowerShellPlus.exe` and its runtime files
 - `PowerShellPlus-win-x64.zip`

@@ -749,6 +749,25 @@ public static class ProcessTreeInspector
         return new CodexProcessState(earliest is not null, earliestProcessId, earliest);
     }
 
+    public static IReadOnlyList<ConsoleDescendantProcess> FindDescendantProcesses(int rootProcessId)
+    {
+        if (rootProcessId <= 0) return [];
+        var processes = SnapshotProcesses();
+        var descendants = new HashSet<int> { rootProcessId };
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var process in processes)
+                if (descendants.Contains(process.ParentId) && descendants.Add(process.Id)) changed = true;
+        }
+        return processes
+            .Where(process => process.Id != rootProcessId && descendants.Contains(process.Id))
+            .Select(process => new ConsoleDescendantProcess(process.Id, Path.GetFileNameWithoutExtension(process.Name)))
+            .OrderBy(process => process.ProcessId)
+            .ToArray();
+    }
+
     internal static bool IsCodexExecutable(string value)
     {
         var name = Path.GetFileNameWithoutExtension(value);

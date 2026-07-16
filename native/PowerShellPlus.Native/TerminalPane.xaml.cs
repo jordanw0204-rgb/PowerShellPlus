@@ -32,6 +32,7 @@ public partial class TerminalPane : UserControl
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
     public event EventHandler? EditRequested;
+    public event EventHandler? DetachRequested;
     public event Action<TerminalPane, string>? RawOutputReceived;
     private SessionRecoveryEntry? startupRecovery;
     private string previousOutput = string.Empty;
@@ -480,6 +481,13 @@ public partial class TerminalPane : UserControl
         StateDot.Fill = new SolidColorBrush(Color.FromRgb(108, 112, 134));
     }
 
+    public void SetHandoffPending(bool pending)
+    {
+        DetachButton.IsEnabled = !pending;
+        DetachButton.Content = pending ? "…" : ">_";
+        DetachButton.ToolTip = pending ? "Verifying Windows Terminal handoff…" : "Move to Windows Terminal";
+    }
+
     public string GetOutput()
     {
         try { return Terminal.ConPTYTerm?.GetConsoleText() ?? string.Empty; } catch { return string.Empty; }
@@ -701,6 +709,8 @@ public partial class TerminalPane : UserControl
     public bool CommandInputAutoGrowsForTest => CommandInput.TextWrapping == TextWrapping.Wrap && CommandInput.MinLines == 1
         && CommandInput.MaxLines == 6 && CommandInput.VerticalContentAlignment == VerticalAlignment.Top;
     public double CommandInputHeightForTest => CommandInput.ActualHeight;
+    public bool HandoffButtonReadyForTest => DetachButton.IsEnabled && DetachButton.Content?.ToString() == ">_"
+        && DetachButton.ToolTip?.ToString()?.Contains("Windows Terminal", StringComparison.Ordinal) == true;
     public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
     public string SendCommandToolTipForTest => RunCommandButton.ToolTip?.ToString() ?? string.Empty;
     public int QuickAccessCommandCountForTest => quickAccessProvider().Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
@@ -1022,6 +1032,7 @@ public partial class TerminalPane : UserControl
     private void ClearClick(object sender, RoutedEventArgs e) { Terminal.ConPTYTerm?.ClearUITerminal(); Terminal.Focus(); }
     private void StopClick(object sender, RoutedEventArgs e) => Stop();
     private async void RestartClick(object sender, RoutedEventArgs e) => await RestartAsync();
+    private void DetachClick(object sender, RoutedEventArgs e) { DetachRequested?.Invoke(this, EventArgs.Empty); e.Handled = true; }
     private void EditClick(object sender, RoutedEventArgs e) => EditRequested?.Invoke(this, EventArgs.Empty);
     private void CloseClick(object sender, RoutedEventArgs e) => CloseRequested?.Invoke(this, EventArgs.Empty);
 }

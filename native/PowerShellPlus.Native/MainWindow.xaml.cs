@@ -613,6 +613,7 @@ public partial class MainWindow : Window
         pane.Activated += (_, _) => SelectPane(profile.Id, false);
         pane.CloseRequested += (_, _) => RemoveSession(profile);
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
+        pane.DetachRequested += (_, _) => DetachSessionToWindowsTerminal(profile, pane);
         panes[profile.Id] = pane;
     }
 
@@ -842,11 +843,14 @@ public partial class MainWindow : Window
         HideEditor(); ScheduleSave(); UpdateCounts();
     }
 
-    private void RemoveSession(SessionProfile profile)
+    private bool RemoveSession(SessionProfile profile, bool alreadyConfirmed = false, bool stopPane = true)
     {
-        if (state.Settings.ConfirmBeforeRemove && MessageBox.Show(this, $"Remove {profile.Name}?", "PowerShellPlus", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        var pane = panes[profile.Id]; pane.Stop(); TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
+        if (!panes.TryGetValue(profile.Id, out var pane)) return false;
+        if (!alreadyConfirmed && state.Settings.ConfirmBeforeRemove && MessageBox.Show(this, $"Remove {profile.Name}?", "PowerShellPlus", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
+        if (stopPane) pane.Stop();
+        TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
         activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout(); ScheduleSave();
+        return true;
     }
 
     private void RunSnippet(bool all) { if (SnippetList.SelectedItem is CommandSnippet value) { if (all) foreach (var pane in panes.Values) pane.SendCommand(value.Command); else activePane?.SendCommand(value.Command); UpdateStatus($"Ran {value.Name}"); } }
@@ -1414,6 +1418,7 @@ public partial class MainWindow : Window
             var activationTarget = panes[added[0].Id];
             SelectPane(panes.Values.First().Profile.Id, false);
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
+            var handoffButtonReady = activationTarget.HandoffButtonReadyForTest;
             var terminalSurfaceHooked = activationTarget.HasTerminalSurfaceActivationHook;
             var terminalClickSent = activationTarget.SimulateTerminalSurfaceClickForTest();
             var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
@@ -1561,7 +1566,7 @@ public partial class MainWindow : Window
             var automationHoverContainerStable = countdownNotified && automationContainerBefore is not null && ReferenceEquals(automationContainerBefore, automationContainerAfter);
             ShowSection(SessionsPanel);
 
-            var paneCommandSystem = paneCommandInputTakesFocus && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
+            var paneCommandSystem = paneCommandInputTakesFocus && handoffButtonReady && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && textPasteWorks && cursorBarEnforced
@@ -1572,6 +1577,7 @@ public partial class MainWindow : Window
                 && rows && columns && focus && grid && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive pane-local input, queues, text paste, cursor enforcement, sidebar resizing, every layout, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.AppendAllText(reportPath, $"\nHandoffButtonReady={handoffButtonReady}");
             return success;
         }
         finally

@@ -19,6 +19,7 @@
             <Button Content="⌫" ToolTip="Clear" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="ClearClick"/>
             <Button Content="■" ToolTip="Stop" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="StopClick"/>
             <Button Content="↻" ToolTip="Restart" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="RestartClick"/>
+            <Button x:Name="DetachButton" Content="&gt;_" ToolTip="Move to Windows Terminal" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" FontFamily="Cascadia Mono" FontSize="9" FontWeight="SemiBold" Click="DetachClick"/>
             <Button Content="•••" ToolTip="Edit" Width="32" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="EditClick"/>
             <Button Content="×" ToolTip="Close" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#F38BA8" Click="CloseClick"/>
           </StackPanel>

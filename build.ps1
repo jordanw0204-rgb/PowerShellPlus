@@ -53,6 +53,7 @@ if (-not $SkipTests) {
     Invoke-NativeGate $buildOutput 'codex-smoke' 'native-codex.txt'
     Invoke-NativeGate $buildOutput 'persistence-smoke' 'native-persistence.txt'
     Invoke-NativeGate $buildOutput 'lan-remote-smoke' 'native-lan-remote.txt'
+    Invoke-NativeGate $buildOutput 'handoff-smoke' 'native-handoff.txt'
 }
 
 & $dotnet publish $project -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=false -o $publish
@@ -66,6 +67,7 @@ if (-not $SkipTests) {
     Invoke-NativeGate $publishedExecutable 'codex-smoke' 'published-native-codex.txt'
     Invoke-NativeGate $publishedExecutable 'persistence-smoke' 'published-native-persistence.txt'
     Invoke-NativeGate $publishedExecutable 'lan-remote-smoke' 'published-native-lan-remote.txt'
+    Invoke-NativeGate $publishedExecutable 'handoff-smoke' 'published-native-handoff.txt'
 }
 
 $dist = [IO.Path]::GetFullPath((Join-Path $root 'dist'))
