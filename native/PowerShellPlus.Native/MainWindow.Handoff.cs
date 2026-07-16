@@ -35,7 +35,8 @@ public partial class MainWindow
             plan = WindowsTerminalHandoff.CreatePlan(profile, terminalProfile.ProfileName, terminalProfile.CommandLine,
                 pane.GetOutput(), recovery, codexProcess.IsActive);
             var confirmation = BuildHandoffConfirmation(plan, descendants);
-            if (MessageBox.Show(this, confirmation, "Move session to Windows Terminal?", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            if (!PowerShellPlusDialog.Confirm(this, confirmation, "Move session to Windows Terminal?",
+                    PowerShellPlusDialogKind.Warning, "Move session", "Keep it here", defaultToPrimary: false))
             {
                 WindowsTerminalHandoff.Discard(plan);
                 UpdateStatus("Windows Terminal handoff canceled");
@@ -48,7 +49,7 @@ public partial class MainWindow
             var launched = await WindowsTerminalHandoff.LaunchAndWaitForStartAsync(plan);
             if (!launched.Success)
             {
-                MessageBox.Show(this, launched.Message, "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Error);
+                PowerShellPlusDialog.ShowMessage(this, launched.Message, "Windows Terminal handoff failed", PowerShellPlusDialogKind.Error);
                 UpdateStatus("Handoff failed — source session is still running");
                 return;
             }
@@ -57,7 +58,7 @@ public partial class MainWindow
             if (!WindowsTerminalHandoff.PrepareReleaseSignal(plan))
             {
                 WindowsTerminalHandoff.Cancel(plan, "PowerShellPlus could not prepare the release signal. The source session stayed open.");
-                MessageBox.Show(this, "The new PowerShell started, but PowerShellPlus could not prepare the atomic release signal. The source session was left running.", "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Error);
+                PowerShellPlusDialog.ShowMessage(this, "The new PowerShell started, but PowerShellPlus could not prepare the atomic release signal. The source session was left running.", "Windows Terminal handoff failed", PowerShellPlusDialogKind.Error);
                 return;
             }
 
@@ -69,19 +70,19 @@ public partial class MainWindow
                 if (!await WaitForSourceProcessesToExitAsync(sourceProcesses, TimeSpan.FromSeconds(3)))
                 {
                     WindowsTerminalHandoff.Cancel(plan, "The original terminal process tree did not stop, so the resumed thread was not released.");
-                    MessageBox.Show(this, "The original process tree did not stop completely. The external shell was canceled so it cannot overlap the same Codex thread. The stopped source pane remains available.", "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Error);
+                    PowerShellPlusDialog.ShowMessage(this, "The original process tree did not stop completely. The external shell was canceled so it cannot overlap the same Codex thread. The stopped source pane remains available.", "Windows Terminal handoff blocked", PowerShellPlusDialogKind.Error);
                     return;
                 }
             }
             if (!RemoveSession(profile, true, false))
             {
                 WindowsTerminalHandoff.Cancel(plan, "PowerShellPlus could not close the source pane, so the handoff was canceled.");
-                MessageBox.Show(this, "The source pane could not be closed. The external shell was canceled to prevent two copies of the same Codex thread.", "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Error);
+                PowerShellPlusDialog.ShowMessage(this, "The source pane could not be closed. The external shell was canceled to prevent two copies of the same Codex thread.", "Windows Terminal handoff blocked", PowerShellPlusDialogKind.Error);
                 return;
             }
             if (!WindowsTerminalHandoff.CommitReleaseSignal(plan))
             {
-                MessageBox.Show(this, $"The source pane closed, but the external shell could not be released automatically. The saved handoff is at:\n\n{plan.DirectoryPath}", "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Error);
+                PowerShellPlusDialog.ShowMessage(this, $"The source pane closed, but the external shell could not be released automatically. The saved handoff is at:\n\n{plan.DirectoryPath}", "Windows Terminal handoff needs attention", PowerShellPlusDialogKind.Error);
                 return;
             }
             UpdateStatus(plan.CodexActive
@@ -93,7 +94,7 @@ public partial class MainWindow
             if (plan is not null && launchStarted) WindowsTerminalHandoff.Cancel(plan, exception.Message);
             else if (plan is not null) WindowsTerminalHandoff.Discard(plan);
             LogNativeError("Windows Terminal handoff", exception);
-            MessageBox.Show(this, exception.Message, "PowerShellPlus", MessageBoxButton.OK, MessageBoxImage.Warning);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "Windows Terminal handoff unavailable", PowerShellPlusDialogKind.Warning);
             UpdateStatus(panes.ContainsKey(profile.Id)
                 ? "Handoff blocked — source session remains in PowerShellPlus"
                 : "Handoff failed after the source session closed");

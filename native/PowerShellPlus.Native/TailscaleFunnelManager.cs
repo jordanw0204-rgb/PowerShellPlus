@@ -5,6 +5,11 @@ using System.Text.Json;
 namespace PowerShellPlus.Native;
 
 internal sealed record TailscaleFunnelPreflight(string ExecutablePath, string DnsName, Uri PublicUrl);
+internal sealed class TailscaleNotInstalledException : InvalidOperationException
+{
+    public TailscaleNotInstalledException() : base(
+        "Global mode requires Tailscale only on this PC. PowerShellPlus can download and open the verified installer for you. Nothing needs to be installed on the phone.") { }
+}
 internal sealed record TailscaleCommandResult(int ExitCode, string StandardOutput, string StandardError)
 {
     public string CombinedOutput => string.Join(Environment.NewLine, new[] { StandardOutput, StandardError }
@@ -280,7 +285,7 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
             candidates.Add(Path.Combine(folder.Trim('"'), "tailscale.exe"));
         var match = candidates.FirstOrDefault(File.Exists);
         if (match is not null) return Path.GetFullPath(match);
-        throw new InvalidOperationException("Global mode requires Tailscale only on this PC. Install it from https://tailscale.com/download/windows, sign in on this computer, then try again. Nothing needs to be installed on the phone.");
+        throw new TailscaleNotInstalledException();
     }
 
     private static Process CreateProcess(string executable, IReadOnlyList<string> arguments)

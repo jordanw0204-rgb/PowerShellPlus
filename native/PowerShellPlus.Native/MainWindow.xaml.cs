@@ -272,7 +272,7 @@ public partial class MainWindow : Window
                 || !await WindowsTerminalImportService.WaitForClosedAsync(sourceWindow, TimeSpan.FromSeconds(45)))
             {
                 foreach (var item in staged) SessionRecoveryStore.DeleteSession(item.Profile.Id);
-                MessageBox.Show(this, "The source Windows Terminal window stayed open, so nothing was imported. Close-confirmation may have been cancelled or the source may be elevated.", "Import cancelled safely", MessageBoxButton.OK, MessageBoxImage.Information);
+                PowerShellPlusDialog.ShowMessage(this, "The source Windows Terminal window stayed open, so nothing was imported. Close-confirmation may have been cancelled or the source may be elevated.", "Import cancelled safely", PowerShellPlusDialogKind.Information);
                 UpdateStatus("Windows Terminal stayed open — import cancelled safely");
                 return;
             }
@@ -330,7 +330,7 @@ public partial class MainWindow : Window
         {
             LogNativeError("Windows Terminal import", exception);
             TerminalHost.Visibility = EditorOverlay.Visibility == Visibility.Visible ? Visibility.Hidden : Visibility.Visible;
-            MessageBox.Show(this, exception.Message, "Windows Terminal import failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "Windows Terminal import failed", PowerShellPlusDialogKind.Error);
             UpdateStatus("Windows Terminal import failed — source was not changed unless its close was already confirmed");
         }
         finally
@@ -846,7 +846,10 @@ public partial class MainWindow : Window
     private bool RemoveSession(SessionProfile profile, bool alreadyConfirmed = false, bool stopPane = true)
     {
         if (!panes.TryGetValue(profile.Id, out var pane)) return false;
-        if (!alreadyConfirmed && state.Settings.ConfirmBeforeRemove && MessageBox.Show(this, $"Remove {profile.Name}?", "PowerShellPlus", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
+        if (!alreadyConfirmed && state.Settings.ConfirmBeforeRemove && !PowerShellPlusDialog.Confirm(this,
+                $"Remove {profile.Name}?\n\nThe live terminal process will be closed and this session will be removed from the workspace.",
+                "Remove session?", PowerShellPlusDialogKind.Question,
+                "Remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: true)) return false;
         if (stopPane) pane.Stop();
         TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
         activePane = panes.Values.FirstOrDefault(); if (activePane is not null) SelectPane(activePane.Profile.Id, false); ApplyLayout(); ScheduleSave();
@@ -974,6 +977,27 @@ public partial class MainWindow : Window
         Render((FrameworkElement)importDialog.Content, "ui-windows-terminal-import.png");
         importDialog.Close();
         await Settle();
+        var promptDialog = PowerShellPlusDialog.CreateSnapshotDialog();
+        promptDialog.Owner = this;
+        promptDialog.ShowActivated = false;
+        promptDialog.Show();
+        await Settle();
+        Render((FrameworkElement)promptDialog.Content, "ui-themed-prompt.png");
+        promptDialog.Close();
+        await Settle();
+        await using (var remoteSnapshotServer = new LanRemoteServer(Dispatcher, GetLanRemoteSessions))
+        {
+            var remoteDialog = new LanRemoteDialog(remoteSnapshotServer, _ => Task.CompletedTask, () => Task.CompletedTask)
+            {
+                Owner = this,
+                ShowActivated = false
+            };
+            remoteDialog.Show();
+            await Settle();
+            Render((FrameworkElement)remoteDialog.Content, "ui-remote-access-dialog.png");
+            remoteDialog.Close();
+            await Settle();
+        }
         if (panes.Values.FirstOrDefault() is { } recoveryPane)
         {
             recoveryPane.SetPreviousOutputForTest("PS C:\\Projects\\PowerShellPlus> codex\nPrevious session output remains available after a real app or Windows restart.\nPS C:\\Projects\\PowerShellPlus>");

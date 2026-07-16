@@ -43,9 +43,9 @@ public partial class MainWindow
         catch (Exception exception)
         {
             LogNativeError("Remote Access", exception);
-            MessageBox.Show(this,
+            PowerShellPlusDialog.ShowMessage(this,
                 $"PowerShellPlus could not start LAN Remote.\n\n{exception.Message}\n\nMake sure this PC is connected to a private Wi-Fi or Ethernet network. If Windows Firewall prompts, allow Private networks only.",
-                "Remote Access unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
+                "Remote Access unavailable", PowerShellPlusDialogKind.Warning);
             UpdateStatus("Remote Access could not start");
         }
         finally
@@ -577,6 +577,32 @@ public partial class MainWindow
             details.Add($"FunnelContractParsed={funnelContract}");
             details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
 
+            const string installerIndexFixture = "<a href=\"tailscale-setup-1.98.8.exe\">old</a><a href=\"tailscale-setup-1.98.9.exe\">latest</a>";
+            var parsedInstallerUri = TailscaleInstaller.ParseLatestInstallerUri(installerIndexFixture);
+            var installerUrlBoundary = parsedInstallerUri == new Uri("https://pkgs.tailscale.com/stable/tailscale-setup-1.98.9.exe")
+                && TailscaleInstaller.IsOfficialInstallerUri(parsedInstallerUri)
+                && !TailscaleInstaller.IsOfficialInstallerUri(new Uri("http://pkgs.tailscale.com/stable/tailscale-setup-1.98.9.exe"))
+                && !TailscaleInstaller.IsOfficialInstallerUri(new Uri("https://evil.example/stable/tailscale-setup-1.98.9.exe"))
+                && !TailscaleInstaller.IsOfficialInstallerUri(new Uri("https://pkgs.tailscale.com/stable/tailscale-setup-1.98.9.exe?replace=1"));
+            var installerStartInfo = TailscaleInstaller.CreateInstallerStartInfo(@"C:\Temp\tailscale-setup-1.98.9.exe");
+            var installerLaunchBoundary = installerStartInfo.UseShellExecute
+                && installerStartInfo.FileName == @"C:\Temp\tailscale-setup-1.98.9.exe"
+                && installerStartInfo.WorkingDirectory == @"C:\Temp";
+            var unsignedInstallerRejected = false;
+            var unsignedFixture = Path.Combine(WorkspaceStore.DirectoryPath, "unsigned-tailscale-fixture.exe");
+            try
+            {
+                File.WriteAllText(unsignedFixture, "not an executable or a signed installer");
+                try { _ = TailscaleInstaller.VerifyTrustedPublisher(unsignedFixture); }
+                catch (InvalidOperationException) { unsignedInstallerRejected = true; }
+            }
+            finally { try { File.Delete(unsignedFixture); } catch { } }
+            details.Add($"TailscaleInstallerUrlBoundary={installerUrlBoundary}");
+            details.Add($"TailscaleInstallerLaunchBoundary={installerLaunchBoundary}");
+            details.Add($"UnsignedInstallerRejected={unsignedInstallerRejected}");
+            var themedDialogContract = PowerShellPlusDialog.ValidateThemeContract();
+            details.Add($"ThemedDialogContract={themedDialogContract}");
+
             var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
                 && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
@@ -586,7 +612,8 @@ public partial class MainWindow
                 && rfc1918Accepted && publicAddressRejected && subnetEnforced
                 && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected
                 && globalBoundary && globalHostAccepted && globalBadHostRejected && globalHsts && globalPairAccepted && globalSecureCookie
-                && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe && stoppedCleanly;
+                && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe
+                && installerUrlBoundary && installerLaunchBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }

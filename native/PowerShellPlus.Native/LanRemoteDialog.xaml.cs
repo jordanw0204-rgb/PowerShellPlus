@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 
 namespace PowerShellPlus.Native;
@@ -61,7 +62,7 @@ public partial class LanRemoteDialog : Window
             ? "No phone app, VPN, router port, or public IP is required. Tailscale is needed only on this computer and the tunnel is removed when sharing stops or PowerShellPlus exits."
             : "Switch to Global for browser-only access away from home. Direct router port-forwarding remains blocked.";
         TailscaleSetupButton.Visibility = Visibility.Visible;
-        TailscaleSetupButton.Content = global ? "Open Tailscale setup on this PC" : "Set up browser-only Global access";
+        TailscaleSetupButton.Content = global ? "Install / update Tailscale on this PC" : "Set up browser-only Global access";
         LanModeButton.FontWeight = global ? FontWeights.Normal : FontWeights.Bold;
         GlobalModeButton.FontWeight = global ? FontWeights.Bold : FontWeights.Normal;
         LanModeButton.Opacity = global ? 0.65 : 1;
@@ -114,9 +115,10 @@ public partial class LanRemoteDialog : Window
     private async Task ChangeModeAsync(RemoteAccessMode mode)
     {
         if (server.IsRunning && server.Mode == mode) return;
-        if (mode == RemoteAccessMode.Global && MessageBox.Show(this,
+        if (mode == RemoteAccessMode.Global && !PowerShellPlusDialog.Confirm(this,
                 "Global mode creates an HTTPS address reachable from the internet. Terminal data still requires the one-time PowerShellPlus pairing code, and remote typing starts disabled.\n\nStart browser-only Global access?",
-                "Start Global Remote", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+                "Start Global Remote", PowerShellPlusDialogKind.Warning,
+                "Start Global", "Not now", defaultToPrimary: false))
             return;
         ModeControls.IsEnabled = false;
         try
@@ -127,11 +129,22 @@ public partial class LanRemoteDialog : Window
             ApplyModePresentation();
             RefreshConnectionCount();
         }
+        catch (TailscaleNotInstalledException exception)
+        {
+            BindAddresses();
+            ApplyModePresentation();
+            var action = PowerShellPlusDialog.ShowActions(this,
+                $"PowerShellPlus could not switch to Global mode. Your previous sharing mode was restored when possible.\n\n{exception.Message}\n\nThe installer is downloaded only from Tailscale's official package server and must pass Windows signature verification before it opens.",
+                "Global mode needs Tailscale", PowerShellPlusDialogKind.Warning,
+                "Download & install", "Open official page", "Not now");
+            if (action == PowerShellPlusDialogResult.Primary) await DownloadAndOpenTailscaleAsync();
+            else if (action == PowerShellPlusDialogResult.Secondary) OpenOfficialTailscaleDownloadPage();
+        }
         catch (Exception exception)
         {
-            MessageBox.Show(this,
+            PowerShellPlusDialog.ShowMessage(this,
                 $"PowerShellPlus could not switch to {mode} mode. Your previous sharing mode was restored when possible.\n\n{exception.Message}",
-                $"{mode} mode unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
+                $"{mode} mode unavailable", PowerShellPlusDialogKind.Warning);
             BindAddresses();
             ApplyModePresentation();
         }
@@ -150,8 +163,8 @@ public partial class LanRemoteDialog : Window
         }
         catch (Exception exception)
         {
-            MessageBox.Show(this, $"PowerShellPlus could not remove this paired device.\n\n{exception.Message}",
-                "Could not remove device", MessageBoxButton.OK, MessageBoxImage.Error);
+            PowerShellPlusDialog.ShowMessage(this, $"PowerShellPlus could not remove this paired device.\n\n{exception.Message}",
+                "Could not remove device", PowerShellPlusDialogKind.Error);
         }
         finally { button.IsEnabled = true; }
     }
@@ -162,20 +175,56 @@ public partial class LanRemoteDialog : Window
         try { await stopSharing(); }
         catch (Exception exception)
         {
-            MessageBox.Show(this, $"Remote Access stopped locally, but tunnel cleanup reported a problem.\n\n{exception.Message}",
-                "Remote Access cleanup", MessageBoxButton.OK, MessageBoxImage.Warning);
+            PowerShellPlusDialog.ShowMessage(this, $"Remote Access stopped locally, but tunnel cleanup reported a problem.\n\n{exception.Message}",
+                "Remote Access cleanup", PowerShellPlusDialogKind.Warning);
         }
         finally { Close(); }
     }
 
-    private void TailscaleSetupClick(object sender, RoutedEventArgs e)
+    private async void TailscaleSetupClick(object sender, RoutedEventArgs e) => await DownloadAndOpenTailscaleAsync();
+
+    private async Task DownloadAndOpenTailscaleAsync()
     {
-        try { Process.Start(new ProcessStartInfo("https://tailscale.com/download/windows") { UseShellExecute = true }); }
+        TailscaleSetupButton.IsEnabled = false;
+        TailscaleSetupButton.Content = "Contacting Tailscale's verified package server…";
+        var progress = new Progress<double>(value =>
+            TailscaleSetupButton.Content = $"Downloading verified installer… {value:P0}");
+        try
+        {
+            var launch = await TailscaleInstaller.DownloadAndLaunchAsync(progress);
+            PowerShellPlusDialog.ShowMessage(this,
+                $"Windows opened {launch.FileName} after verifying its trusted signature and '{launch.Publisher}' publisher.\n\nFinish the installer, sign in to Tailscale on this PC, then choose GLOBAL again. Nothing needs to be installed on your phone.",
+                "Tailscale installer opened", PowerShellPlusDialogKind.Success, "Got it");
+        }
         catch (Exception exception)
         {
-            MessageBox.Show(this, exception.Message, "Could not open Tailscale setup", MessageBoxButton.OK, MessageBoxImage.Warning);
+            var action = PowerShellPlusDialog.ShowActions(this,
+                $"PowerShellPlus did not open an installer.\n\n{exception.Message}",
+                "Could not verify Tailscale setup", PowerShellPlusDialogKind.Error,
+                "Open official page", null, "Close");
+            if (action == PowerShellPlusDialogResult.Primary) OpenOfficialTailscaleDownloadPage();
+        }
+        finally
+        {
+            TailscaleSetupButton.IsEnabled = true;
+            ApplyModePresentation();
+        }
+    }
+
+    private void OpenOfficialTailscaleDownloadPage()
+    {
+        try { Process.Start(new ProcessStartInfo(TailscaleInstaller.DownloadPageUri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception exception)
+        {
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "Could not open Tailscale setup",
+                PowerShellPlusDialogKind.Warning);
         }
     }
 
     private void DoneClick(object sender, RoutedEventArgs e) => Close();
+
+    private void TitleBarMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left) DragMove();
+    }
 }
