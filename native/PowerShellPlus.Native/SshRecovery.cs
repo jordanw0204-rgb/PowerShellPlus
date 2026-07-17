@@ -1,0 +1,332 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace PowerShellPlus.Native;
+
+public sealed class SshLaunchMarker
+{
+    public int Version { get; set; } = 1;
+    public string PaneId { get; set; } = string.Empty;
+    public DateTime StartedUtc { get; set; }
+    public int? ShellProcessId { get; set; }
+    public string WorkingDirectory { get; set; } = string.Empty;
+    public string[] ConnectionArguments { get; set; } = [];
+    public DateTime? EndedUtc { get; set; }
+    public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
+}
+
+public static class SshLaunchStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    public static string? DirectoryOverride { get; set; }
+    public static string DirectoryPath => DirectoryOverride ?? Path.Combine(SessionRecoveryStore.DirectoryPath, "ssh-launches");
+
+    public static SshLaunchMarker? Load(string paneId, string? directoryPath = null)
+    {
+        try
+        {
+            var path = MarkerPath(paneId, directoryPath);
+            if (!File.Exists(path)) return null;
+            var marker = JsonSerializer.Deserialize<SshLaunchMarker>(File.ReadAllText(path), JsonOptions);
+            if (marker is not { Version: 1 } || marker.PaneId != paneId
+                || !SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _)) return null;
+            marker.ConnectionArguments = normalized;
+            return marker;
+        }
+        catch { return null; }
+    }
+
+    public static void Save(SshLaunchMarker marker, string? directoryPath = null)
+    {
+        if (!SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _))
+            throw new InvalidOperationException("Refusing to save an unsafe SSH recovery marker.");
+        marker.ConnectionArguments = normalized;
+        var directory = directoryPath ?? DirectoryPath;
+        Directory.CreateDirectory(directory);
+        var path = MarkerPath(marker.PaneId, directory);
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(marker, JsonOptions));
+        File.Move(temporary, path, true);
+    }
+
+    public static string BuildPowerShellWrapper(string paneId, string? directoryPath = null)
+    {
+        var directory = directoryPath ?? DirectoryPath;
+        Directory.CreateDirectory(directory);
+        var markerPath = MarkerPath(paneId, directory);
+        var escapedPaneId = EscapePowerShell(paneId);
+        var escapedMarkerPath = EscapePowerShell(markerPath);
+        return $$"""
+$global:__PowerShellPlusSshCommand = (Get-Command ssh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source;
+if ($global:__PowerShellPlusSshCommand) {
+    function global:ssh {
+        $__pspArgs = @($args);
+        $__pspSafe = [System.Collections.Generic.List[string]]::new();
+        $__pspNoValue = @('-4', '-6', '-A', '-a', '-C', '-K', '-k', '-q', '-t', '-tt', '-X', '-x', '-Y');
+        $__pspValue = @('-F', '-i', '-J', '-l', '-p');
+        $__pspTestDestination = {
+            param([string]$Value)
+            if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Length -gt 512 -or $Value.StartsWith('-') -or $Value -match '[\x00-\x1F\x7F]') { return $false }
+            if ($Value.StartsWith('ssh://', [StringComparison]::OrdinalIgnoreCase)) {
+                if ($Value -notmatch '^ssh://[A-Za-z0-9._~@:\[\]-]{1,500}$') { return $false }
+                try { $__pspUri = [Uri]$Value } catch { return $false }
+                if ($__pspUri.Scheme -ne 'ssh' -or [string]::IsNullOrWhiteSpace($__pspUri.Host) -or $__pspUri.UserInfo.Contains(':') -or $__pspUri.Query -or $__pspUri.Fragment -or ($__pspUri.AbsolutePath -and $__pspUri.AbsolutePath -ne '/')) { return $false }
+                return -not $__pspUri.UserInfo -or $__pspUri.UserInfo -match '^[A-Za-z0-9._~-]{1,128}$'
+            }
+            if ($Value -notmatch '^[A-Za-z0-9._~@:\[\]-]{1,512}$' -or ([regex]::Matches($Value, '@')).Count -gt 1) { return $false }
+            $__pspAt = $Value.IndexOf('@');
+            return $__pspAt -lt 0 -or ($__pspAt -gt 0 -and $__pspAt -lt $Value.Length - 1 -and $Value.Substring(0, $__pspAt) -match '^[A-Za-z0-9._~-]{1,128}$')
+        };
+        $__pspTestOption = {
+            param([string]$Option, [string]$Value)
+            if ([string]::IsNullOrEmpty($Value) -or $Value.Length -gt 1024 -or $Value -match '[\x00-\x1F\x7F]') { return $false }
+            switch ($Option) {
+                '-p' { $__pspPort = 0; return [int]::TryParse($Value, [ref]$__pspPort) -and $__pspPort -ge 1 -and $__pspPort -le 65535 }
+                '-l' { return $Value -match '^[A-Za-z0-9._~-]{1,128}$' }
+                '-J' { $__pspJumps = @($Value.Split(',', [StringSplitOptions]::RemoveEmptyEntries)); if ($__pspJumps.Count -eq 0) { return $false }; foreach ($__pspJump in $__pspJumps) { if (-not (& $__pspTestDestination $__pspJump)) { return $false } }; return $true }
+                '-F' { return $true }
+                '-i' { return $true }
+                default { return $false }
+            }
+        };
+        $__pspValid = $true;
+        $__pspDestinationSeen = $false;
+        $__pspIndex = 0;
+        while ($__pspIndex -lt $__pspArgs.Count -and -not $__pspDestinationSeen) {
+            $__pspArg = [string]$__pspArgs[$__pspIndex];
+            if ($__pspArg -eq '--') {
+                $__pspIndex++;
+                if ($__pspIndex -ge $__pspArgs.Count) { $__pspValid = $false; break }
+                $__pspDestination = [string]$__pspArgs[$__pspIndex];
+                if (-not (& $__pspTestDestination $__pspDestination)) { $__pspValid = $false; break }
+                $__pspSafe.Add($__pspDestination);
+                $__pspDestinationSeen = $true;
+                break;
+            }
+            if ($__pspArg -in $__pspNoValue) {
+                if ($__pspArg -notin @('-t', '-tt')) { $__pspSafe.Add($__pspArg) }
+                $__pspIndex++;
+                continue;
+            }
+            if ($__pspArg -in $__pspValue) {
+                if ($__pspIndex + 1 -ge $__pspArgs.Count) { $__pspValid = $false; break }
+                $__pspOptionValue = [string]$__pspArgs[$__pspIndex + 1];
+                if (-not (& $__pspTestOption $__pspArg $__pspOptionValue)) { $__pspValid = $false; break }
+                $__pspSafe.Add($__pspArg);
+                $__pspSafe.Add($__pspOptionValue);
+                $__pspIndex += 2;
+                continue;
+            }
+            if ($__pspArg -match '^-(?<key>[FiJlp])(?<value>.+)$') {
+                $__pspCombinedOption = '-' + $Matches['key'];
+                if (-not (& $__pspTestOption $__pspCombinedOption $Matches['value'])) { $__pspValid = $false; break }
+                $__pspSafe.Add($__pspArg);
+                $__pspIndex++;
+                continue;
+            }
+            if ($__pspArg.StartsWith('-')) { $__pspValid = $false; break }
+            if (-not (& $__pspTestDestination $__pspArg)) { $__pspValid = $false; break }
+            $__pspSafe.Add($__pspArg);
+            $__pspDestinationSeen = $true;
+            $__pspIndex++;
+        }
+        $__pspMarker = $null;
+        if ($__pspValid -and $__pspDestinationSeen) {
+            $__pspMarker = [ordered]@{
+                Version = 1;
+                PaneId = '{{escapedPaneId}}';
+                StartedUtc = [DateTime]::UtcNow.ToString('O');
+                ShellProcessId = $PID;
+                WorkingDirectory = (Get-Location).ProviderPath;
+                ConnectionArguments = @($__pspSafe.ToArray());
+                EndedUtc = $null
+            };
+            $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '{{escapedMarkerPath}}' -Encoding UTF8;
+        }
+        try { & $global:__PowerShellPlusSshCommand @__pspArgs }
+        finally {
+            if ($null -ne $__pspMarker) {
+                $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O');
+                $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '{{escapedMarkerPath}}' -Encoding UTF8;
+            }
+        }
+    }
+}
+""";
+    }
+
+    private static string MarkerPath(string paneId, string? directoryPath = null)
+        => Path.Combine(directoryPath ?? DirectoryPath, SessionRecoveryStore.SafeSessionId(paneId) + ".json");
+
+    private static string EscapePowerShell(string value) => value.Replace("'", "''");
+}
+
+public readonly record struct HermesRecoveryState(bool WasActive, string? SessionId, bool UseTui);
+
+public static class HermesRecovery
+{
+    private static readonly Regex SessionIdPattern = new(@"^\d{8}_\d{6}_[a-f0-9]{6,8}$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex SessionIdEvidencePattern = new(@"(?im)(?:(?:Session(?:\s+ID)?|HERMES_SESSION_ID)\s*[:=]\s*|hermes(?:\s+chat)?(?:\s+--tui)?[^\r\n]{0,80}?(?:--resume|-r)\s+)(?<id>\d{8}_\d{6}_[a-f0-9]{6,8})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex InvocationPattern = new(@"(?im)^(?:(?:[^\r\n]{0,160})[$#>❯➜]\s*)?hermes(?:\s+(?:chat\b|--tui\b|-c\b|--continue\b|-r\b|--resume\b)|\s*$)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex TuiPattern = new(@"(?im)^(?:(?:[^\r\n]{0,160})[$#>❯➜]\s*)?hermes(?:\s+chat)?[^\r\n]*\s--tui(?:\s|$)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex BannerPattern = new(@"(?i)\bHermes Agent\b|\bPrevious Conversation\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    public static HermesRecoveryState Detect(string? terminalOutput, HermesRecoveryState previous = default)
+    {
+        var output = terminalOutput ?? string.Empty;
+        var invocation = InvocationPattern.Matches(output).Cast<Match>().LastOrDefault();
+        var lastInvocation = invocation?.Index ?? -1;
+        var banner = BannerPattern.Matches(output).Cast<Match>().LastOrDefault();
+        var lastEvidence = Math.Max(lastInvocation, banner?.Index ?? -1);
+        var lastExit = output.LastIndexOf("Resume this session with:", StringComparison.OrdinalIgnoreCase);
+        var strongHermesEvidence = lastEvidence >= 0;
+        var wasActive = strongHermesEvidence && lastExit <= lastEvidence;
+        if (!strongHermesEvidence && previous.WasActive) wasActive = true;
+
+        string? sessionId = null;
+        if (strongHermesEvidence)
+            sessionId = SessionIdEvidencePattern.Matches(output).Cast<Match>().LastOrDefault()?.Groups["id"].Value;
+        sessionId = IsSafeSessionId(sessionId) ? sessionId : previous.WasActive && IsSafeSessionId(previous.SessionId) ? previous.SessionId : null;
+        var useTui = TuiPattern.IsMatch(output) || previous.WasActive && previous.UseTui;
+        return new HermesRecoveryState(wasActive, sessionId, useTui);
+    }
+
+    public static bool IsSafeSessionId(string? value)
+        => value is { Length: >= 22 and <= 24 } && SessionIdPattern.IsMatch(value);
+}
+
+public static class SshRecovery
+{
+    private static readonly HashSet<string> NoValueOptions = new(StringComparer.Ordinal)
+    {
+        "-4", "-6", "-A", "-a", "-C", "-K", "-k", "-q", "-t", "-tt", "-X", "-x", "-Y"
+    };
+    private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal) { "-F", "-i", "-J", "-l", "-p" };
+    private static readonly Regex UserPattern = new(@"^[A-Za-z0-9._~-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex DestinationPattern = new(@"^[A-Za-z0-9._~@:\[\]-]{1,512}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SshUriPattern = new(@"^ssh://[A-Za-z0-9._~@:\[\]-]{1,500}$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    public static bool TryNormalizeConnectionArguments(IEnumerable<string>? arguments, out string[] normalized, out string destination)
+    {
+        normalized = [];
+        destination = string.Empty;
+        if (arguments is null) return false;
+        var values = arguments.ToArray();
+        if (values.Length is 0 or > 64 || values.Any(value => value is null || value.Length is 0 or > 1024)) return false;
+        var safe = new List<string>(values.Length);
+        for (var index = 0; index < values.Length; index++)
+        {
+            var argument = values[index];
+            if (argument == "--")
+            {
+                if (++index >= values.Length || index != values.Length - 1 || !IsSafeDestination(values[index])) return false;
+                destination = values[index];
+                safe.Add(destination);
+                break;
+            }
+            if (NoValueOptions.Contains(argument))
+            {
+                if (argument is not "-t" and not "-tt") safe.Add(argument);
+                continue;
+            }
+            if (ValueOptions.Contains(argument))
+            {
+                if (++index >= values.Length || !IsSafeOptionValue(argument, values[index])) return false;
+                safe.Add(argument);
+                safe.Add(values[index]);
+                continue;
+            }
+            if (argument.Length > 2 && ValueOptions.Contains(argument[..2]))
+            {
+                var option = argument[..2];
+                var optionValue = argument[2..];
+                if (!IsSafeOptionValue(option, optionValue)) return false;
+                safe.Add(argument);
+                continue;
+            }
+            if (argument.StartsWith("-", StringComparison.Ordinal) || !IsSafeDestination(argument) || index != values.Length - 1) return false;
+            destination = argument;
+            safe.Add(destination);
+        }
+        if (destination.Length == 0 || safe.Count == 0) return false;
+        normalized = safe.ToArray();
+        return true;
+    }
+
+    public static string? BuildPowerShellResumeCommand(SessionRecoveryEntry? recovery)
+    {
+        if (recovery?.SshWasActive != true
+            || !TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out var arguments, out var destination)) return null;
+        var commandArguments = arguments.Take(arguments.Length - 1).ToList();
+        commandArguments.Add("-tt");
+        commandArguments.Add(destination);
+        if (recovery.HermesWasActive)
+        {
+            commandArguments.Add("hermes");
+            if (recovery.HermesUseTui) commandArguments.Add("--tui");
+            if (HermesRecovery.IsSafeSessionId(recovery.HermesSessionId))
+            {
+                commandArguments.Add("--resume");
+                commandArguments.Add(recovery.HermesSessionId!);
+            }
+            else commandArguments.Add("--continue");
+        }
+        return "& ssh " + string.Join(" ", commandArguments.Select(QuotePowerShell));
+    }
+
+    public static void Sanitize(SessionRecoveryEntry entry)
+    {
+        if (!entry.SshWasActive || !TryNormalizeConnectionArguments(entry.SshConnectionArguments, out var normalized, out _))
+        {
+            entry.SshWasActive = false;
+            entry.SshConnectionArguments = [];
+            entry.HermesWasActive = false;
+            entry.HermesSessionId = null;
+            entry.HermesUseTui = false;
+            return;
+        }
+        entry.SshConnectionArguments = normalized;
+        if (!entry.HermesWasActive)
+        {
+            entry.HermesSessionId = null;
+            entry.HermesUseTui = false;
+        }
+        else if (!HermesRecovery.IsSafeSessionId(entry.HermesSessionId)) entry.HermesSessionId = null;
+    }
+
+    private static bool IsSafeOptionValue(string option, string value)
+    {
+        if (value.Length is 0 or > 1024 || value.Any(char.IsControl)) return false;
+        return option switch
+        {
+            "-p" => int.TryParse(value, out var port) && port is >= 1 and <= 65535,
+            "-l" => UserPattern.IsMatch(value),
+            "-J" => value.Split(',', StringSplitOptions.RemoveEmptyEntries).Length > 0
+                && value.Split(',', StringSplitOptions.RemoveEmptyEntries).All(IsSafeDestination),
+            "-F" or "-i" => true,
+            _ => false
+        };
+    }
+
+    private static bool IsSafeDestination(string value)
+    {
+        if (value.Length is 0 or > 512 || value.StartsWith("-", StringComparison.Ordinal) || value.Any(char.IsControl)) return false;
+        if (value.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!SshUriPattern.IsMatch(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
+                || !uri.Scheme.Equals("ssh", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(uri.Host)
+                || uri.UserInfo.Contains(':', StringComparison.Ordinal) || uri.Query.Length > 0 || uri.Fragment.Length > 0
+                || uri.AbsolutePath is not "" and not "/") return false;
+            return uri.UserInfo.Length == 0 || UserPattern.IsMatch(uri.UserInfo);
+        }
+        if (!DestinationPattern.IsMatch(value) || value.Count(character => character == '@') > 1) return false;
+        var at = value.IndexOf('@');
+        return at < 0 || at > 0 && UserPattern.IsMatch(value[..at]) && at < value.Length - 1;
+    }
+
+    private static string QuotePowerShell(string value) => "'" + value.Replace("'", "''") + "'";
+}

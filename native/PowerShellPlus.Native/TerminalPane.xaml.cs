@@ -933,8 +933,10 @@ public partial class TerminalPane : UserControl
     public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
-        var resumeCodex = recovery?.CodexWasActive == true;
-        var startupDirectory = resumeCodex && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory)
+        var sshResumeCommand = SshRecovery.BuildPowerShellResumeCommand(recovery);
+        var resumeSsh = sshResumeCommand is not null;
+        var resumeCodex = recovery?.CodexWasActive == true && !resumeSsh;
+        var startupDirectory = (resumeCodex || resumeSsh) && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory)
             ? recovery.WorkingDirectory
             : profile.WorkingDirectory;
         var validDirectory = !string.IsNullOrWhiteSpace(startupDirectory) && Directory.Exists(startupDirectory);
@@ -954,7 +956,9 @@ public partial class TerminalPane : UserControl
         {
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
-            if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
+            script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
+            if (resumeSsh) script += "; " + sshResumeCommand;
+            else if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
             if (script.Length == 0) return command;
             var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
             return $"{command} -NoExit -EncodedCommand {encoded}";

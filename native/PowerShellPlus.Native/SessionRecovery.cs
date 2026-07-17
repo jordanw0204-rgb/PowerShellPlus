@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -23,6 +23,11 @@ public sealed class SessionRecoveryEntry
     public string? CodexApprovalPolicy { get; set; }
     public string? CodexPermissionProfile { get; set; }
     public string? CodexApprovalsReviewer { get; set; }
+    public bool SshWasActive { get; set; }
+    public string[] SshConnectionArguments { get; set; } = [];
+    public bool HermesWasActive { get; set; }
+    public string? HermesSessionId { get; set; }
+    public bool HermesUseTui { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 
@@ -134,7 +139,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is >= 1 and <= 7)
+            if (value is not null && value.Version is >= 1 and <= 8)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -143,9 +148,10 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 7;
+                    value.Version = 8;
                 }
-                if (value.Version is 2 or 3 or 4 or 5 or 6) value.Version = 7;
+                if (value.Version is 2 or 3 or 4 or 5 or 6 or 7) value.Version = 8;
+                foreach (var entry in value.Sessions.Values) SshRecovery.Sanitize(entry);
                 return value;
             }
         }
@@ -714,6 +720,12 @@ public static class ProcessTreeInspector
     private static readonly IntPtr InvalidHandleValue = new(-1);
 
     public static CodexProcessState FindCodexProcess(int rootProcessId)
+        => FindProcess(rootProcessId, IsCodexExecutable);
+
+    public static CodexProcessState FindSshProcess(int rootProcessId)
+        => FindProcess(rootProcessId, value => Path.GetFileNameWithoutExtension(value).Equals("ssh", StringComparison.OrdinalIgnoreCase));
+
+    private static CodexProcessState FindProcess(int rootProcessId, Func<string, bool> executableMatch)
     {
         if (rootProcessId <= 0) return default;
         var processes = SnapshotProcesses();
@@ -728,7 +740,7 @@ public static class ProcessTreeInspector
 
         DateTime? earliest = null;
         int? earliestProcessId = null;
-        foreach (var process in processes.Where(process => descendants.Contains(process.Id) && IsCodexExecutable(process.Name)))
+        foreach (var process in processes.Where(process => descendants.Contains(process.Id) && executableMatch(process.Name)))
         {
             try
             {

@@ -19,6 +19,7 @@ public partial class App : Application
         {
             WorkspaceStore.DirectoryOverride = Path.Combine(Path.GetTempPath(), "PowerShellPlus-tests", Environment.ProcessId.ToString());
             CodexLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "codex-launches");
+            SshLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "ssh-launches");
         }
         if (!automationMode && !ClaimPrimaryInstance())
         {
@@ -98,6 +99,7 @@ public partial class App : Application
         {
             try { Directory.Delete(testDirectory, true); } catch { }
             CodexLaunchStore.DirectoryOverride = null;
+            SshLaunchStore.DirectoryOverride = null;
             WorkspaceStore.DirectoryOverride = null;
         }
         base.OnExit(e);
