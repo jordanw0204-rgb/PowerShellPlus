@@ -465,9 +465,10 @@ public partial class TerminalPane : UserControl
 
     public async Task RestartAsync()
     {
-        StateText.Text = "  Restarting…";
-        startupRecovery = null;
-        Terminal.StartupCommandLine = BuildCommandLine(Profile, null);
+        var sshRecovery = startupRecovery?.SshWasActive == true ? startupRecovery : null;
+        StateText.Text = sshRecovery is null ? "  Restarting…" : "  Retrying SSH recovery…";
+        startupRecovery = sshRecovery;
+        Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
         StateText.Text = "  Windows Terminal control";

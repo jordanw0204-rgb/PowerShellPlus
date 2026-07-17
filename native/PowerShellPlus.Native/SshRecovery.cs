@@ -9,14 +9,17 @@ namespace PowerShellPlus.Native;
 
 public sealed class SshLaunchMarker
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public string PaneId { get; set; } = string.Empty;
     public DateTime StartedUtc { get; set; }
     public int? ShellProcessId { get; set; }
     public string WorkingDirectory { get; set; } = string.Empty;
     public string[] ConnectionArguments { get; set; } = [];
+    public bool RecoveryAttempt { get; set; }
+    public int? ExitCode { get; set; }
     public DateTime? EndedUtc { get; set; }
     public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
+    public bool IsFailedRecovery => RecoveryAttempt && EndedUtc is not null && ExitCode == 255;
 }
 
 public static class SshLaunchStore
@@ -32,7 +35,7 @@ public static class SshLaunchStore
             var path = MarkerPath(paneId, directoryPath);
             if (!File.Exists(path)) return null;
             var marker = JsonSerializer.Deserialize<SshLaunchMarker>(File.ReadAllText(path), JsonOptions);
-            if (marker is not { Version: 1 } || marker.PaneId != paneId
+            if (marker is null || marker.Version is not (1 or 2) || marker.PaneId != paneId
                 || !SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _)) return null;
             marker.ConnectionArguments = normalized;
             return marker;
@@ -45,6 +48,7 @@ public static class SshLaunchStore
         if (!SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _))
             throw new InvalidOperationException("Refusing to save an unsafe SSH recovery marker.");
         marker.ConnectionArguments = normalized;
+        marker.Version = 2;
         var directory = directoryPath ?? DirectoryPath;
         Directory.CreateDirectory(directory);
         var path = MarkerPath(marker.PaneId, directory);
@@ -67,7 +71,7 @@ if ($global:__PowerShellPlusSshCommand) {
         $__pspArgs = @($args);
         $__pspSafe = [System.Collections.Generic.List[string]]::new();
         $__pspNoValue = @('-4', '-6', '-A', '-a', '-C', '-K', '-k', '-q', '-t', '-tt', '-X', '-x', '-Y');
-        $__pspValue = @('-F', '-i', '-J', '-l', '-p');
+        $__pspValue = @('-F', '-i', '-J', '-l', '-o', '-p');
         $__pspTestDestination = {
             param([string]$Value)
             if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Length -gt 512 -or $Value.StartsWith('-') -or $Value -match '[\x00-\x1F\x7F]') { return $false }
@@ -88,6 +92,17 @@ if ($global:__PowerShellPlusSshCommand) {
                 '-p' { $__pspPort = 0; return [int]::TryParse($Value, [ref]$__pspPort) -and $__pspPort -ge 1 -and $__pspPort -le 65535 }
                 '-l' { return $Value -match '^[A-Za-z0-9._~-]{1,128}$' }
                 '-J' { $__pspJumps = @($Value.Split(',', [StringSplitOptions]::RemoveEmptyEntries)); if ($__pspJumps.Count -eq 0) { return $false }; foreach ($__pspJump in $__pspJumps) { if (-not (& $__pspTestDestination $__pspJump)) { return $false } }; return $true }
+                '-o' {
+                    if ($Value -notmatch '^(?<name>ConnectionAttempts|ConnectTimeout|ServerAliveInterval|ServerAliveCountMax)=(?<number>[0-9]{1,3})$') { return $false }
+                    $__pspNumber = [int]$Matches['number'];
+                    switch ($Matches['name']) {
+                        'ConnectionAttempts' { return $__pspNumber -ge 1 -and $__pspNumber -le 5 }
+                        'ConnectTimeout' { return $__pspNumber -ge 1 -and $__pspNumber -le 60 }
+                        'ServerAliveInterval' { return $__pspNumber -ge 1 -and $__pspNumber -le 300 }
+                        'ServerAliveCountMax' { return $__pspNumber -ge 1 -and $__pspNumber -le 10 }
+                    }
+                    return $false
+                }
                 '-F' { return $true }
                 '-i' { return $true }
                 default { return $false }
@@ -116,8 +131,10 @@ if ($global:__PowerShellPlusSshCommand) {
                 if ($__pspIndex + 1 -ge $__pspArgs.Count) { $__pspValid = $false; break }
                 $__pspOptionValue = [string]$__pspArgs[$__pspIndex + 1];
                 if (-not (& $__pspTestOption $__pspArg $__pspOptionValue)) { $__pspValid = $false; break }
-                $__pspSafe.Add($__pspArg);
-                $__pspSafe.Add($__pspOptionValue);
+                if ($__pspArg -ne '-o') {
+                    $__pspSafe.Add($__pspArg);
+                    $__pspSafe.Add($__pspOptionValue);
+                }
                 $__pspIndex += 2;
                 continue;
             }
@@ -137,19 +154,23 @@ if ($global:__PowerShellPlusSshCommand) {
         $__pspMarker = $null;
         if ($__pspValid -and $__pspDestinationSeen) {
             $__pspMarker = [ordered]@{
-                Version = 1;
+                Version = 2;
                 PaneId = '{{escapedPaneId}}';
                 StartedUtc = [DateTime]::UtcNow.ToString('O');
                 ShellProcessId = $PID;
                 WorkingDirectory = (Get-Location).ProviderPath;
                 ConnectionArguments = @($__pspSafe.ToArray());
+                RecoveryAttempt = [bool]$global:__PowerShellPlusSshRecoveryActive;
+                ExitCode = $null;
                 EndedUtc = $null
             };
             $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '{{escapedMarkerPath}}' -Encoding UTF8;
         }
-        try { & $global:__PowerShellPlusSshCommand @__pspArgs }
+        $__pspExitCode = $null;
+        try { & $global:__PowerShellPlusSshCommand @__pspArgs; $__pspExitCode = $LASTEXITCODE }
         finally {
             if ($null -ne $__pspMarker) {
+                $__pspMarker.ExitCode = $__pspExitCode;
                 $__pspMarker.EndedUtc = [DateTime]::UtcNow.ToString('O');
                 $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '{{escapedMarkerPath}}' -Encoding UTF8;
             }
@@ -205,7 +226,7 @@ public static class SshRecovery
     {
         "-4", "-6", "-A", "-a", "-C", "-K", "-k", "-q", "-t", "-tt", "-X", "-x", "-Y"
     };
-    private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal) { "-F", "-i", "-J", "-l", "-p" };
+    private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal) { "-F", "-i", "-J", "-l", "-o", "-p" };
     private static readonly Regex UserPattern = new(@"^[A-Za-z0-9._~-]{1,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex DestinationPattern = new(@"^[A-Za-z0-9._~@:\[\]-]{1,512}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex SshUriPattern = new(@"^ssh://[A-Za-z0-9._~@:\[\]-]{1,500}$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -262,6 +283,10 @@ public static class SshRecovery
         if (recovery?.SshWasActive != true
             || !TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out var arguments, out var destination)) return null;
         var commandArguments = arguments.Take(arguments.Length - 1).ToList();
+        AddReliabilityOption(commandArguments, "ConnectionAttempts", 2);
+        AddReliabilityOption(commandArguments, "ConnectTimeout", 12);
+        AddReliabilityOption(commandArguments, "ServerAliveInterval", 15);
+        AddReliabilityOption(commandArguments, "ServerAliveCountMax", 3);
         commandArguments.Add("-tt");
         commandArguments.Add(destination);
         if (recovery.HermesWasActive)
@@ -275,8 +300,23 @@ public static class SshRecovery
             }
             else commandArguments.Add("--continue");
         }
-        return "& ssh " + string.Join(" ", commandArguments.Select(QuotePowerShell));
+        var invocation = "& ssh " + string.Join(" ", commandArguments.Select(QuotePowerShell));
+        var description = recovery.HermesWasActive ? "SSH and Hermes session" : "SSH session";
+        return $"Write-Host '[PowerShellPlus] Restoring {description}...' -ForegroundColor Cyan; "
+            + "$global:__PowerShellPlusSshRecoveryActive = $true; "
+            + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}; "
+            + "if ($LASTEXITCODE -ne 0) { Write-Warning '[PowerShellPlus] Automatic recovery could not connect. The saved session was kept; click the pane restart button to retry. This PowerShell prompt remains interactive.' }";
     }
+
+    public static bool ShouldKeepPendingRecovery(SessionRecoveryEntry? previous, SshLaunchMarker? launch, bool sshProcessActive)
+        => previous?.SshWasActive == true && launch?.RecoveryAttempt == true
+            && (sshProcessActive || launch.IsFailedRecovery);
+
+    public static bool ShouldPreserveTranscript(SessionRecoveryEntry? previous, SshLaunchMarker? launch,
+        bool sshProcessActive, string? currentOutput)
+        => ShouldKeepPendingRecovery(previous, launch, sshProcessActive)
+            && previous?.HermesWasActive == true
+            && !HermesRecovery.Detect(currentOutput).WasActive;
 
     public static void Sanitize(SessionRecoveryEntry entry)
     {
@@ -307,7 +347,31 @@ public static class SshRecovery
             "-l" => UserPattern.IsMatch(value),
             "-J" => value.Split(',', StringSplitOptions.RemoveEmptyEntries).Length > 0
                 && value.Split(',', StringSplitOptions.RemoveEmptyEntries).All(IsSafeDestination),
+            "-o" => IsSafeReliabilityOption(value),
             "-F" or "-i" => true,
+            _ => false
+        };
+    }
+
+    private static void AddReliabilityOption(List<string> arguments, string name, int value)
+    {
+        for (var index = 0; index < arguments.Count - 1; index++)
+            if (arguments[index] == "-o" && arguments[index + 1].StartsWith(name + "=", StringComparison.OrdinalIgnoreCase)) return;
+        arguments.Add("-o");
+        arguments.Add($"{name}={value}");
+    }
+
+    private static bool IsSafeReliabilityOption(string value)
+    {
+        var separator = value.IndexOf('=');
+        if (separator <= 0 || separator == value.Length - 1
+            || !int.TryParse(value[(separator + 1)..], out var number)) return false;
+        return value[..separator] switch
+        {
+            "ConnectionAttempts" => number is >= 1 and <= 5,
+            "ConnectTimeout" => number is >= 1 and <= 60,
+            "ServerAliveInterval" => number is >= 1 and <= 300,
+            "ServerAliveCountMax" => number is >= 1 and <= 10,
             _ => false
         };
     }
