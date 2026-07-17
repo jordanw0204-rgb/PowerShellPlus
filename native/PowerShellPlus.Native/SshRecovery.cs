@@ -186,15 +186,19 @@ if ($global:__PowerShellPlusSshCommand) {
     private static string EscapePowerShell(string value) => value.Replace("'", "''");
 }
 
-public readonly record struct HermesRecoveryState(bool WasActive, string? SessionId, bool UseTui);
+public readonly record struct HermesRecoveryState(bool WasActive, string? SessionId, string? Model, bool UseTui);
 
 public static class HermesRecovery
 {
     private static readonly Regex SessionIdPattern = new(@"^\d{8}_\d{6}_[a-f0-9]{6,8}$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    private static readonly Regex SessionIdEvidencePattern = new(@"(?im)(?:(?:Session(?:\s+ID)?|HERMES_SESSION_ID)\s*[:=]\s*|hermes(?:\s+chat)?(?:\s+--tui)?[^\r\n]{0,80}?(?:--resume|-r)\s+)(?<id>\d{8}_\d{6}_[a-f0-9]{6,8})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ModelPattern = new(@"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,255}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SessionIdEvidencePattern = new(@"(?im)(?:(?:Session(?:\s+ID)?|HERMES_SESSION_ID)\s*[:=]\s*|Resumed\s+session\s+|hermes(?:\s+chat)?(?:\s+--tui)?[^\r\n]{0,80}?(?:--resume|-r)\s+)(?<id>\d{8}_\d{6}_[a-f0-9]{6,8})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex InvocationPattern = new(@"(?im)^(?:(?:[^\r\n]{0,160})[$#>❯➜]\s*)?hermes(?:\s+(?:chat\b|--tui\b|-c\b|--continue\b|-r\b|--resume\b)|\s*$)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex TuiPattern = new(@"(?im)^(?:(?:[^\r\n]{0,160})[$#>❯➜]\s*)?hermes(?:\s+chat)?[^\r\n]*\s--tui(?:\s|$)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex BannerPattern = new(@"(?i)\bHermes Agent\b|\bPrevious Conversation\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex BannerModelPattern = new(@"(?im)^[ \t]*[^\r\nA-Za-z0-9]{0,12}[ \t]*(?<model>[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,255})[ \t]+·[ \t]+\d+[ \t]+tools\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex StatusModelPattern = new(@"(?im)^[ \t]*[^\r\nA-Za-z0-9]{0,12}[ \t]*(?<model>[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,255})[ \t]+(?:·|│)[ \t]+(?:ctx[ \t]+--|\d+(?:\.\d+)?(?:K(?:/\d+(?:\.\d+)?K)?|%))(?=[ \t]*(?:·|│|$))", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ModelCommandPattern = new(@"(?im)^[ \t]*(?:[^\r\n]{0,160}[>❯➜][ \t]*)?/model[ \t]+(?<model>[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,255})(?:[ \t]+--global)?[ \t]*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static HermesRecoveryState Detect(string? terminalOutput, HermesRecoveryState previous = default)
     {
@@ -212,12 +216,23 @@ public static class HermesRecovery
         if (strongHermesEvidence)
             sessionId = SessionIdEvidencePattern.Matches(output).Cast<Match>().LastOrDefault()?.Groups["id"].Value;
         sessionId = IsSafeSessionId(sessionId) ? sessionId : previous.WasActive && IsSafeSessionId(previous.SessionId) ? previous.SessionId : null;
+        var modelEvidence = BannerModelPattern.Matches(output).Cast<Match>()
+            .Concat(StatusModelPattern.Matches(output).Cast<Match>())
+            .Concat(ModelCommandPattern.Matches(output).Cast<Match>())
+            .Where(match => IsSafeModel(match.Groups["model"].Value))
+            .OrderBy(match => match.Index)
+            .LastOrDefault();
+        var model = modelEvidence?.Groups["model"].Value;
+        model = IsSafeModel(model) ? model : previous.WasActive && IsSafeModel(previous.Model) ? previous.Model : null;
         var useTui = TuiPattern.IsMatch(output) || previous.WasActive && previous.UseTui;
-        return new HermesRecoveryState(wasActive, sessionId, useTui);
+        return new HermesRecoveryState(wasActive, sessionId, model, useTui);
     }
 
     public static bool IsSafeSessionId(string? value)
         => value is { Length: >= 22 and <= 24 } && SessionIdPattern.IsMatch(value);
+
+    public static bool IsSafeModel(string? value)
+        => value is { Length: >= 1 and <= 256 } && ModelPattern.IsMatch(value);
 }
 
 public static class SshRecovery
@@ -292,6 +307,11 @@ public static class SshRecovery
         if (recovery.HermesWasActive)
         {
             commandArguments.Add("hermes");
+            if (HermesRecovery.IsSafeModel(recovery.HermesModel))
+            {
+                commandArguments.Add("--model");
+                commandArguments.Add(recovery.HermesModel!);
+            }
             if (recovery.HermesUseTui) commandArguments.Add("--tui");
             if (HermesRecovery.IsSafeSessionId(recovery.HermesSessionId))
             {
@@ -326,6 +346,7 @@ public static class SshRecovery
             entry.SshConnectionArguments = [];
             entry.HermesWasActive = false;
             entry.HermesSessionId = null;
+            entry.HermesModel = null;
             entry.HermesUseTui = false;
             return;
         }
@@ -333,9 +354,14 @@ public static class SshRecovery
         if (!entry.HermesWasActive)
         {
             entry.HermesSessionId = null;
+            entry.HermesModel = null;
             entry.HermesUseTui = false;
         }
-        else if (!HermesRecovery.IsSafeSessionId(entry.HermesSessionId)) entry.HermesSessionId = null;
+        else
+        {
+            if (!HermesRecovery.IsSafeSessionId(entry.HermesSessionId)) entry.HermesSessionId = null;
+            if (!HermesRecovery.IsSafeModel(entry.HermesModel)) entry.HermesModel = null;
+        }
     }
 
     private static bool IsSafeOptionValue(string option, string value)

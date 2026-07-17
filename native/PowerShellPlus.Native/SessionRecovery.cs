@@ -6,7 +6,7 @@ namespace PowerShellPlus.Native;
 
 public sealed class SessionRecoverySnapshot
 {
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = 9;
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
     public Dictionary<string, SessionRecoveryEntry> Sessions { get; set; } = [];
 }
@@ -27,6 +27,7 @@ public sealed class SessionRecoveryEntry
     public string[] SshConnectionArguments { get; set; } = [];
     public bool HermesWasActive { get; set; }
     public string? HermesSessionId { get; set; }
+    public string? HermesModel { get; set; }
     public bool HermesUseTui { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
@@ -139,7 +140,7 @@ public static class SessionRecoveryStore
         {
             if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
-            if (value is not null && value.Version is >= 1 and <= 8)
+            if (value is not null && value.Version is >= 1 and <= 9)
             {
                 value.Sessions ??= [];
                 if (value.Version == 1)
@@ -148,9 +149,9 @@ public static class SessionRecoveryStore
                     // directory, which may differ from the directory where the
                     // user actually launched Codex. Never trust that old ID.
                     foreach (var entry in value.Sessions.Values) entry.CodexSessionId = null;
-                    value.Version = 8;
+                    value.Version = 9;
                 }
-                if (value.Version is 2 or 3 or 4 or 5 or 6 or 7) value.Version = 8;
+                if (value.Version is 2 or 3 or 4 or 5 or 6 or 7 or 8) value.Version = 9;
                 foreach (var entry in value.Sessions.Values) SshRecovery.Sanitize(entry);
                 return value;
             }
