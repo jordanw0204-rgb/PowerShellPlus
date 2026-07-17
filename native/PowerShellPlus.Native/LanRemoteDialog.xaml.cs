@@ -11,15 +11,18 @@ public partial class LanRemoteDialog : Window
     private readonly LanRemoteServer server;
     private readonly Func<RemoteAccessMode, Task> switchMode;
     private readonly Func<Task> stopSharing;
+    private readonly Action<string>? tailscaleConnectionEstablished;
     private readonly DispatcherTimer refreshTimer;
     private string pairedDevicesSignature = string.Empty;
     private RemoteAccessMode displayedMode;
 
-    internal LanRemoteDialog(LanRemoteServer server, Func<RemoteAccessMode, Task> switchMode, Func<Task> stopSharing)
+    internal LanRemoteDialog(LanRemoteServer server, Func<RemoteAccessMode, Task> switchMode, Func<Task> stopSharing,
+        Action<string>? tailscaleConnectionEstablished = null)
     {
         this.server = server;
         this.switchMode = switchMode;
         this.stopSharing = stopSharing;
+        this.tailscaleConnectionEstablished = tailscaleConnectionEstablished;
         InitializeComponent();
         displayedMode = server.Mode;
         BindAddresses();
@@ -59,7 +62,7 @@ public partial class LanRemoteDialog : Window
             ? "The URL is reachable from the internet, but terminal data requires PowerShellPlus pairing. Global mode uses a 12-digit one-time code, a Secure HttpOnly saved credential, a global attempt limit, origin checks, and encrypted HTTPS. Keep the code private."
             : "LAN mode uses local HTTP. Use it only on trusted Private Wi-Fi/Ethernet and never forward its port through your router.";
         ModeHelpText.Text = global
-            ? "No phone app, VPN, router port, or public IP is required. Tailscale is needed only on this computer and the tunnel is removed when sharing stops or PowerShellPlus exits."
+            ? "No phone app, VPN, router port, or public IP is required. PowerShellPlus removes its tunnel when sharing stops. If it had to connect Tailscale, it disconnects that connection too; an already-connected Tailscale is left alone."
             : "Switch to Global for browser-only access away from home. Direct router port-forwarding remains blocked.";
         TailscaleSetupButton.Visibility = Visibility.Visible;
         TailscaleSetupButton.Content = global ? "Install / update Tailscale on this PC" : "Set up browser-only Global access";
@@ -116,7 +119,7 @@ public partial class LanRemoteDialog : Window
     {
         if (server.IsRunning && server.Mode == mode) return;
         if (mode == RemoteAccessMode.Global && !PowerShellPlusDialog.Confirm(this,
-                "Global mode creates an HTTPS address reachable from the internet. Terminal data still requires the one-time PowerShellPlus pairing code, and remote typing starts disabled.\n\nStart browser-only Global access?",
+                "Global mode creates an HTTPS address reachable from the internet. Terminal data still requires the one-time PowerShellPlus pairing code, and remote typing starts disabled.\n\nPowerShellPlus will connect Tailscale if needed. When sharing stops, it disconnects Tailscale only if it made that connection.\n\nStart browser-only Global access?",
                 "Start Global Remote", PowerShellPlusDialogKind.Warning,
                 "Start Global", "Not now", defaultToPrimary: false))
             return;
@@ -169,6 +172,7 @@ public partial class LanRemoteDialog : Window
         try
         {
             await TailscaleLoginManager.SignInAsync(executablePath);
+            tailscaleConnectionEstablished?.Invoke(executablePath);
             TailscaleSetupButton.Content = "Starting secure Global access…";
             await switchMode(RemoteAccessMode.Global);
             pairedDevicesSignature = string.Empty;

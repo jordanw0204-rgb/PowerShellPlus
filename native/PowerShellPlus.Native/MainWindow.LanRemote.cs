@@ -33,7 +33,8 @@ public partial class MainWindow
                 UpdateLanRemoteTitleBarState();
                 UpdateStatus($"LAN Remote ready at {lanRemoteServer.Urls.FirstOrDefault()}");
             }
-            var dialog = new LanRemoteDialog(lanRemoteServer, SwitchRemoteAccessModeAsync, StopRemoteAccessAsync) { Owner = this };
+            var dialog = new LanRemoteDialog(lanRemoteServer, SwitchRemoteAccessModeAsync, StopRemoteAccessAsync,
+                executable => globalRemoteTunnel?.MarkTailscaleConnectionOwned(executable)) { Owner = this };
             dialog.ShowDialog();
             UpdateLanRemoteTitleBarState();
             UpdateStatus(lanRemoteServer.IsRunning
@@ -76,15 +77,15 @@ public partial class MainWindow
         {
             globalRemoteTunnel ??= new TailscaleFunnelManager();
             UpdateStatus("Checking secure browser-only Global access…");
-            var preflight = await globalRemoteTunnel.PreflightAsync();
-            if (server.IsRunning) await server.StopAsync();
             try
             {
+                var lifecycleProgress = new Progress<string>(UpdateStatus);
+                var preflight = await globalRemoteTunnel.PreflightAsync(lifecycleProgress);
+                if (server.IsRunning) await server.StopAsync();
                 server.AllowInput = false;
                 await server.StartGlobalAsync(preflight.PublicUrl);
                 UpdateStatus("Opening encrypted Global HTTPS tunnel…");
-                var readinessProgress = new Progress<string>(UpdateStatus);
-                await globalRemoteTunnel.StartAsync(server.Port, preflight, readinessProgress);
+                await globalRemoteTunnel.StartAsync(server.Port, preflight, lifecycleProgress);
                 UpdateStatus($"Global Remote ready at {preflight.PublicUrl.AbsoluteUri.TrimEnd('/')}");
             }
             catch
@@ -606,10 +607,89 @@ public partial class MainWindow
                 && TailscaleFunnelManager.BuildStopArguments(43199)
                     .SequenceEqual(["funnel", "--https=443", "http://127.0.0.1:43199", "off"])
                 && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
+            const string tailscaleStoppedFixture = "{\"BackendState\":\"Stopped\"}";
+            var ownedConnectionCalls = new List<string>();
+            var fakeTailscaleOnline = false;
+            Task<TailscaleCommandResult> RunOwnedConnectionFixture(string _, IReadOnlyList<string> arguments, TimeSpan __, CancellationToken ___)
+            {
+                var command = string.Join(' ', arguments);
+                ownedConnectionCalls.Add(command);
+                if (command == "status --json")
+                    return Task.FromResult(new TailscaleCommandResult(0, fakeTailscaleOnline ? tailscaleStatusFixture : tailscaleStoppedFixture, string.Empty));
+                if (command == "up --timeout=30s")
+                {
+                    fakeTailscaleOnline = true;
+                    return Task.FromResult(new TailscaleCommandResult(0, string.Empty, string.Empty));
+                }
+                if (command is "funnel status --json" or "serve status --json")
+                    return Task.FromResult(new TailscaleCommandResult(0, "{}", string.Empty));
+                if (command == "down")
+                {
+                    fakeTailscaleOnline = false;
+                    return Task.FromResult(new TailscaleCommandResult(0, string.Empty, string.Empty));
+                }
+                return Task.FromResult(new TailscaleCommandResult(2, string.Empty, "unexpected fixture command"));
+            }
+            var ownedConnectionManager = new TailscaleFunnelManager(RunOwnedConnectionFixture, () => @"C:\Program Files\Tailscale\tailscale.exe");
+            var ownedConnectionIdentity = await ownedConnectionManager.PreflightAsync();
+            var ownershipRecorded = ownedConnectionManager.ConnectedTailscaleForGlobal && fakeTailscaleOnline;
+            await ownedConnectionManager.StopAsync();
+            var ownedConnectionDisconnected = ownershipRecorded && !ownedConnectionManager.ConnectedTailscaleForGlobal && !fakeTailscaleOnline
+                && ownedConnectionIdentity.DnsName == parsedIdentity.DnsName
+                && ownedConnectionCalls.Count(value => value == "up --timeout=30s") == 1
+                && ownedConnectionCalls.Count(value => value == "down") == 1;
+            await ownedConnectionManager.DisposeAsync();
+            fakeTailscaleOnline = true;
+            var downCallsBeforeLoginClaim = ownedConnectionCalls.Count(value => value == "down");
+            var loginConnectionManager = new TailscaleFunnelManager(RunOwnedConnectionFixture, () => @"C:\Program Files\Tailscale\tailscale.exe");
+            loginConnectionManager.MarkTailscaleConnectionOwned(@"C:\Program Files\Tailscale\tailscale.exe");
+            await loginConnectionManager.StopAsync();
+            var loginConnectionDisconnected = !loginConnectionManager.ConnectedTailscaleForGlobal && !fakeTailscaleOnline
+                && ownedConnectionCalls.Count(value => value == "down") == downCallsBeforeLoginClaim + 1;
+            await loginConnectionManager.DisposeAsync();
+
+            var existingConnectionCalls = new List<string>();
+            Task<TailscaleCommandResult> RunExistingConnectionFixture(string _, IReadOnlyList<string> arguments, TimeSpan __, CancellationToken ___)
+            {
+                var command = string.Join(' ', arguments);
+                existingConnectionCalls.Add(command);
+                return Task.FromResult(command switch
+                {
+                    "status --json" => new TailscaleCommandResult(0, tailscaleStatusFixture, string.Empty),
+                    "funnel status --json" or "serve status --json" => new TailscaleCommandResult(0, "{}", string.Empty),
+                    _ => new TailscaleCommandResult(2, string.Empty, "PowerShellPlus changed an existing Tailscale connection")
+                });
+            }
+            var existingConnectionManager = new TailscaleFunnelManager(RunExistingConnectionFixture, () => @"C:\Program Files\Tailscale\tailscale.exe");
+            _ = await existingConnectionManager.PreflightAsync();
+            var existingConnectionUnchanged = !existingConnectionManager.ConnectedTailscaleForGlobal;
+            await existingConnectionManager.StopAsync();
+            existingConnectionUnchanged &= !existingConnectionCalls.Any(value => value.StartsWith("up", StringComparison.Ordinal) || value == "down");
+            await existingConnectionManager.DisposeAsync();
+
+            var handlerAlreadyGone = new TailscaleCommandResult(1, string.Empty, "error: failed to remove web serve: handler does not exist");
+            var emptyFunnelStatus = new TailscaleCommandResult(0, "{}", string.Empty);
+            var mappedFunnelStatus = new TailscaleCommandResult(0, funnelStatusFixture, string.Empty);
+            var cleanupRaceHandled = TailscaleFunnelManager.IsFunnelCleanupComplete(handlerAlreadyGone, emptyFunnelStatus)
+                && !TailscaleFunnelManager.IsFunnelCleanupComplete(handlerAlreadyGone, mappedFunnelStatus)
+                && !TailscaleFunnelManager.IsFunnelCleanupComplete(handlerAlreadyGone, new TailscaleCommandResult(1, string.Empty, "status unavailable"));
+            var disconnectVerification = TailscaleFunnelManager.IsTailscaleDisconnectComplete(
+                    new TailscaleCommandResult(1, string.Empty, "already stopped"), new TailscaleCommandResult(0, tailscaleStoppedFixture, string.Empty))
+                && !TailscaleFunnelManager.IsTailscaleDisconnectComplete(
+                    new TailscaleCommandResult(0, string.Empty, string.Empty), new TailscaleCommandResult(0, tailscaleStatusFixture, string.Empty));
+            var connectionLifecycleArgumentsSafe = TailscaleFunnelManager.BuildConnectArguments().SequenceEqual(["up", "--timeout=30s"])
+                && TailscaleFunnelManager.BuildDisconnectArguments().SequenceEqual(["down"])
+                && TailscaleFunnelManager.ParseBackendState(tailscaleStoppedFixture) == "Stopped";
             details.Add($"FunnelContractParsed={funnelContract}");
             details.Add($"FunnelPublicDnsParsed={publicDnsContract}");
             details.Add($"FunnelPublicAddressBoundary={publicAddressBoundary}");
             details.Add($"FunnelScopedLifecycleArguments={funnelArgumentsSafe}");
+            details.Add($"FunnelMissingHandlerRaceHandled={cleanupRaceHandled}");
+            details.Add($"TailscaleOwnedConnectionDisconnected={ownedConnectionDisconnected}");
+            details.Add($"TailscaleLoginConnectionDisconnected={loginConnectionDisconnected}");
+            details.Add($"TailscaleExistingConnectionUnchanged={existingConnectionUnchanged}");
+            details.Add($"TailscaleDisconnectVerified={disconnectVerification}");
+            details.Add($"TailscaleConnectionLifecycleArgumentsSafe={connectionLifecycleArgumentsSafe}");
             details.Add($"TailscaleLoginRequiredDetected={loginRequiredDetected}");
             details.Add($"TailscaleLoginBoundary={loginBoundary}");
 
@@ -664,6 +744,7 @@ public partial class MainWindow
                 && pairingSurvivedRestart && savedDeviceVisibleAfterRestart && pairingRevoked && activeSocketRevoked && revokedCredentialRejected
                 && globalBoundary && globalHostAccepted && globalBadHostRejected && globalHsts && globalPairAccepted && globalSecureCookie
                 && globalBadOriginRejected && globalExactOriginAccepted && globalAttemptLimit && funnelContract && funnelArgumentsSafe
+                && cleanupRaceHandled && ownedConnectionDisconnected && loginConnectionDisconnected && existingConnectionUnchanged && disconnectVerification && connectionLifecycleArgumentsSafe
                 && loginRequiredDetected && loginBoundary
                 && installerUrlBoundary && installerLaunchBoundary && installerRetryBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");

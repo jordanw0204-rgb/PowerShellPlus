@@ -28,11 +28,14 @@ internal sealed record TailscaleCommandResult(int ExitCode, string StandardOutpu
     public string CombinedOutput => string.Join(Environment.NewLine, new[] { StandardOutput, StandardError }
         .Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
 }
+internal delegate Task<TailscaleCommandResult> TailscaleCommandRunner(string executable, IReadOnlyList<string> arguments,
+    TimeSpan timeout, CancellationToken cancellationToken);
 
 internal sealed class TailscaleFunnelManager : IAsyncDisposable
 {
     internal const int HttpsPort = 443;
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ConnectCommandTimeout = TimeSpan.FromSeconds(35);
     private static readonly TimeSpan FunnelApprovalTimeout = TimeSpan.FromMinutes(3.25);
     private static readonly TimeSpan PublicReadinessTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan PublicProbeTimeout = TimeSpan.FromSeconds(8);
@@ -45,36 +48,77 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly object outputGate = new();
     private readonly StringBuilder foregroundOutput = new();
+    private readonly TailscaleCommandRunner commandRunner;
+    private readonly Func<string> executableResolver;
     private Process? funnelProcess;
     private Task? standardOutputPump;
     private Task? standardErrorPump;
     private string? executablePath;
     private string? target;
+    private string? ownedConnectionExecutablePath;
+    private bool disconnectOwnedConnectionOnStop;
     private bool disposed;
 
     public bool IsRunning => funnelProcess is { HasExited: false };
     public Uri? PublicUrl { get; private set; }
+    internal bool ConnectedTailscaleForGlobal => disconnectOwnedConnectionOnStop;
 
-    public async Task<TailscaleFunnelPreflight> PreflightAsync(CancellationToken cancellationToken = default)
+    internal TailscaleFunnelManager(TailscaleCommandRunner? commandRunner = null, Func<string>? executableResolver = null)
+    {
+        this.commandRunner = commandRunner ?? RunCommandAsync;
+        this.executableResolver = executableResolver ?? ResolveExecutable;
+    }
+
+    internal void MarkTailscaleConnectionOwned(string executable)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        var executable = ResolveExecutable();
-        var status = await RunCommandAsync(executable, ["status", "--json"], CommandTimeout, cancellationToken);
-        if (status.ExitCode != 0)
-            throw new InvalidOperationException(BuildFailure(
-                "Tailscale is installed but its status could not be read. Open Tailscale, sign in, and try again.", status));
+        ArgumentException.ThrowIfNullOrWhiteSpace(executable);
+        disconnectOwnedConnectionOnStop = true;
+        ownedConnectionExecutablePath = executable;
+    }
 
-        var identity = ParseIdentity(status.StandardOutput, executable);
-        var funnelStatus = await RunCommandAsync(executable, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
-        if (funnelStatus.ExitCode != 0 && !IsEmptyFunnelStatus(funnelStatus.CombinedOutput))
-            throw new InvalidOperationException(BuildFailure(
-                "This Tailscale version could not inspect its Funnel configuration. Update Tailscale and try again.", funnelStatus));
-        if (FunnelPortInUse(funnelStatus.StandardOutput, HttpsPort))
-            throw new InvalidOperationException($"Tailscale Funnel HTTPS port {HttpsPort} is already being used by another service on this PC. Stop that mapping, then try Global mode again. PowerShellPlus did not change it.");
-        var serveStatus = await RunCommandAsync(executable, ["serve", "status", "--json"], CommandTimeout, cancellationToken);
-        if (serveStatus.ExitCode == 0 && FunnelPortInUse(serveStatus.StandardOutput, HttpsPort))
-            throw new InvalidOperationException($"Tailscale Serve HTTPS port {HttpsPort} is already being used by a private service on this PC. PowerShellPlus will not replace or publish it; move that service or turn it off first.");
-        return identity;
+    public async Task<TailscaleFunnelPreflight> PreflightAsync(IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        await lifecycleGate.WaitAsync(cancellationToken);
+        try
+        {
+            var executable = executableResolver();
+            var status = await commandRunner(executable, ["status", "--json"], CommandTimeout, cancellationToken);
+            if (status.ExitCode != 0)
+                throw new InvalidOperationException(BuildFailure(
+                    "Tailscale is installed but its status could not be read. Start the Tailscale Windows service and try again.", status));
+
+            var backendState = ParseBackendState(status.StandardOutput);
+            if (backendState.Equals("Stopped", StringComparison.OrdinalIgnoreCase))
+            {
+                progress?.Report("Connecting Tailscale for Global access…");
+                var connect = await commandRunner(executable, BuildConnectArguments(), ConnectCommandTimeout, cancellationToken);
+                if (connect.ExitCode != 0)
+                    throw new InvalidOperationException(BuildFailure(
+                        "PowerShellPlus could not connect Tailscale. Open its system-tray menu, connect it, and try again.", connect));
+                disconnectOwnedConnectionOnStop = true;
+                ownedConnectionExecutablePath = executable;
+                status = await commandRunner(executable, ["status", "--json"], CommandTimeout, cancellationToken);
+                if (status.ExitCode != 0)
+                    throw new InvalidOperationException(BuildFailure(
+                        "Tailscale connected, but PowerShellPlus could not verify its identity.", status));
+            }
+
+            var identity = ParseIdentity(status.StandardOutput, executable);
+            var funnelStatus = await commandRunner(executable, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
+            if (funnelStatus.ExitCode != 0 && !IsEmptyFunnelStatus(funnelStatus.CombinedOutput))
+                throw new InvalidOperationException(BuildFailure(
+                    "This Tailscale version could not inspect its Funnel configuration. Update Tailscale and try again.", funnelStatus));
+            if (FunnelPortInUse(funnelStatus.StandardOutput, HttpsPort))
+                throw new InvalidOperationException($"Tailscale Funnel HTTPS port {HttpsPort} is already being used by another service on this PC. Stop that mapping, then try Global mode again. PowerShellPlus did not change it.");
+            var serveStatus = await commandRunner(executable, ["serve", "status", "--json"], CommandTimeout, cancellationToken);
+            if (serveStatus.ExitCode == 0 && FunnelPortInUse(serveStatus.StandardOutput, HttpsPort))
+                throw new InvalidOperationException($"Tailscale Serve HTTPS port {HttpsPort} is already being used by a private service on this PC. PowerShellPlus will not replace or publish it; move that service or turn it off first.");
+            return identity;
+        }
+        finally { lifecycleGate.Release(); }
     }
 
     public async Task StartAsync(int localPort, TailscaleFunnelPreflight preflight,
@@ -87,10 +131,10 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
         {
             if (IsRunning) return;
             var localTarget = $"http://127.0.0.1:{localPort}";
-            var current = await RunCommandAsync(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
+            var current = await commandRunner(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
             if (FunnelPortInUse(current.StandardOutput, HttpsPort))
                 throw new InvalidOperationException($"Tailscale Funnel HTTPS port {HttpsPort} became busy before Global mode could start. PowerShellPlus did not replace the existing mapping.");
-            var currentServe = await RunCommandAsync(preflight.ExecutablePath, ["serve", "status", "--json"], CommandTimeout, cancellationToken);
+            var currentServe = await commandRunner(preflight.ExecutablePath, ["serve", "status", "--json"], CommandTimeout, cancellationToken);
             if (currentServe.ExitCode == 0 && FunnelPortInUse(currentServe.StandardOutput, HttpsPort))
                 throw new InvalidOperationException($"Tailscale Serve HTTPS port {HttpsPort} became busy before Global mode could start. PowerShellPlus did not publish or replace it.");
 
@@ -122,7 +166,7 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
                     approvalBrowserOpened = true;
                     deadline = DateTime.UtcNow.Add(FunnelApprovalTimeout);
                 }
-                var status = await RunCommandAsync(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
+                var status = await commandRunner(preflight.ExecutablePath, ["funnel", "status", "--json"], CommandTimeout, cancellationToken);
                 if (status.ExitCode == 0 && FunnelStatusHasMapping(status.StandardOutput, preflight.DnsName, HttpsPort, localTarget))
                 {
                     progress?.Report("Funnel is active; verifying public DNS and HTTPS from outside the tailnet…");
@@ -326,20 +370,32 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
         var process = funnelProcess;
         var executable = executablePath;
         var localTarget = target;
+        var disconnectOwnedConnection = disconnectOwnedConnectionOnStop;
+        var connectionExecutable = ownedConnectionExecutablePath;
         funnelProcess = null;
         executablePath = null;
         target = null;
         PublicUrl = null;
+        var failures = new List<string>();
 
-        TailscaleCommandResult? offResult = null;
         if (!string.IsNullOrWhiteSpace(executable) && !string.IsNullOrWhiteSpace(localTarget))
         {
             try
             {
                 var localPort = new Uri(localTarget).Port;
-                offResult = await RunCommandAsync(executable, BuildStopArguments(localPort), CommandTimeout, cancellationToken);
+                var offResult = await commandRunner(executable, BuildStopArguments(localPort), CommandTimeout, cancellationToken);
+                TailscaleCommandResult? statusAfter = null;
+                if (offResult.ExitCode != 0)
+                {
+                    try { statusAfter = await commandRunner(executable, ["funnel", "status", "--json"], CommandTimeout, cancellationToken); }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                    catch (Exception exception) { failures.Add($"PowerShellPlus could not verify that the Funnel endpoint was gone: {exception.Message}"); }
+                }
+                if (!IsFunnelCleanupComplete(offResult, statusAfter))
+                    failures.Add(BuildFailure("Tailscale reported that its Funnel endpoint cleanup failed.", offResult));
             }
-            catch when (!throwOnCleanupFailure) { }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception) { failures.Add($"PowerShellPlus could not remove its Funnel endpoint: {exception.Message}"); }
         }
 
         if (process is not null)
@@ -358,9 +414,26 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
             process.Dispose();
         }
 
-        if (throwOnCleanupFailure && offResult is { ExitCode: not 0 }
-            && !IsEmptyFunnelStatus(offResult.CombinedOutput))
-            throw new InvalidOperationException(BuildFailure("PowerShellPlus stopped its local server, but Tailscale reported that its Funnel endpoint cleanup failed.", offResult));
+        if (disconnectOwnedConnection && !string.IsNullOrWhiteSpace(connectionExecutable))
+        {
+            try
+            {
+                var downResult = await commandRunner(connectionExecutable, BuildDisconnectArguments(), CommandTimeout, cancellationToken);
+                var statusAfter = await commandRunner(connectionExecutable, ["status", "--json"], CommandTimeout, cancellationToken);
+                if (IsTailscaleDisconnectComplete(downResult, statusAfter))
+                {
+                    disconnectOwnedConnectionOnStop = false;
+                    ownedConnectionExecutablePath = null;
+                }
+                else failures.Add(BuildFailure("PowerShellPlus connected Tailscale for Global access, but Tailscale did not disconnect when sharing stopped.", downResult));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception) { failures.Add($"PowerShellPlus connected Tailscale for Global access, but could not disconnect it: {exception.Message}"); }
+        }
+
+        if (throwOnCleanupFailure && failures.Count > 0)
+            throw new InvalidOperationException("PowerShellPlus stopped its local server, but cleanup reported a problem." + Environment.NewLine
+                + string.Join(Environment.NewLine, failures.Distinct(StringComparer.Ordinal)));
     }
 
     private async Task AwaitPumpsAsync()
@@ -424,6 +497,19 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
         }
     }
 
+    internal static string ParseBackendState(string? statusJson)
+    {
+        if (string.IsNullOrWhiteSpace(statusJson)) return string.Empty;
+        try
+        {
+            using var document = JsonDocument.Parse(statusJson);
+            return document.RootElement.TryGetProperty("BackendState", out var backend)
+                ? backend.GetString() ?? string.Empty
+                : string.Empty;
+        }
+        catch (JsonException) { return string.Empty; }
+    }
+
     internal static bool FunnelPortInUse(string? statusJson, int httpsPort)
     {
         if (string.IsNullOrWhiteSpace(statusJson)) return false;
@@ -469,6 +555,21 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
 
     internal static IReadOnlyList<string> BuildStopArguments(int localPort) =>
         ["funnel", $"--https={HttpsPort}", $"http://127.0.0.1:{localPort}", "off"];
+
+    internal static IReadOnlyList<string> BuildConnectArguments() => ["up", "--timeout=30s"];
+    internal static IReadOnlyList<string> BuildDisconnectArguments() => ["down"];
+
+    internal static bool IsFunnelCleanupComplete(TailscaleCommandResult offResult, TailscaleCommandResult? statusAfter)
+        => offResult.ExitCode == 0
+            || statusAfter is { ExitCode: 0 } && !FunnelPortInUse(statusAfter.StandardOutput, HttpsPort);
+
+    internal static bool IsTailscaleDisconnectComplete(TailscaleCommandResult downResult, TailscaleCommandResult statusAfter)
+    {
+        if (statusAfter.ExitCode != 0) return false;
+        var backend = ParseBackendState(statusAfter.StandardOutput);
+        return backend.Equals("Stopped", StringComparison.OrdinalIgnoreCase)
+            || backend.Equals("NeedsLogin", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string ResolveExecutable()
     {
@@ -522,6 +623,7 @@ internal sealed class TailscaleFunnelManager : IAsyncDisposable
         || value.Contains("no serve config", StringComparison.OrdinalIgnoreCase)
         || value.Contains("no funnel config", StringComparison.OrdinalIgnoreCase)
         || value.Contains("funnel is not enabled", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("handler does not exist", StringComparison.OrdinalIgnoreCase)
         || value.Contains("not configured", StringComparison.OrdinalIgnoreCase);
 
     private static string BuildFailure(string message, TailscaleCommandResult result)
