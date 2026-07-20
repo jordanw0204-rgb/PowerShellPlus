@@ -104,6 +104,7 @@ The app is currently unsigned. Windows SmartScreen may show a warning the first 
 1. Click the **+** beside Sessions (or in the Session tab strip) to create a new Session with its first terminal.
 2. Click the **+** beside Terminals to add another terminal to the active Session, then give it a useful name and starting folder.
 3. Use the Session tabs above the terminal area to switch groups. Terminals in other Sessions remain live in the background.
+   Hover over a Session card in the sidebar for half a second to preview its terminals and layout; moving away returns to the active Session, while clicking commits the switch.
 4. Use the layout buttons to choose grid, rows, columns, or focus mode for the active Session.
 5. Drag a divider between terminals to resize them. Layout and divider sizes are saved independently for every Session.
 5. Open Commands to save something you type often, or Automate to create a scheduled command.

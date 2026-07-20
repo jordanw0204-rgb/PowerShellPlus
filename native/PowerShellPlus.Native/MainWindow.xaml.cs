@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer saveTimer;
     private readonly DispatcherTimer automationTimer;
     private readonly DispatcherTimer recoveryTimer;
+    private readonly DispatcherTimer workspaceSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly bool automationMode;
     private readonly SessionRecoverySnapshot loadedRecovery;
     private System.Windows.Forms.NotifyIcon? trayIcon;
@@ -36,6 +37,9 @@ public partial class MainWindow : Window
     private TerminalSession? activeWorkspaceSession;
     private string? activeLayoutSizeKey;
     private bool workspaceSessionSelectionSync;
+    private TerminalSession? workspaceSessionHoverCandidate;
+    private TerminalSession? workspaceSessionHoverOrigin;
+    private bool workspaceSessionHoverPreviewActive;
     private bool automationCheckRunning;
     private WindowsTerminalDragMonitor? windowsTerminalDragMonitor;
     private bool windowsTerminalImportRunning;
@@ -55,6 +59,7 @@ public partial class MainWindow : Window
         WorkspaceSessionList.ItemsSource = state.TerminalSessions;
         WorkspaceSessionTabs.ItemsSource = state.TerminalSessions;
         SessionList.ItemsSource = activeSessionTerminals;
+        workspaceSessionHoverTimer.Tick += WorkspaceSessionHoverTimerTick;
         SnippetList.ItemsSource = state.Snippets;
         AutomationList.ItemsSource = state.Automations;
         InitializeAutomationTimeUi();
@@ -123,6 +128,7 @@ public partial class MainWindow : Window
         if (shutdownComplete) return;
         automationTimer.Stop();
         recoveryTimer.Stop();
+        workspaceSessionHoverTimer.Stop();
         saveTimer.Stop();
         windowsTerminalDragMonitor?.Dispose();
         windowsTerminalDragMonitor = null;
@@ -668,30 +674,42 @@ public partial class MainWindow : Window
         var selected = state.TerminalSessions.FirstOrDefault(value => value.Id == sessionId);
         if (selected is null) return;
         CaptureLayoutSizing();
+        activeLayoutSizeKey = null;
+        DisplayWorkspaceSession(selected, true, focus);
+    }
+
+    private void DisplayWorkspaceSession(TerminalSession selected, bool commit, bool focus)
+    {
         activeWorkspaceSession = selected;
-        state.ActiveTerminalSessionId = selected.Id;
+        if (commit) state.ActiveTerminalSessionId = selected.Id;
         activeSessionTerminals.Clear();
         foreach (var terminalId in selected.TerminalIds)
             if (state.Sessions.FirstOrDefault(value => value.Id == terminalId) is { } profile)
                 activeSessionTerminals.Add(profile);
 
-        workspaceSessionSelectionSync = true;
-        WorkspaceSessionList.SelectedItem = selected;
-        WorkspaceSessionTabs.SelectedItem = selected;
-        workspaceSessionSelectionSync = false;
+        if (commit)
+        {
+            workspaceSessionSelectionSync = true;
+            WorkspaceSessionList.SelectedItem = selected;
+            WorkspaceSessionTabs.SelectedItem = selected;
+            workspaceSessionSelectionSync = false;
+        }
 
         var terminalIdToActivate = selected.ActiveTerminalId;
         if (terminalIdToActivate is null || !selected.TerminalIds.Contains(terminalIdToActivate, StringComparer.Ordinal))
             terminalIdToActivate = selected.TerminalIds.FirstOrDefault();
         activePane = terminalIdToActivate is not null && panes.TryGetValue(terminalIdToActivate, out var pane) ? pane : null;
-        selected.ActiveTerminalId = activePane?.Profile.Id;
-        state.ActiveSessionId = selected.ActiveTerminalId;
+        if (commit)
+        {
+            selected.ActiveTerminalId = activePane?.Profile.Id;
+            state.ActiveSessionId = selected.ActiveTerminalId;
+        }
         foreach (var value in panes.Values) value.SetActive(value == activePane);
         SessionList.SelectedItem = activePane?.Profile;
-        ApplyLayout();
+        ApplyLayout(commit);
         if (focus) activePane?.Focus();
-        UpdateStatus($"{selected.Name} · {selected.Subtitle}");
-        ScheduleSave();
+        UpdateStatus(commit ? $"{selected.Name} · {selected.Subtitle}" : $"Previewing {selected.Name} · move away to return");
+        if (commit) ScheduleSave();
     }
 
     private void ApplyWorkspaceSidebarState(bool persist)
@@ -715,7 +733,7 @@ public partial class MainWindow : Window
         ApplyWorkspaceSidebarState(persist);
     }
 
-    private void ApplyLayout()
+    private void ApplyLayout(bool persist = true)
     {
         CaptureLayoutSizing();
         TerminalHost.Children.Clear(); TerminalHost.RowDefinitions.Clear(); TerminalHost.ColumnDefinitions.Clear();
@@ -769,7 +787,8 @@ public partial class MainWindow : Window
                 TerminalHost.Children.Add(splitter);
             }
         }
-        UpdateCounts(); ScheduleSave();
+        UpdateCounts();
+        if (persist) ScheduleSave();
     }
 
     private GridSplitter CreateGridSplitter(GridResizeDirection direction)
@@ -1940,6 +1959,17 @@ public partial class MainWindow : Window
                 ActiveTerminalId = movedTerminal.Id
             };
             state.TerminalSessions.Add(alternateWorkspaceSession);
+            BeginWorkspaceSessionHoverPreviewForTest(alternateWorkspaceSession);
+            await Task.Delay(650);
+            var hoverPreviewSwitchesAfterDelay = WorkspaceSessionHoverPreviewActiveForTest
+                && ReferenceEquals(activeWorkspaceSession, alternateWorkspaceSession)
+                && state.ActiveTerminalSessionId == primaryWorkspaceSession.Id
+                && TerminalHost.Children.OfType<TerminalPane>().Count() == 1;
+            EndWorkspaceSessionHoverPreviewForTest();
+            var hoverPreviewRestoresOnLeave = !WorkspaceSessionHoverPreviewActiveForTest
+                && ReferenceEquals(activeWorkspaceSession, primaryWorkspaceSession)
+                && state.ActiveTerminalSessionId == primaryWorkspaceSession.Id
+                && TerminalHost.Children.OfType<TerminalPane>().Count() == expectedPanes - 1;
             SelectWorkspaceSession(alternateWorkspaceSession.Id, false);
             var sessionSwitchShowsOwnedTerminals = TerminalHost.Children.OfType<TerminalPane>().Count() == 1
                 && ReferenceEquals(activePane, panes[movedTerminal.Id]);
@@ -1992,10 +2022,11 @@ public partial class MainWindow : Window
             var titleLayoutControlsCentered = initiallyCentered && centeredAfterResize;
             var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && sidebarCollapses && sidebarExpands && sidebarStatePersists
                 && terminalSurfaceHooked && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
+                && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, real Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             if (!success)
             {
                 var paneIndex = 0;
@@ -2056,8 +2087,55 @@ public partial class MainWindow : Window
     private void WorkspaceSessionSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (workspaceSessionSelectionSync || sender is not ListBox list || list.SelectedItem is not TerminalSession value) return;
+        CancelWorkspaceSessionHoverPreview(false);
         SelectWorkspaceSession(value.Id, false);
     }
+    private void WorkspaceSessionCardMouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: TerminalSession session }) return;
+        BeginWorkspaceSessionHoverPreview(session);
+    }
+    private void WorkspaceSessionCardMouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: TerminalSession session } && workspaceSessionHoverCandidate != session
+            && (!workspaceSessionHoverPreviewActive || activeWorkspaceSession != session)) return;
+        CancelWorkspaceSessionHoverPreview(true);
+    }
+    private void BeginWorkspaceSessionHoverPreview(TerminalSession session)
+    {
+        workspaceSessionHoverTimer.Stop();
+        workspaceSessionHoverCandidate = session;
+        if (session.Id == state.ActiveTerminalSessionId) return;
+        workspaceSessionHoverTimer.Start();
+    }
+    private void WorkspaceSessionHoverTimerTick(object? sender, EventArgs e)
+    {
+        workspaceSessionHoverTimer.Stop();
+        var candidate = workspaceSessionHoverCandidate;
+        if (candidate is null || candidate.Id == state.ActiveTerminalSessionId) return;
+        workspaceSessionHoverOrigin = state.TerminalSessions.FirstOrDefault(value => value.Id == state.ActiveTerminalSessionId);
+        if (workspaceSessionHoverOrigin is null) return;
+        CaptureLayoutSizing();
+        activeLayoutSizeKey = null;
+        workspaceSessionHoverPreviewActive = true;
+        DisplayWorkspaceSession(candidate, false, false);
+    }
+    private void CancelWorkspaceSessionHoverPreview(bool restoreOrigin)
+    {
+        workspaceSessionHoverTimer.Stop();
+        var origin = workspaceSessionHoverOrigin;
+        var wasPreviewing = workspaceSessionHoverPreviewActive;
+        workspaceSessionHoverCandidate = null;
+        workspaceSessionHoverOrigin = null;
+        workspaceSessionHoverPreviewActive = false;
+        if (!restoreOrigin || !wasPreviewing || origin is null) return;
+        activeLayoutSizeKey = null;
+        DisplayWorkspaceSession(origin, false, false);
+        UpdateStatus($"{origin.Name} · {origin.Subtitle}");
+    }
+    internal void BeginWorkspaceSessionHoverPreviewForTest(TerminalSession session) => BeginWorkspaceSessionHoverPreview(session);
+    internal void EndWorkspaceSessionHoverPreviewForTest() => CancelWorkspaceSessionHoverPreview(true);
+    internal bool WorkspaceSessionHoverPreviewActiveForTest => workspaceSessionHoverPreviewActive;
     private void NewWorkspaceSessionClick(object sender, RoutedEventArgs e)
     {
         var session = new TerminalSession { Name = $"Session {state.TerminalSessions.Count + 1}" };
@@ -2134,10 +2212,8 @@ public partial class MainWindow : Window
         switch (value)
         {
             case TerminalSession workspaceSession:
-                workspaceSessionSelectionSync = true;
-                WorkspaceSessionList.SelectedItem = workspaceSession;
-                WorkspaceSessionTabs.SelectedItem = workspaceSession;
-                workspaceSessionSelectionSync = false;
+                CancelWorkspaceSessionHoverPreview(false);
+                SelectWorkspaceSession(workspaceSession.Id, false);
                 break;
             case SessionProfile session: SessionList.SelectedItem = session; break;
             case CommandSnippet snippet: SnippetList.SelectedItem = snippet; break;

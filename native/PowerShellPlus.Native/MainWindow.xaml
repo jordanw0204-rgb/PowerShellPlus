@@ -73,7 +73,7 @@
             <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
-                  <Grid x:Name="WorkspaceSessionCard" MinHeight="46" ContextMenuOpening="CardContextMenuOpening">
+                  <Grid x:Name="WorkspaceSessionCard" MinHeight="46" ContextMenuOpening="CardContextMenuOpening" MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
                     <Grid.ContextMenu>
                       <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Rename session" Click="WorkspaceSessionRenameClick"/>
