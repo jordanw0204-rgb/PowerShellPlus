@@ -19,6 +19,64 @@ internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
 
+internal sealed class TerminalOutputActivityTracker
+{
+    private static readonly long InputEchoWindowTicks = TimeSpan.FromMilliseconds(450).Ticks;
+    private long lastInputTicks;
+    private long lastMeaningfulOutputTicks;
+
+    public void RecordInput(DateTime utcNow) => Volatile.Write(ref lastInputTicks, utcNow.Ticks);
+
+    public bool RecordOutput(string data, DateTime utcNow)
+    {
+        var inputTicks = Volatile.Read(ref lastInputTicks);
+        if (inputTicks > 0 && utcNow.Ticks - inputTicks <= InputEchoWindowTicks) return false;
+        if (!HasMeaningfulOutput(data)) return false;
+        Volatile.Write(ref lastMeaningfulOutputTicks, utcNow.Ticks);
+        return true;
+    }
+
+    public bool HasRecentOutput(DateTime utcNow, TimeSpan window)
+    {
+        var outputTicks = Volatile.Read(ref lastMeaningfulOutputTicks);
+        return outputTicks > 0 && utcNow.Ticks - outputTicks < window.Ticks;
+    }
+
+    private static bool HasMeaningfulOutput(string data)
+    {
+        if (string.IsNullOrEmpty(data)) return false;
+        var visible = new StringBuilder(Math.Min(data.Length, 256));
+        for (var index = 0; index < data.Length; index++)
+        {
+            var character = data[index];
+            if (character == '\u001b')
+            {
+                if (++index >= data.Length) break;
+                if (data[index] == '[')
+                {
+                    while (++index < data.Length && data[index] is < '@' or > '~') { }
+                }
+                else if (data[index] == ']')
+                {
+                    while (++index < data.Length)
+                    {
+                        if (data[index] == '\a') break;
+                        if (data[index] == '\u001b' && index + 1 < data.Length && data[index + 1] == '\\') { index++; break; }
+                    }
+                }
+                continue;
+            }
+            if (!char.IsControl(character)) visible.Append(character);
+        }
+
+        var text = visible.ToString().Trim();
+        if (!text.Any(char.IsLetterOrDigit)) return false;
+        // Full-screen TUIs commonly repaint only an elapsed-time cell while idle.
+        if (text.Length <= 8 && text.All(value => char.IsDigit(value) || char.IsWhiteSpace(value) || value is ':' or '.' or 's' or 'm' or 'h')) return false;
+        return true;
+    }
+}
+
 public partial class TerminalPane : UserControl
 {
     private const int WmLeftButtonDown = 0x0201;
@@ -58,8 +116,9 @@ public partial class TerminalPane : UserControl
     private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly object agentOutputSync = new();
     private readonly StringBuilder recentAgentOutput = new();
-    private DateTime lastAgentOutputUtc = DateTime.MinValue;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
+    private readonly TerminalOutputActivityTracker terminalActivity = new();
+    private string? activeCodexSessionId;
     private AgentKind detectedAgentKind;
     private AgentKind displayedAgentKind = (AgentKind)(-1);
     private bool hermesExitObserved;
@@ -186,7 +245,7 @@ public partial class TerminalPane : UserControl
             {
                 if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
                 {
-                    lastAgentOutputUtc = DateTime.UtcNow;
+                    terminalActivity.RecordInput(DateTime.UtcNow);
                     Terminal.ConPTYTerm.WriteToTerm(command + "\r");
                     Terminal.Focus();
                     return true;
@@ -606,6 +665,7 @@ public partial class TerminalPane : UserControl
         try
         {
             if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
+            terminalActivity.RecordInput(DateTime.UtcNow);
             Terminal.ConPTYTerm.WriteToTerm(input);
             return true;
         }
@@ -790,10 +850,15 @@ public partial class TerminalPane : UserControl
     {
         var terminal = Terminal.ConPTYTerm;
         if (terminal is null) return false;
+        terminalActivity.RecordInput(DateTime.UtcNow);
         terminal.WriteToTerm(FormatClipboardText(text));
         return true;
     }
-    public void SubmitTerminalInputForTest() => Terminal.ConPTYTerm?.WriteToTerm("\r");
+    public void SubmitTerminalInputForTest()
+    {
+        terminalActivity.RecordInput(DateTime.UtcNow);
+        Terminal.ConPTYTerm?.WriteToTerm("\r");
+    }
     public async Task<bool> QueueWithCtrlEnterForTestAsync(string command)
     {
         var before = Profile.PendingCommands.Count;
@@ -845,7 +910,7 @@ public partial class TerminalPane : UserControl
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
-        lastAgentOutputUtc = DateTime.UtcNow;
+        terminalActivity.RecordOutput(args.Data, DateTime.UtcNow);
         lock (agentOutputSync)
         {
             recentAgentOutput.Append(args.Data);
@@ -866,7 +931,10 @@ public partial class TerminalPane : UserControl
             lock (agentOutputSync) output = recentAgentOutput.ToString();
             var codexLaunch = CodexLaunchStore.Load(Profile.Id);
             if (codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
+            {
                 detectedAgentKind = AgentKind.Codex;
+                activeCodexSessionId = codexLaunch?.SessionId ?? startupRecovery?.CodexSessionId;
+            }
             else if (output.Contains("Resume this session with:", StringComparison.OrdinalIgnoreCase))
             {
                 hermesExitObserved = true;
@@ -877,17 +945,26 @@ public partial class TerminalPane : UserControl
                     )
                 detectedAgentKind = AgentKind.Hermes;
             else if (codexLaunch?.EndedUtc is not null)
+            {
                 detectedAgentKind = AgentKind.Terminal;
+                activeCodexSessionId = null;
+            }
         }
 
         bool terminalRunning;
         try { terminalRunning = Terminal.ConPTYTerm?.TermProcIsStarted == true; }
         catch { terminalRunning = false; }
+        var recentTerminalOutput = terminalActivity.HasRecentOutput(now, TimeSpan.FromSeconds(1.9));
+        var codexActivity = detectedAgentKind == AgentKind.Codex
+            ? CodexSessionLocator.FindActivity(activeCodexSessionId)
+            : default;
         var next = !terminalRunning
             ? AgentActivityState.Stopped
-            : commandExecutionPending || now - lastAgentOutputUtc < TimeSpan.FromSeconds(1.9)
-                ? AgentActivityState.Working
-                : detectedAgentKind == AgentKind.Terminal ? AgentActivityState.Idle : AgentActivityState.Waiting;
+            : detectedAgentKind == AgentKind.Codex && codexActivity.State != CodexTurnActivityState.Unknown
+                ? codexActivity.State == CodexTurnActivityState.Working ? AgentActivityState.Working : AgentActivityState.Waiting
+                : recentTerminalOutput
+                    ? AgentActivityState.Working
+                    : detectedAgentKind == AgentKind.Terminal ? AgentActivityState.Idle : AgentActivityState.Waiting;
         SetAgentStatus(detectedAgentKind, next);
     }
 
@@ -958,6 +1035,16 @@ public partial class TerminalPane : UserControl
     internal AgentActivityState AgentActivityStateForTest => agentActivityState;
     internal string AgentStatusTextForTest => StateText.Text;
     internal void SetAgentStatusForTest(AgentKind kind, AgentActivityState state) => SetAgentStatus(kind, state);
+    internal static bool ActivityTrackerRejectsInputEchoForTest()
+    {
+        var tracker = new TerminalOutputActivityTracker();
+        var now = DateTime.UtcNow;
+        tracker.RecordInput(now);
+        return !tracker.RecordOutput("typed text", now.AddMilliseconds(30))
+            && !tracker.HasRecentOutput(now.AddMilliseconds(50), TimeSpan.FromSeconds(2))
+            && tracker.RecordOutput("background process output", now.AddMilliseconds(700))
+            && tracker.HasRecentOutput(now.AddMilliseconds(800), TimeSpan.FromSeconds(2));
+    }
     internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
         && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
         && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom
@@ -1013,9 +1100,10 @@ public partial class TerminalPane : UserControl
             Activated?.Invoke(this, EventArgs.Empty);
             SetFocus(hwnd);
         }
-        else if (message == WmKeyDown && wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText())
+        else if (message == WmKeyDown)
         {
-            handled = true;
+            terminalActivity.RecordInput(DateTime.UtcNow);
+            if (wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText()) handled = true;
         }
         return IntPtr.Zero;
     }
@@ -1029,6 +1117,7 @@ public partial class TerminalPane : UserControl
             if (string.IsNullOrEmpty(text)) return false;
             var terminal = Terminal.ConPTYTerm;
             if (terminal is null) return false;
+            terminalActivity.RecordInput(DateTime.UtcNow);
             terminal.WriteToTerm(FormatClipboardText(text));
             return true;
         }

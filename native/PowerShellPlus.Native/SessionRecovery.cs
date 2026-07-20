@@ -37,6 +37,8 @@ public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory
     string? Model = null, string? SandboxMode = null, string? ApprovalPolicy = null, string? PermissionProfile = null, string? ApprovalsReviewer = null);
 public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
 public sealed record CodexSessionPermissions(string? SandboxMode, string ApprovalPolicy, DateTime UpdatedUtc, string? PermissionProfile = null, string? ApprovalsReviewer = null);
+internal enum CodexTurnActivityState { Unknown, Working, Waiting }
+internal readonly record struct CodexTurnActivity(CodexTurnActivityState State, DateTime UpdatedUtc);
 
 public sealed class CodexLaunchMarker
 {
@@ -227,8 +229,11 @@ public static class SessionRecoveryStore
 public static class CodexSessionLocator
 {
     private const long ModelScanOverlapBytes = 64 * 1024;
+    private const long ActivityInitialScanBytes = 2 * 1024 * 1024;
     private static readonly object ModelCacheLock = new();
     private static readonly Dictionary<string, ModelFileCursor> ModelFileCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object ActivityCacheLock = new();
+    private static readonly Dictionary<string, ActivityFileCursor> ActivityFileCache = new(StringComparer.OrdinalIgnoreCase);
 
     public static string? FindSessionId(string workingDirectory, DateTime? processStartedUtc, string? sessionsRoot = null)
         => FindBestSession(processStartedUtc, workingDirectory, null, sessionsRoot)?.SessionId;
@@ -367,6 +372,78 @@ public static class CodexSessionLocator
     public static CodexSessionPermissions? FindLatestPermissions(string? sessionId, string? sessionsRoot = null)
         => FindLatestSettings(sessionId, sessionsRoot).Permissions;
 
+    internal static CodexTurnActivity FindActivity(string? sessionId, string? sessionsRoot = null)
+    {
+        if (!IsSafeCodexId(sessionId)) return default;
+        var root = sessionsRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "sessions");
+        if (!Directory.Exists(root)) return default;
+        try
+        {
+            var cacheKey = Path.GetFullPath(root) + "|" + sessionId;
+            lock (ActivityCacheLock)
+            {
+                if (!ActivityFileCache.TryGetValue(cacheKey, out var cursor) || !File.Exists(cursor.Path))
+                {
+                    var path = FindSessionFilePath(sessionId!, root);
+                    if (path is null) return default;
+                    cursor = new ActivityFileCursor(path);
+                    ActivityFileCache[cacheKey] = cursor;
+                }
+
+                var file = new FileInfo(cursor.Path);
+                file.Refresh();
+                if (file.Length != cursor.Length)
+                {
+                    var scanStart = cursor.Length == 0 || file.Length < cursor.Length
+                        ? Math.Max(0, file.Length - ActivityInitialScanBytes)
+                        : Math.Max(0, cursor.Length - ModelScanOverlapBytes);
+                    using var stream = new FileStream(cursor.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    stream.Seek(scanStart, SeekOrigin.Begin);
+                    using var reader = new StreamReader(stream);
+                    if (scanStart > 0) _ = reader.ReadLine();
+                    string? line;
+                    while ((line = reader.ReadLine()) is not null) ConsiderActivityRecord(line, cursor);
+                    cursor.Length = stream.Length;
+                }
+
+                // If a very large in-flight turn began before the bounded initial
+                // scan, active session writes still prove it is working. Latch that
+                // state until the explicit task_complete record arrives.
+                if (cursor.State == CodexTurnActivityState.Unknown && file.LastWriteTimeUtc >= DateTime.UtcNow.AddSeconds(-4))
+                {
+                    cursor.State = CodexTurnActivityState.Working;
+                    cursor.UpdatedUtc = file.LastWriteTimeUtc;
+                }
+                return new CodexTurnActivity(cursor.State, cursor.UpdatedUtc);
+            }
+        }
+        catch { return default; }
+    }
+
+    internal static bool ActivityRecordsClassifyForTest()
+    {
+        var sessionId = Guid.NewGuid().ToString("N");
+        var root = Path.Combine(Path.GetTempPath(), "PowerShellPlus-codex-activity-" + sessionId);
+        var path = Path.Combine(root, "rollout-fixture.jsonl");
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllLines(path,
+            [
+                $"{{\"timestamp\":\"2026-07-20T11:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{sessionId}\",\"timestamp\":\"2026-07-20T11:00:00.000Z\",\"cwd\":\"C:\\\\fixture\"}}}}",
+                "{\"timestamp\":\"2026-07-20T11:14:04.851Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}"
+            ]);
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:28.703Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n");
+            return FindActivity(sessionId, root).State == CodexTurnActivityState.Waiting;
+        }
+        catch { return false; }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+    }
+
     private static CodexSessionSettings FindLatestSettings(string? sessionId, string? sessionsRoot = null)
     {
         if (!IsSafeCodexId(sessionId)) return default;
@@ -426,6 +503,75 @@ public static class CodexSessionLocator
             }
         }
         catch { return default; }
+    }
+
+    private static string? FindSessionFilePath(string sessionId, string root)
+    {
+        foreach (var path in Directory.EnumerateFiles(root, "*.jsonl", SearchOption.AllDirectories)
+                     .Select(value => new FileInfo(value))
+                     .OrderByDescending(value => value.LastWriteTimeUtc)
+                     .Take(500)
+                     .Select(value => value.FullName))
+        {
+            try
+            {
+                using var reader = OpenSharedReader(path);
+                var firstLine = reader.ReadLine();
+                if (string.IsNullOrWhiteSpace(firstLine)) continue;
+                using var document = JsonDocument.Parse(firstLine);
+                if (!document.RootElement.TryGetProperty("payload", out var payload)) continue;
+                var id = payload.TryGetProperty("session_id", out var sessionIdValue) ? sessionIdValue.GetString() : null;
+                id ??= payload.TryGetProperty("id", out var rolloutId) ? rolloutId.GetString() : null;
+                if (string.Equals(id, sessionId, StringComparison.OrdinalIgnoreCase)) return path;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static void ConsiderActivityRecord(string line, ActivityFileCursor cursor)
+    {
+        if (!line.Contains("task_", StringComparison.Ordinal)
+            && !line.Contains("turn_aborted", StringComparison.Ordinal)
+            && !line.Contains("approval_request", StringComparison.Ordinal)
+            && !line.Contains("request_user_input", StringComparison.Ordinal)
+            && !(cursor.WaitingForUser && line.Contains("_output", StringComparison.Ordinal))) return;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("payload", out var payload) || !payload.TryGetProperty("type", out var typeValue)) return;
+            var payloadType = typeValue.GetString();
+            var timestamp = root.TryGetProperty("timestamp", out var timestampValue)
+                && DateTime.TryParse(timestampValue.GetString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed)
+                    ? parsed.ToUniversalTime()
+                    : DateTime.UtcNow;
+            if (payloadType == "task_started")
+            {
+                cursor.State = CodexTurnActivityState.Working;
+                cursor.WaitingForUser = false;
+                cursor.UpdatedUtc = timestamp;
+            }
+            else if (payloadType is "task_complete" or "turn_aborted" or "shutdown_complete")
+            {
+                cursor.State = CodexTurnActivityState.Waiting;
+                cursor.WaitingForUser = false;
+                cursor.UpdatedUtc = timestamp;
+            }
+            else if (payloadType == "request_user_input" || payloadType?.EndsWith("approval_request", StringComparison.Ordinal) == true)
+            {
+                cursor.State = CodexTurnActivityState.Waiting;
+                cursor.WaitingForUser = true;
+                cursor.UpdatedUtc = timestamp;
+            }
+            else if (cursor.WaitingForUser && payloadType?.EndsWith("_output", StringComparison.Ordinal) == true)
+            {
+                cursor.State = CodexTurnActivityState.Working;
+                cursor.WaitingForUser = false;
+                cursor.UpdatedUtc = timestamp;
+            }
+        }
+        catch { }
     }
 
     private static void ConsiderSettingsRecord(string line, ref CodexSessionModel? latest, ref CodexSessionPermissions? latestPermissions)
@@ -514,6 +660,15 @@ public static class CodexSessionLocator
         public long Length { get; set; }
         public CodexSessionModel? Latest { get; set; }
         public CodexSessionPermissions? LatestPermissions { get; set; }
+    }
+
+    private sealed class ActivityFileCursor(string path)
+    {
+        public string Path { get; } = path;
+        public long Length { get; set; }
+        public CodexTurnActivityState State { get; set; }
+        public DateTime UpdatedUtc { get; set; }
+        public bool WaitingForUser { get; set; }
     }
 
     private readonly record struct CodexSessionSettings(CodexSessionModel? Model, CodexSessionPermissions? Permissions);
