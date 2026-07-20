@@ -1,20 +1,22 @@
 # PowerShellPlus
 
-PowerShellPlus is a Windows desktop workspace for people who regularly have more than one PowerShell session open. It keeps those terminals together in one window, lets you arrange them into resizable rows or columns, saves commands you use often, and can run commands on a schedule without turning the terminal into a read-only log viewer.
+PowerShellPlus is a Windows desktop workspace for people who regularly have more than one PowerShell terminal open. It organizes live terminals into named Sessions, lets every Session remember its own resizable layout and active terminal, saves commands you use often, and can run commands on a schedule without turning the terminal into a read-only log viewer.
 
 The main application is native WPF on .NET 8. Its terminals are backed by Windows ConPTY and Microsoft TerminalControl, so they remain real interactive terminals: prompts, colors, keyboard input, full-screen console programs, and tools such as Codex continue to work normally.
 
 ## What it can do
 
 - Run several interactive PowerShell terminals in one window.
-- Activate a session by clicking anywhere inside its terminal pane, including the native terminal surface.
+- Group terminals into Sessions and switch between them without stopping background terminals.
+- Activate a terminal by clicking anywhere inside its pane, including the native terminal surface.
 - Use a dedicated PowerShellPlus icon in the executable, taskbar, window switcher, and notification tray.
 - Arrange terminals as a grid, rows, columns, or a focused pane.
 - Resize panes by dragging the dividers; nearby panes adjust automatically.
 - Collapse the workspace sidebar to give the terminal grid its space, then expand it without disturbing pane proportions.
-- Save session names, working directories, and shell commands.
+- Save terminal names, working directories, shell commands, and a separate layout for every Session.
 - Keep a reusable command library and mark selected entries for quick access inside every terminal.
 - Use a compact, auto-growing command bar and saved command queue independently in each terminal pane.
+- See a small animated agent character in each pane header: blue while Codex or Hermes is working, amber while it is waiting for you, green when idle, and gray when stopped.
 - Paste clipboard text with `Ctrl+V` even inside Codex, while preserving Codex's image-only paste path when the clipboard has no text.
 - Keep the layout controls centered in the title bar as the window resizes, with one-click Windows Terminal access beside the window controls.
 - Schedule commands by interval, once at an exact date and time, or every day at an exact time.
@@ -99,15 +101,16 @@ The app is currently unsigned. Windows SmartScreen may show a warning the first 
 
 ## Your first five minutes
 
-1. Click the **+** beside Sessions to create another terminal.
-2. Give the session a useful name and choose its starting folder.
-3. Use the layout buttons above the terminals to switch between grid, rows, columns, and focus mode.
-4. Drag a divider between terminals to resize them.
+1. Click the **+** beside Sessions (or in the Session tab strip) to create a new Session with its first terminal.
+2. Click the **+** beside Terminals to add another terminal to the active Session, then give it a useful name and starting folder.
+3. Use the Session tabs above the terminal area to switch groups. Terminals in other Sessions remain live in the background.
+4. Use the layout buttons to choose grid, rows, columns, or focus mode for the active Session.
+5. Drag a divider between terminals to resize them. Layout and divider sizes are saved independently for every Session.
 5. Open Commands to save something you type often, or Automate to create a scheduled command.
 
 Double-clicking a saved command runs it in the selected terminal. Double-clicking an automation runs it immediately. You can also click the `⋯` button or right-click any card to see every action available for that item.
 
-Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command, or press **Ctrl+Enter** to place it at the end of that pane's queue. Click **Queue** to open the numbered, scrollable queue and choose any pending command; its badge shows how many commands are waiting. After a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Long input wraps and expands upward to six visible lines while staying aligned to the top. Queue contents and the expanded or collapsed state are saved with the session. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
+Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command, or press **Ctrl+Enter** to place it at the end of that pane's queue. Click **Queue** to open the numbered, scrollable queue and choose any pending command; its badge shows how many commands are waiting. After a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Long input wraps and expands upward to six visible lines while staying aligned to the top; only the textbox grows, so the lightning, Queue, and Send controls stay compact at the bottom. Queue contents and the expanded or collapsed state are saved with the terminal. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
 
 Use the slim arrow on the right edge of the navigation rail to collapse or restore the workspace sidebar. The terminal panes resize immediately into the available width, and the sidebar state is saved with the workspace.
 

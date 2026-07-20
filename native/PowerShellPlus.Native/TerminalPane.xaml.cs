@@ -16,6 +16,8 @@ namespace PowerShellPlus.Native;
 
 internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
+internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
+internal enum AgentKind { Terminal, Codex, Hermes }
 
 public partial class TerminalPane : UserControl
 {
@@ -53,6 +55,15 @@ public partial class TerminalPane : UserControl
     private int remoteRows = 32;
     private string remoteFontFace = "Cascadia Mono";
     private int remoteFontSize = 12;
+    private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly object agentOutputSync = new();
+    private readonly StringBuilder recentAgentOutput = new();
+    private DateTime lastAgentOutputUtc = DateTime.MinValue;
+    private DateTime lastAgentProbeUtc = DateTime.MinValue;
+    private AgentKind detectedAgentKind;
+    private AgentKind displayedAgentKind = (AgentKind)(-1);
+    private bool hermesExitObserved;
+    private AgentActivityState agentActivityState = AgentActivityState.Starting;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -70,6 +81,8 @@ public partial class TerminalPane : UserControl
         remoteFontSize = appearance.FontSize;
         Profile.PendingCommands ??= [];
         InitializeComponent();
+        detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
+        agentStatusTimer.Tick += (_, _) => RefreshAgentStatus();
         Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         Terminal.Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
@@ -85,6 +98,7 @@ public partial class TerminalPane : UserControl
         AttachTerminalOutputFilter();
         Loaded += async (_, _) =>
         {
+            agentStatusTimer.Start();
             AttachTerminalActivationHook();
             AttachTerminalOutputFilter();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
@@ -108,11 +122,12 @@ public partial class TerminalPane : UserControl
                     return;
                 }
             }
-            StateDot.Fill = new SolidColorBrush(Color.FromRgb(166, 227, 161));
+            RefreshAgentStatus(true);
             AttachTerminalOutputFilter();
             RefreshRemoteDimensions();
             ConfigureRecoveryView();
         };
+        Unloaded += (_, _) => agentStatusTimer.Stop();
     }
 
     public void SetActive(bool active)
@@ -171,6 +186,7 @@ public partial class TerminalPane : UserControl
             {
                 if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
                 {
+                    lastAgentOutputUtc = DateTime.UtcNow;
                     Terminal.ConPTYTerm.WriteToTerm(command + "\r");
                     Terminal.Focus();
                     return true;
@@ -468,18 +484,19 @@ public partial class TerminalPane : UserControl
         var sshRecovery = startupRecovery?.SshWasActive == true ? startupRecovery : null;
         StateText.Text = sshRecovery is null ? "  Restarting…" : "  Retrying SSH recovery…";
         startupRecovery = sshRecovery;
+        hermesExitObserved = false;
         Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
-        StateText.Text = "  Windows Terminal control";
+        agentActivityState = AgentActivityState.Starting;
+        RefreshAgentStatus(true);
         Terminal.Focus();
     }
 
     public void Stop()
     {
         try { Terminal.ConPTYTerm?.StopExternalTermOnly(); } catch { }
-        StateText.Text = "  Stopped";
-        StateDot.Fill = new SolidColorBrush(Color.FromRgb(108, 112, 134));
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Stopped);
     }
 
     public void SetHandoffPending(bool pending)
@@ -828,9 +845,123 @@ public partial class TerminalPane : UserControl
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
+        lastAgentOutputUtc = DateTime.UtcNow;
+        lock (agentOutputSync)
+        {
+            recentAgentOutput.Append(args.Data);
+            if (recentAgentOutput.Length > 8192) recentAgentOutput.Remove(0, recentAgentOutput.Length - 8192);
+        }
         try { RawOutputReceived?.Invoke(this, args.Data); }
         catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
     }
+
+    private void RefreshAgentStatus(bool force = false)
+    {
+        if (Dispatcher.HasShutdownStarted) return;
+        var now = DateTime.UtcNow;
+        if (force || now - lastAgentProbeUtc >= TimeSpan.FromSeconds(4))
+        {
+            lastAgentProbeUtc = now;
+            var output = string.Empty;
+            lock (agentOutputSync) output = recentAgentOutput.ToString();
+            var codexLaunch = CodexLaunchStore.Load(Profile.Id);
+            if (codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
+                detectedAgentKind = AgentKind.Codex;
+            else if (output.Contains("Resume this session with:", StringComparison.OrdinalIgnoreCase))
+            {
+                hermesExitObserved = true;
+                detectedAgentKind = AgentKind.Terminal;
+            }
+            else if (!hermesExitObserved && (startupRecovery?.HermesWasActive == true || output.Contains("Hermes Agent", StringComparison.OrdinalIgnoreCase)
+                     || output.Contains("$ Hermes", StringComparison.OrdinalIgnoreCase))
+                    )
+                detectedAgentKind = AgentKind.Hermes;
+            else if (codexLaunch?.EndedUtc is not null)
+                detectedAgentKind = AgentKind.Terminal;
+        }
+
+        bool terminalRunning;
+        try { terminalRunning = Terminal.ConPTYTerm?.TermProcIsStarted == true; }
+        catch { terminalRunning = false; }
+        var next = !terminalRunning
+            ? AgentActivityState.Stopped
+            : commandExecutionPending || now - lastAgentOutputUtc < TimeSpan.FromSeconds(1.9)
+                ? AgentActivityState.Working
+                : detectedAgentKind == AgentKind.Terminal ? AgentActivityState.Idle : AgentActivityState.Waiting;
+        SetAgentStatus(detectedAgentKind, next);
+    }
+
+    private void SetAgentStatus(AgentKind kind, AgentActivityState state)
+    {
+        if (agentActivityState == state && displayedAgentKind == kind) return;
+        detectedAgentKind = kind;
+        displayedAgentKind = kind;
+        agentActivityState = state;
+        var color = state switch
+        {
+            AgentActivityState.Working => Color.FromRgb(137, 180, 250),
+            AgentActivityState.Waiting => Color.FromRgb(249, 226, 175),
+            AgentActivityState.Error => Color.FromRgb(243, 139, 168),
+            AgentActivityState.Stopped => Color.FromRgb(108, 112, 134),
+            _ => Color.FromRgb(166, 227, 161)
+        };
+        var brush = new SolidColorBrush(color);
+        AgentHead.BorderBrush = brush;
+        AgentAntenna.Stroke = brush;
+        AgentAntennaTip.Fill = brush;
+        AgentLeftEye.Fill = brush;
+        AgentRightEye.Fill = brush;
+
+        AgentStatusScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        AgentStatusScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        AgentLeftEye.BeginAnimation(OpacityProperty, null);
+        AgentRightEye.BeginAnimation(OpacityProperty, null);
+        AgentStatusScale.ScaleX = AgentStatusScale.ScaleY = 1;
+        AgentLeftEye.Opacity = AgentRightEye.Opacity = 1;
+        if (state == AgentActivityState.Working)
+        {
+            var bounce = new DoubleAnimation(1, 1.13, TimeSpan.FromMilliseconds(360))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
+            };
+            AgentStatusScale.BeginAnimation(ScaleTransform.ScaleXProperty, bounce);
+            AgentStatusScale.BeginAnimation(ScaleTransform.ScaleYProperty, bounce);
+        }
+        else if (state == AgentActivityState.Waiting)
+        {
+            var blink = new DoubleAnimationUsingKeyFrames { RepeatBehavior = RepeatBehavior.Forever, Duration = TimeSpan.FromSeconds(2.4) };
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromPercent(0)));
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(.15, KeyTime.FromPercent(.82)));
+            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromPercent(.9)));
+            AgentLeftEye.BeginAnimation(OpacityProperty, blink);
+            AgentRightEye.BeginAnimation(OpacityProperty, blink);
+        }
+
+        var agentName = kind switch { AgentKind.Codex => "Codex", AgentKind.Hermes => "Hermes", _ => "Terminal" };
+        var stateLabel = state switch
+        {
+            AgentActivityState.Working => "working",
+            AgentActivityState.Waiting => "waiting for you",
+            AgentActivityState.Stopped => "stopped",
+            AgentActivityState.Error => "error",
+            AgentActivityState.Starting => "starting",
+            _ => "idle"
+        };
+        var accessibleStatus = $"{agentName} is {stateLabel}";
+        AgentStatusIcon.ToolTip = accessibleStatus;
+        AutomationProperties.SetName(AgentStatusIcon, accessibleStatus);
+        StateText.Text = $"  {agentName} · {stateLabel}";
+    }
+
+    internal AgentActivityState AgentActivityStateForTest => agentActivityState;
+    internal string AgentStatusTextForTest => StateText.Text;
+    internal void SetAgentStatusForTest(AgentKind kind, AgentActivityState state) => SetAgentStatus(kind, state);
+    internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
+        && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
+        && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom
+        && CommandInput.BorderThickness.Top > 0;
 
     public long RemoteOutputEventsForTest => Interlocked.Read(ref remoteOutputEventCount);
 

@@ -61,22 +61,31 @@ public partial class App : Application
             var report = argument.Contains('=') ? argument[(argument.IndexOf('=') + 1)..] : Path.Combine(AppContext.BaseDirectory, defaultName);
             window.Loaded += async (_, _) =>
             {
-                var success = tailscaleInstallerSmoke is not null
-                    ? await TailscaleInstaller.RunDownloadSmokeAsync(Path.GetFullPath(report))
-                    : handoffSmoke is not null
-                    ? await window.RunHandoffSmokeTestAsync(Path.GetFullPath(report))
-                    : lanRemoteSmoke is not null
-                    ? await window.RunLanRemoteSmokeTestAsync(Path.GetFullPath(report))
-                    : windowsTerminalSmoke is not null
-                    ? await window.RunWindowsTerminalCaptureSmokeTestAsync(Path.GetFullPath(report))
-                    : persistenceSmoke is not null
-                    ? await window.RunPersistenceSmokeTestAsync(Path.GetFullPath(report))
-                    : multiSmoke is not null
-                        ? await window.RunMultiPaneSmokeTestAsync(Path.GetFullPath(report))
-                        : codexSmoke is not null
-                            ? await window.RunCodexSmokeTestAsync(Path.GetFullPath(report))
-                            : await window.RunSmokeTestAsync(Path.GetFullPath(report));
-                Shutdown(success ? 0 : 2);
+                try
+                {
+                    var success = tailscaleInstallerSmoke is not null
+                        ? await TailscaleInstaller.RunDownloadSmokeAsync(Path.GetFullPath(report))
+                        : handoffSmoke is not null
+                        ? await window.RunHandoffSmokeTestAsync(Path.GetFullPath(report))
+                        : lanRemoteSmoke is not null
+                        ? await window.RunLanRemoteSmokeTestAsync(Path.GetFullPath(report))
+                        : windowsTerminalSmoke is not null
+                        ? await window.RunWindowsTerminalCaptureSmokeTestAsync(Path.GetFullPath(report))
+                        : persistenceSmoke is not null
+                        ? await window.RunPersistenceSmokeTestAsync(Path.GetFullPath(report))
+                        : multiSmoke is not null
+                            ? await window.RunMultiPaneSmokeTestAsync(Path.GetFullPath(report))
+                            : codexSmoke is not null
+                                ? await window.RunCodexSmokeTestAsync(Path.GetFullPath(report))
+                                : await window.RunSmokeTestAsync(Path.GetFullPath(report));
+                    Shutdown(success ? 0 : 2);
+                }
+                catch (Exception exception)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
+                    File.WriteAllText(Path.GetFullPath(report), $"FAIL Automation gate threw an exception.\n{exception}");
+                    Shutdown(2);
+                }
             };
         }
         window.Show();

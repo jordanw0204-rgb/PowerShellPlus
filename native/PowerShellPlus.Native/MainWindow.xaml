@@ -68,25 +68,42 @@
       <Border x:Name="WorkspaceSidebar" Grid.Column="1" Background="{StaticResource Surface}" BorderBrush="#313244" BorderThickness="0,0,1,0">
         <Grid Margin="14,18,14,12">
           <Grid x:Name="SessionsPanel">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewSessionClick"/></Grid>
-            <ListBox x:Name="SessionList" Grid.Row="1" SelectionChanged="SessionSelectionChanged">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+            <Grid Grid.Row="0" Margin="3,0,3,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewWorkspaceSessionClick" ToolTip="New session"/></Grid>
+            <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Grid x:Name="WorkspaceSessionCard" MinHeight="46" ContextMenuOpening="CardContextMenuOpening">
+                    <Grid.ContextMenu>
+                      <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
+                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Rename session" Click="WorkspaceSessionRenameClick"/>
+                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove session" Click="WorkspaceSessionRemoveClick"/>
+                      </ContextMenu>
+                    </Grid.ContextMenu>
+                    <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
+                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=WorkspaceSessionCard}" Click="OpenCardMenuClick"/>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            <Grid Grid.Row="2" Margin="3,0,3,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ACTIVE SESSION" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/><TextBlock Text="Terminals" FontSize="15" FontWeight="SemiBold" Margin="0,2,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="17" Width="30" Height="30" Padding="0" Click="NewSessionClick" ToolTip="New terminal in this session"/></Grid>
+            <ListBox x:Name="SessionList" Grid.Row="3" SelectionChanged="SessionSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening">
                     <Grid.ContextMenu>
                       <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit session" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart session" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="↻" FontSize="15"/></MenuItem.Icon></MenuItem>
+                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>
+                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="↻" FontSize="15"/></MenuItem.Icon></MenuItem>
                         <Separator/>
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier in grid" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="↑" FontSize="14"/></MenuItem.Icon></MenuItem>
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later in grid" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="↓" FontSize="14"/></MenuItem.Icon></MenuItem>
                         <Separator/>
-                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove session" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
+                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
                       </ContextMenu>
                     </Grid.ContextMenu>
                     <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
-                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=SessionCard}" Click="OpenCardMenuClick"/>
+                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionCard}" Click="OpenCardMenuClick"/>
                   </Grid>
                 </DataTemplate>
               </ListBox.ItemTemplate>
@@ -208,7 +225,18 @@
       </Border>
 
       <Grid Grid.Column="2">
-        <Grid x:Name="TerminalHost" Background="#11111B"/>
+        <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/></Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,0,1">
+          <DockPanel Margin="7,3">
+            <Button DockPanel.Dock="Right" Content="＋" Width="30" Height="28" Padding="0" FontSize="16" Click="NewWorkspaceSessionClick" ToolTip="New session"/>
+            <ListBox x:Name="WorkspaceSessionTabs" SelectionChanged="WorkspaceSessionSelectionChanged" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled">
+              <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="1,0,3,0"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style></ListBox.ItemContainerStyle>
+              <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
+              <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold" Margin="10,4"/></DataTemplate></ListBox.ItemTemplate>
+            </ListBox>
+          </DockPanel>
+        </Border>
+        <Grid x:Name="TerminalHost" Grid.Row="1" Background="#11111B"/>
       </Grid>
       <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#E6242438" BorderBrush="#585B70" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
     </Grid>
@@ -223,7 +251,7 @@
           </Border>
           <TextBlock x:Name="WindowsTerminalDropTitle" Text="Hold to import Windows Terminal" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,22,0,0"/>
           <TextBlock x:Name="WindowsTerminalDropDetail" Text="Keep the window here for a moment, then release it." Foreground="#A6ADC8" FontSize="13" TextAlignment="Center" TextWrapping="Wrap" Margin="0,9,0,0"/>
-          <TextBlock Text="Each tab becomes a named PowerShellPlus session. Codex thread, model, permission profile, approval policy, and reviewer are verified before import." Foreground="#89B4FA" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,16,0,0"/>
+          <TextBlock Text="Each tab becomes a named Terminal in the active Session. Codex thread, model, permission profile, approval policy, and reviewer are verified before import." Foreground="#89B4FA" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,16,0,0"/>
         </StackPanel>
       </Border>
     </Grid>
@@ -234,6 +262,7 @@
           <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,18"/>
           <Grid Grid.Row="1">
             <StackPanel x:Name="SessionEditor"><TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/><TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/><TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid><CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/></StackPanel>
+            <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed"><TextBlock Text="Session name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/><TextBlock Text="A Session remembers its own terminals, selected terminal, layout, and divider sizes." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/></StackPanel>
             <StackPanel x:Name="SnippetEditor" Visibility="Collapsed">
               <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/>
               <TextBlock Text="Category" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/>

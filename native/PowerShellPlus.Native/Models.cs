@@ -7,16 +7,35 @@ namespace PowerShellPlus.Native;
 
 public sealed class WorkspaceState
 {
-    public int Version { get; set; } = 6;
+    public int Version { get; set; } = 7;
     public string Name { get; set; } = "Main workspace";
+    // Layout and ActiveSessionId are retained as version-6 compatibility
+    // fields. Version 7 stores those values per workspace session instead.
     public string Layout { get; set; } = "Grid";
     public bool WorkspaceSidebarExpanded { get; set; } = true;
     public string? ActiveSessionId { get; set; }
     public ObservableCollection<SessionProfile> Sessions { get; set; } = [];
+    public ObservableCollection<TerminalSession> TerminalSessions { get; set; } = [];
+    public string? ActiveTerminalSessionId { get; set; }
     public ObservableCollection<CommandSnippet> Snippets { get; set; } = [];
     public ObservableCollection<AutomationRule> Automations { get; set; } = [];
     public WorkspaceSettings Settings { get; set; } = new();
     public Dictionary<string, PaneLayoutSizing> LayoutSizes { get; set; } = [];
+}
+
+/// <summary>
+/// A user-facing Session. Terminals remain independent live ConPTY processes;
+/// switching sessions only changes which terminals and saved layout are shown.
+/// </summary>
+public sealed class TerminalSession
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "Session";
+    public string Layout { get; set; } = "Grid";
+    public List<string> TerminalIds { get; set; } = [];
+    public string? ActiveTerminalId { get; set; }
+    public Dictionary<string, PaneLayoutSizing> LayoutSizes { get; set; } = [];
+    [JsonIgnore] public string Subtitle => $"{TerminalIds.Count} terminal{(TerminalIds.Count == 1 ? string.Empty : "s")}";
 }
 
 public sealed class PaneLayoutSizing
