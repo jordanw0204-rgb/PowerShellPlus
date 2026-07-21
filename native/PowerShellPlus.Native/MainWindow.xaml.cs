@@ -33,6 +33,7 @@ public partial class MainWindow : Window
     private bool trayNoticeShown;
     private EditorMode editorMode;
     private object? editingValue;
+    private object? selectedEditableValue;
     private TerminalPane? activePane;
     private TerminalSession? activeWorkspaceSession;
     private string? activeLayoutSizeKey;
@@ -896,6 +897,39 @@ public partial class MainWindow : Window
         TerminalHost.Visibility = Visibility.Visible;
     }
 
+    private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart)
+    {
+        var restartRequired = !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
+            || !PathsEqual(profile.WorkingDirectory, workingDirectory);
+        profile.Name = name;
+        profile.CommandLine = commandLine;
+        profile.WorkingDirectory = workingDirectory;
+        profile.AutoStart = autoStart;
+        if (!panes.TryGetValue(profile.Id, out var pane)) return restartRequired;
+        if (restartRequired)
+        {
+            pane.ApplyProfile(profile);
+            await pane.RestartAsync();
+        }
+        else pane.RefreshProfileDisplay(profile);
+        SessionList.Items.Refresh();
+        return restartRequired;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return string.Equals(left.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                right.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private async void SaveEditorClick(object sender, RoutedEventArgs e)
     {
         if (editorMode == EditorMode.Terminal)
@@ -903,8 +937,7 @@ public partial class MainWindow : Window
             if (string.IsNullOrWhiteSpace(SessionNameEdit.Text) || string.IsNullOrWhiteSpace(SessionCommandEdit.Text) || !Directory.Exists(SessionDirectoryEdit.Text)) { UpdateStatus("Session fields are incomplete"); return; }
             if (editingValue is SessionProfile existing)
             {
-                existing.Name = SessionNameEdit.Text.Trim(); existing.CommandLine = SessionCommandEdit.Text.Trim(); existing.WorkingDirectory = SessionDirectoryEdit.Text.Trim(); existing.AutoStart = SessionAutoStartEdit.IsChecked == true;
-                activePane = panes[existing.Id]; activePane.ApplyProfile(existing); await activePane.RestartAsync(); SessionList.Items.Refresh();
+                await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true);
             }
             else
             {
@@ -1947,6 +1980,22 @@ public partial class MainWindow : Window
                 outputReady = panes.Values.Select((pane, index) => pane.GetOutput().Contains($"NATIVE_PANE_{index + 1}_READY", StringComparison.Ordinal)).All(value => value);
             } while (!outputReady && DateTime.UtcNow < deadline);
 
+            const string renameMarker = "TERMINAL_RENAME_PRESERVES_LIVE_STATE";
+            var renameMarkerAccepted = await activationTarget.SendCommandAsync($"Write-Output '{renameMarker}'");
+            var renameMarkerDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < renameMarkerDeadline && !activationTarget.GetOutput().Contains(renameMarker, StringComparison.Ordinal)) await Task.Delay(100);
+            var rootProcessBeforeRename = activationTarget.GetRootProcessId();
+            var originalTerminalName = activationTarget.Profile.Name;
+            var renameTriggeredRestart = await ApplyTerminalEditAsync(activationTarget.Profile, $"{originalTerminalName} renamed",
+                activationTarget.Profile.CommandLine, activationTarget.Profile.WorkingDirectory, activationTarget.Profile.AutoStart);
+            var terminalRenamePreservesLiveState = renameMarkerAccepted && !renameTriggeredRestart && rootProcessBeforeRename is not null
+                && activationTarget.GetRootProcessId() == rootProcessBeforeRename
+                && ReferenceEquals(panes[activationTarget.Profile.Id], activationTarget)
+                && activationTarget.GetOutput().Contains(renameMarker, StringComparison.Ordinal)
+                && activationTarget.TitleTextForTest == $"{originalTerminalName} renamed";
+            await ApplyTerminalEditAsync(activationTarget.Profile, originalTerminalName,
+                activationTarget.Profile.CommandLine, activationTarget.Profile.WorkingDirectory, activationTarget.Profile.AutoStart);
+
             var textPasteAccepted = activationTarget.PasteTextForTest("Write-Output ('TEXT_PASTE_' + (6 * 7))");
             activationTarget.SubmitTerminalInputForTest();
             var textPasteDeadline = DateTime.UtcNow.AddSeconds(6);
@@ -2104,6 +2153,34 @@ public partial class MainWindow : Window
             AutomationList.UpdateLayout();
             var automationContainerAfter = AutomationList.ItemContainerGenerator.ContainerFromItem(countdownRefreshFixture);
             var automationHoverContainerStable = countdownNotified && automationContainerBefore is not null && ReferenceEquals(automationContainerBefore, automationContainerAfter);
+
+            ShowSection(SessionsPanel);
+            SelectPane(activationTarget.Profile.Id, false);
+            selectedEditableValue = activationTarget.Profile;
+            var f2OpensTerminalEditor = TryOpenSelectedEditor() && editorMode == EditorMode.Terminal
+                && ReferenceEquals(editingValue, activationTarget.Profile) && EditorOverlay.Visibility == Visibility.Visible;
+            var editorCardKeepsEditorOpen = !TryDismissEditorFromBackdrop(EditorCard) && EditorOverlay.Visibility == Visibility.Visible;
+            var backdropDismissesEditor = TryDismissEditorFromBackdrop(EditorOverlay)
+                && EditorOverlay.Visibility == Visibility.Collapsed && TerminalHost.Visibility == Visibility.Visible;
+            var nativeTerminalF2OpensEditor = activationTarget.TriggerEditShortcutForTest()
+                && editorMode == EditorMode.Terminal && ReferenceEquals(editingValue, activationTarget.Profile)
+                && EditorOverlay.Visibility == Visibility.Visible;
+            HideEditor();
+            selectedEditableValue = primaryWorkspaceSession;
+            var f2OpensSessionEditor = TryOpenSelectedEditor() && editorMode == EditorMode.WorkspaceSession
+                && ReferenceEquals(editingValue, primaryWorkspaceSession);
+            HideEditor();
+            ShowSection(CommandsPanel);
+            SnippetList.SelectedItem = quickAccessFixture;
+            var f2OpensCommandEditor = TryOpenSelectedEditor() && editorMode == EditorMode.Snippet
+                && ReferenceEquals(editingValue, quickAccessFixture);
+            HideEditor();
+            ShowSection(AutomationPanel);
+            AutomationList.SelectedItem = countdownRefreshFixture;
+            var f2OpensAutomationEditor = TryOpenSelectedEditor() && editorMode == EditorMode.Automation
+                && ReferenceEquals(editingValue, countdownRefreshFixture);
+            HideEditor();
+            var f2OpensSelectedEditors = f2OpensTerminalEditor && nativeTerminalF2OpensEditor && f2OpensSessionEditor && f2OpensCommandEditor && f2OpensAutomationEditor;
             ShowSection(SessionsPanel);
 
             var paneCommandSystem = paneCommandInputTakesFocus && handoffButtonReady && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
@@ -2117,10 +2194,12 @@ public partial class MainWindow : Window
                 && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent
-                && scheduleLogic && countdownLogic && automationHoverContainerStable && paneCommandSystem;
+                && scheduleLogic && countdownLogic && automationHoverContainerStable && terminalRenamePreservesLiveState
+                && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
+            File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}");
             if (!success)
             {
                 var paneIndex = 0;
@@ -2176,13 +2255,19 @@ public partial class MainWindow : Window
     private void SessionsSectionClick(object sender, RoutedEventArgs e) => ShowSection(SessionsPanel);
     private void CommandsSectionClick(object sender, RoutedEventArgs e) => ShowSection(CommandsPanel);
     private void AutomationSectionClick(object sender, RoutedEventArgs e) => ShowSection(AutomationPanel);
-    private void SessionSelectionChanged(object sender, SelectionChangedEventArgs e) { if (SessionList.SelectedItem is SessionProfile value) SelectPane(value.Id, false); }
+    private void SessionSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SessionList.SelectedItem is not SessionProfile value) return;
+        SelectPane(value.Id, false);
+        selectedEditableValue = value;
+    }
     private void NewSessionClick(object sender, RoutedEventArgs e) => OpenSessionEditor(null);
     private void WorkspaceSessionSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (workspaceSessionSelectionSync || sender is not ListBox list || list.SelectedItem is not TerminalSession value) return;
         CancelWorkspaceSessionHoverPreview(false);
         SelectWorkspaceSession(value.Id, false);
+        selectedEditableValue = value;
     }
     private void WorkspaceSessionCardMouseEnter(object sender, MouseEventArgs e)
     {
@@ -2250,9 +2335,8 @@ public partial class MainWindow : Window
         UpdateStatus($"Created {session.Name} with a new terminal");
         ScheduleSave();
     }
-    private void WorkspaceSessionRenameClick(object sender, RoutedEventArgs e)
+    private void OpenWorkspaceSessionEditor(TerminalSession value)
     {
-        if (ItemFromSender<TerminalSession>(sender) is not { } value) return;
         editorMode = EditorMode.WorkspaceSession;
         editingValue = value;
         EditorTitle.Text = "Rename session";
@@ -2260,6 +2344,10 @@ public partial class MainWindow : Window
         ShowEditor(WorkspaceSessionEditor);
         WorkspaceSessionNameEdit.Focus();
         WorkspaceSessionNameEdit.SelectAll();
+    }
+    private void WorkspaceSessionRenameClick(object sender, RoutedEventArgs e)
+    {
+        if (ItemFromSender<TerminalSession>(sender) is { } value) OpenWorkspaceSessionEditor(value);
     }
     private void WorkspaceSessionRemoveClick(object sender, RoutedEventArgs e)
     {
@@ -2313,6 +2401,7 @@ public partial class MainWindow : Window
             case CommandSnippet snippet: SnippetList.SelectedItem = snippet; break;
             case AutomationRule automation: AutomationList.SelectedItem = automation; break;
         }
+        selectedEditableValue = value;
     }
     private void CardContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
@@ -2365,6 +2454,52 @@ public partial class MainWindow : Window
     private void AutomationItemToggleClick(object sender, RoutedEventArgs e) { if (ItemFromSender<AutomationRule>(sender) is { } value) { AutomationList.SelectedItem = value; ToggleAutomation(value); } }
     private void AutomationItemEditClick(object sender, RoutedEventArgs e) { if (ItemFromSender<AutomationRule>(sender) is { } value) { AutomationList.SelectedItem = value; OpenAutomationEditor(value); } }
     private void AutomationItemDeleteClick(object sender, RoutedEventArgs e) { if (ItemFromSender<AutomationRule>(sender) is { } value) { state.Automations.Remove(value); ScheduleSave(); } }
+    private void EditableListSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is ListBox { SelectedItem: not null } list) selectedEditableValue = list.SelectedItem;
+    }
+    private void WindowPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.F2 || EditorOverlay.Visibility == Visibility.Visible) return;
+        e.Handled = TryOpenSelectedEditor();
+    }
+    private bool TryOpenSelectedEditor()
+    {
+        if (SessionsPanel.Visibility == Visibility.Visible)
+        {
+            if (selectedEditableValue is TerminalSession workspaceSession && state.TerminalSessions.Contains(workspaceSession))
+            {
+                OpenWorkspaceSessionEditor(workspaceSession);
+                return true;
+            }
+            if (selectedEditableValue is SessionProfile terminal && activeSessionTerminals.Contains(terminal))
+            {
+                OpenSessionEditor(terminal);
+                return true;
+            }
+        }
+        else if (CommandsPanel.Visibility == Visibility.Visible && SnippetList.SelectedItem is CommandSnippet snippet)
+        {
+            OpenSnippetEditor(snippet);
+            return true;
+        }
+        else if (AutomationPanel.Visibility == Visibility.Visible && AutomationList.SelectedItem is AutomationRule automation)
+        {
+            OpenAutomationEditor(automation);
+            return true;
+        }
+        return false;
+    }
+    private void EditorOverlayMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject source && TryDismissEditorFromBackdrop(source)) e.Handled = true;
+    }
+    private bool TryDismissEditorFromBackdrop(DependencyObject source)
+    {
+        if (ReferenceEquals(source, EditorCard) || EditorCard.IsAncestorOf(source)) return false;
+        HideEditor();
+        return true;
+    }
     private void GridLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Grid");
     private void ColumnsLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Columns");
     private void RowsLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Rows");

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="PowerShellPlus Native" Icon="Assets/PowerShellPlus.ico" Width="1500" Height="920" MinWidth="980" MinHeight="640"
-        WindowStyle="None" ResizeMode="CanResize" Background="{StaticResource Bg}">
+        WindowStyle="None" ResizeMode="CanResize" Background="{StaticResource Bg}" PreviewKeyDown="WindowPreviewKeyDown">
   <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/></shell:WindowChrome.WindowChrome>
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition/><RowDefinition Height="24"/></Grid.RowDefinitions>
@@ -113,7 +113,7 @@
           <Grid x:Name="CommandsPanel" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="LIBRARY" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Commands" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Double-click to run in the selected pane." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewSnippetClick"/></Grid>
-            <ListBox x:Name="SnippetList" Grid.Row="1" MouseDoubleClick="SnippetDoubleClick">
+            <ListBox x:Name="SnippetList" Grid.Row="1" MouseDoubleClick="SnippetDoubleClick" SelectionChanged="EditableListSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <Grid x:Name="CommandCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening">
@@ -137,7 +137,7 @@
           <Grid x:Name="AutomationPanel" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="SCHEDULER" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Automations" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Native sessions stay interactive while jobs run." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewAutomationClick"/></Grid>
-            <ListBox x:Name="AutomationList" Grid.Row="1" MouseDoubleClick="AutomationDoubleClick">
+            <ListBox x:Name="AutomationList" Grid.Row="1" MouseDoubleClick="AutomationDoubleClick" SelectionChanged="EditableListSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <Grid x:Name="AutomationCard" MinHeight="58" ContextMenuOpening="CardContextMenuOpening">
@@ -256,7 +256,7 @@
       </Border>
     </Grid>
 
-    <Grid x:Name="EditorOverlay" Grid.RowSpan="3" Background="#B0000000" Visibility="Collapsed" Panel.ZIndex="20">
+    <Grid x:Name="EditorOverlay" Grid.RowSpan="3" Background="#B0000000" Visibility="Collapsed" Panel.ZIndex="20" MouseLeftButtonDown="EditorOverlayMouseLeftButtonDown">
       <Border x:Name="EditorCard" Width="580" MaxHeight="720" Background="#181825" BorderBrush="#45475A" BorderThickness="1" CornerRadius="12" Padding="24" VerticalAlignment="Center" HorizontalAlignment="Center">
         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,18"/>

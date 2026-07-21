@@ -82,6 +82,7 @@ public partial class TerminalPane : UserControl
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
     private const int WmKeyDown = 0x0100;
+    private const int VkF2 = 0x71;
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
     private const int VkV = 0x56;
@@ -773,6 +774,12 @@ public partial class TerminalPane : UserControl
         Terminal.StartupCommandLine = BuildCommandLine(profile, null);
     }
 
+    public void RefreshProfileDisplay(SessionProfile profile)
+    {
+        Profile = profile;
+        TitleText.Text = profile.Name;
+    }
+
     public bool IsNativeScrollbarHidden()
     {
         var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
@@ -1103,9 +1110,20 @@ public partial class TerminalPane : UserControl
         else if (message == WmKeyDown)
         {
             terminalActivity.RecordInput(DateTime.UtcNow);
-            if (wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText()) handled = true;
+            if (TryHandleEditShortcut(wParam.ToInt32()))
+            {
+                handled = true;
+            }
+            else if (wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText()) handled = true;
         }
         return IntPtr.Zero;
+    }
+
+    private bool TryHandleEditShortcut(int virtualKey)
+    {
+        if (virtualKey != VkF2) return false;
+        EditRequested?.Invoke(this, EventArgs.Empty);
+        return true;
     }
 
     private bool TryPasteClipboardText()
@@ -1134,6 +1152,9 @@ public partial class TerminalPane : UserControl
     }
 
     private static bool IsKeyDown(int virtualKey) => (GetKeyState(virtualKey) & 0x8000) != 0;
+
+    internal string TitleTextForTest => TitleText.Text;
+    internal bool TriggerEditShortcutForTest() => TryHandleEditShortcut(VkF2);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
