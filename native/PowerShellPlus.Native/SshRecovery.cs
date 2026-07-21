@@ -343,8 +343,8 @@ public static class SshRecovery
                 hermesArguments.Add(recovery.HermesSessionId!);
             }
             else hermesArguments.Add("--continue");
-            remoteCommand = $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec "
-                + string.Join(" ", hermesArguments.Select(QuotePosix));
+            var hermesCommand = "exec " + string.Join(" ", hermesArguments.Select(QuotePosix));
+            remoteCommand = $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(hermesCommand)}";
         }
         else remoteCommand = RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery);
         commandArguments.Add(remoteCommand);

@@ -195,7 +195,7 @@ print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps(result, separators=(',',
             && CodexSessionLocator.IsSafeCodexId(recovery.RemoteCodexSessionId)
             && IsSafeRemoteDirectory(recovery.RemoteCodexWorkingDirectory))
         {
-            var command = prefix + $"cd -- {QuotePosix(recovery.RemoteCodexWorkingDirectory!)} && exec codex resume {QuotePosix(recovery.RemoteCodexSessionId!)}";
+            var command = $"cd -- {QuotePosix(recovery.RemoteCodexWorkingDirectory!)} && exec codex resume {QuotePosix(recovery.RemoteCodexSessionId!)}";
             if (CodexSessionLocator.IsSafeCodexModel(recovery.RemoteCodexModel)) command += $" --model {QuotePosix(recovery.RemoteCodexModel!)}";
             if (CodexSessionLocator.IsSafeCodexPermissionState(recovery.RemoteCodexPermissionProfile, recovery.RemoteCodexSandboxMode, recovery.RemoteCodexApprovalPolicy, recovery.RemoteCodexApprovalsReviewer))
             {
@@ -207,7 +207,7 @@ print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps(result, separators=(',',
                     command += $" --config {QuotePosix($"approvals_reviewer=\"{recovery.RemoteCodexApprovalsReviewer}\"")}";
                 command += $" --ask-for-approval {QuotePosix(recovery.RemoteCodexApprovalPolicy!)}";
             }
-            return command;
+            return prefix + $"exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(command)}";
         }
         return prefix + "exec \"${SHELL:-/bin/sh}\" -l";
     }

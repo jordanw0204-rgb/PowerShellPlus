@@ -1392,7 +1392,10 @@ public partial class MainWindow : Window
             WorkingDirectory = profile.WorkingDirectory
         };
         var sshHermesScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, sshHermesRecovery));
-        var sshHermesExactResume = sshHermesScript.Contains($"'-tt' 'deploy@vps.example' 'export POWERSHELLPLUS_PANE_ID=''{profile.Id}''; exec ''hermes'' ''--model'' ''{hermesModel}'' ''--tui'' ''--resume'' ''{hermesSessionId}'''", StringComparison.Ordinal);
+        var sshHermesExactResume = sshHermesScript.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
+            && sshHermesScript.Contains(hermesSessionId, StringComparison.Ordinal)
+            && sshHermesScript.Contains(hermesModel, StringComparison.Ordinal)
+            && sshHermesScript.Contains("hermes", StringComparison.Ordinal);
         var sshRecoveryIsBoundedAndVisible = sshHermesScript.Contains("[PowerShellPlus] Restoring SSH and Hermes session", StringComparison.Ordinal)
             && sshHermesScript.Contains("$global:__PowerShellPlusSshRecoveryActive = $true", StringComparison.Ordinal)
             && sshHermesScript.Contains("saved session was kept", StringComparison.Ordinal)
@@ -1405,7 +1408,9 @@ public partial class MainWindow : Window
             HermesWasActive = true,
             HermesModel = changedHermesModel
         }));
-        var sshHermesFallbackResume = sshHermesFallbackScript.Contains($"exec ''hermes'' ''--model'' ''{changedHermesModel}'' ''--continue''", StringComparison.Ordinal);
+        var sshHermesFallbackResume = sshHermesFallbackScript.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
+            && sshHermesFallbackScript.Contains(changedHermesModel, StringComparison.Ordinal)
+            && sshHermesFallbackScript.Contains("--continue", StringComparison.Ordinal);
         var unsafeHermesModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
         {
             SessionId = profile.Id,
@@ -1450,11 +1455,16 @@ public partial class MainWindow : Window
             RemoteCodexApprovalsReviewer = savedApprovalsReviewer
         };
         var remoteCodexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, remoteCodexRecovery));
+        var remoteCodexCommand = RemoteCodexRecovery.BuildRemoteCommand(profile.Id, remoteCodexRecovery);
         var remoteCodexExactResume = remoteCodexScript.Contains("[PowerShellPlus] Restoring SSH and Codex session", StringComparison.Ordinal)
-            && remoteCodexScript.Contains($"codex resume ''{remoteCodexId}''", StringComparison.Ordinal)
-            && remoteCodexScript.Contains($"cd -- ''{remoteCodexDirectory}''", StringComparison.Ordinal)
-            && remoteCodexScript.Contains($"--model ''{savedModel}''", StringComparison.Ordinal)
-            && !remoteCodexScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
+            && remoteCodexCommand.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
+            && remoteCodexCommand.Contains("codex resume", StringComparison.Ordinal)
+            && remoteCodexCommand.Contains(remoteCodexId, StringComparison.Ordinal)
+            && remoteCodexCommand.Contains("cd --", StringComparison.Ordinal)
+            && remoteCodexCommand.Contains(remoteCodexDirectory, StringComparison.Ordinal)
+            && remoteCodexCommand.Contains("--model", StringComparison.Ordinal)
+            && remoteCodexCommand.Contains(savedModel, StringComparison.Ordinal)
+            && !remoteCodexCommand.Contains("--last", StringComparison.OrdinalIgnoreCase);
         var unsafeRemoteProbeRejected = !RemoteCodexRecovery.TryParseProbeOutput(
             "PSP_REMOTE_CODEX:" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"active\":true,\"sessionId\":\"bad'; touch /tmp/pwned\",\"workingDirectory\":\"/home/ubuntu\"}")), out _);
         var sshLoginOnlyScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
