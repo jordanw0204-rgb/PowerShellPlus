@@ -44,21 +44,21 @@ for proc in glob.glob('/proc/[0-9]*'):
         boot = next(float(x.split()[1]) for x in open('/proc/stat') if x.startswith('btime '))
         started = boot + int(stat[21]) / ticks
         cwd = os.readlink(proc + '/cwd')
-        processes.append((pid, started, cwd, proc))
+        fds = []
+        for fd in glob.glob(proc + '/fd/*'):
+            try:
+                path = os.readlink(fd)
+                if '/.codex/sessions/' in path and path.endswith('.jsonl'):
+                    fds.append(path)
+            except Exception:
+                pass
+        processes.append((0 if fds else 1, started, pid, cwd, proc, fds))
     except Exception:
         pass
 if not processes:
     print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps({'active': False}).encode()).decode())
     raise SystemExit(0)
-pid, started, cwd, proc = sorted(processes, key=lambda x: x[1])[0]
-fd_files = []
-for fd in glob.glob(proc + '/fd/*'):
-    try:
-        path = os.readlink(fd)
-        if '/.codex/sessions/' in path and path.endswith('.jsonl'):
-            fd_files.append(path)
-    except Exception:
-        pass
+_, started, pid, cwd, proc, fd_files = sorted(processes, key=lambda x: (x[0], x[1]))[0]
 files = fd_files or glob.glob(os.path.expanduser('~/.codex/sessions/**/*.jsonl'), recursive=True)
 best = None
 for path in files:
