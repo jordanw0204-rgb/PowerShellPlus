@@ -110,6 +110,7 @@ if ($global:__PowerShellPlusSshCommand) {
         };
         $__pspValid = $true;
         $__pspDestinationSeen = $false;
+        $__pspDestinationIndex = -1;
         $__pspIndex = 0;
         while ($__pspIndex -lt $__pspArgs.Count -and -not $__pspDestinationSeen) {
             $__pspArg = [string]$__pspArgs[$__pspIndex];
@@ -120,6 +121,8 @@ if ($global:__PowerShellPlusSshCommand) {
                 if (-not (& $__pspTestDestination $__pspDestination)) { $__pspValid = $false; break }
                 $__pspSafe.Add($__pspDestination);
                 $__pspDestinationSeen = $true;
+                $__pspDestinationIndex = $__pspIndex;
+                $__pspIndex++;
                 break;
             }
             if ($__pspArg -in $__pspNoValue) {
@@ -149,7 +152,17 @@ if ($global:__PowerShellPlusSshCommand) {
             if (-not (& $__pspTestDestination $__pspArg)) { $__pspValid = $false; break }
             $__pspSafe.Add($__pspArg);
             $__pspDestinationSeen = $true;
+            $__pspDestinationIndex = $__pspIndex;
             $__pspIndex++;
+        }
+        $__pspInternalRemoteCommand = $false;
+        if ($__pspDestinationSeen -and $__pspIndex -ne $__pspArgs.Count) {
+            $__pspExpectedRemotePrefix = 'export POWERSHELLPLUS_PANE_ID=''{{escapedPaneId}}''; ';
+            if ([bool]$global:__PowerShellPlusSshRecoveryActive -and $__pspIndex -eq $__pspArgs.Count - 1 -and ([string]$__pspArgs[$__pspIndex]).StartsWith($__pspExpectedRemotePrefix, [StringComparison]::Ordinal)) {
+                $__pspInternalRemoteCommand = $true;
+                $__pspIndex++;
+            }
+            else { $__pspValid = $false }
         }
         $__pspMarker = $null;
         if ($__pspValid -and $__pspDestinationSeen) {
@@ -167,7 +180,16 @@ if ($global:__PowerShellPlusSshCommand) {
             $__pspMarker | ConvertTo-Json -Compress | Set-Content -LiteralPath '{{escapedMarkerPath}}' -Encoding UTF8;
         }
         $__pspExitCode = $null;
-        try { & $global:__PowerShellPlusSshCommand @__pspArgs; $__pspExitCode = $LASTEXITCODE }
+        $__pspInvokeArgs = @($__pspArgs);
+        if ($null -ne $__pspMarker -and -not $__pspInternalRemoteCommand) {
+            $__pspInstrumented = [System.Collections.Generic.List[string]]::new();
+            for ($__pspCopyIndex = 0; $__pspCopyIndex -lt $__pspDestinationIndex; $__pspCopyIndex++) { $__pspInstrumented.Add([string]$__pspArgs[$__pspCopyIndex]) }
+            $__pspInstrumented.Add('-tt');
+            $__pspInstrumented.Add([string]$__pspArgs[$__pspDestinationIndex]);
+            $__pspInstrumented.Add('export POWERSHELLPLUS_PANE_ID=''{{escapedPaneId}}''; exec "${SHELL:-/bin/sh}" -l');
+            $__pspInvokeArgs = @($__pspInstrumented.ToArray());
+        }
+        try { & $global:__PowerShellPlusSshCommand @__pspInvokeArgs; $__pspExitCode = $LASTEXITCODE }
         finally {
             if ($null -ne $__pspMarker) {
                 $__pspMarker.ExitCode = $__pspExitCode;
@@ -304,24 +326,31 @@ public static class SshRecovery
         AddReliabilityOption(commandArguments, "ServerAliveCountMax", 3);
         commandArguments.Add("-tt");
         commandArguments.Add(destination);
+        var paneId = SessionRecoveryStore.SafeSessionId(recovery.SessionId);
+        string remoteCommand;
         if (recovery.HermesWasActive)
         {
-            commandArguments.Add("hermes");
+            var hermesArguments = new List<string> { "hermes" };
             if (HermesRecovery.IsSafeModel(recovery.HermesModel))
             {
-                commandArguments.Add("--model");
-                commandArguments.Add(recovery.HermesModel!);
+                hermesArguments.Add("--model");
+                hermesArguments.Add(recovery.HermesModel!);
             }
-            if (recovery.HermesUseTui) commandArguments.Add("--tui");
+            if (recovery.HermesUseTui) hermesArguments.Add("--tui");
             if (HermesRecovery.IsSafeSessionId(recovery.HermesSessionId))
             {
-                commandArguments.Add("--resume");
-                commandArguments.Add(recovery.HermesSessionId!);
+                hermesArguments.Add("--resume");
+                hermesArguments.Add(recovery.HermesSessionId!);
             }
-            else commandArguments.Add("--continue");
+            else hermesArguments.Add("--continue");
+            remoteCommand = $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec "
+                + string.Join(" ", hermesArguments.Select(QuotePosix));
         }
+        else remoteCommand = RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery);
+        commandArguments.Add(remoteCommand);
         var invocation = "& ssh " + string.Join(" ", commandArguments.Select(QuotePowerShell));
-        var description = recovery.HermesWasActive ? "SSH and Hermes session" : "SSH session";
+        var description = recovery.HermesWasActive ? "SSH and Hermes session"
+            : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";
         return $"Write-Host '[PowerShellPlus] Restoring {description}...' -ForegroundColor Cyan; "
             + "$global:__PowerShellPlusSshRecoveryActive = $true; "
             + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}; "
@@ -335,8 +364,8 @@ public static class SshRecovery
     public static bool ShouldPreserveTranscript(SessionRecoveryEntry? previous, SshLaunchMarker? launch,
         bool sshProcessActive, string? currentOutput)
         => ShouldKeepPendingRecovery(previous, launch, sshProcessActive)
-            && previous?.HermesWasActive == true
-            && !HermesRecovery.Detect(currentOutput).WasActive;
+            && (previous?.HermesWasActive == true && !HermesRecovery.Detect(currentOutput).WasActive
+                || previous?.RemoteCodexWasActive == true);
 
     public static void Sanitize(SessionRecoveryEntry entry)
     {
@@ -348,6 +377,7 @@ public static class SshRecovery
             entry.HermesSessionId = null;
             entry.HermesModel = null;
             entry.HermesUseTui = false;
+            RemoteCodexRecovery.Clear(entry);
             return;
         }
         entry.SshConnectionArguments = normalized;
@@ -362,6 +392,7 @@ public static class SshRecovery
             if (!HermesRecovery.IsSafeSessionId(entry.HermesSessionId)) entry.HermesSessionId = null;
             if (!HermesRecovery.IsSafeModel(entry.HermesModel)) entry.HermesModel = null;
         }
+        RemoteCodexRecovery.Sanitize(entry);
     }
 
     private static bool IsSafeOptionValue(string option, string value)
@@ -419,4 +450,5 @@ public static class SshRecovery
     }
 
     private static string QuotePowerShell(string value) => "'" + value.Replace("'", "''") + "'";
+    private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
 }

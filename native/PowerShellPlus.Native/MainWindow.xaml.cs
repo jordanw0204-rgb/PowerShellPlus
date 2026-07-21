@@ -481,6 +481,16 @@ public partial class MainWindow : Window
                         : default;
                     var hermes = sshIsActive ? HermesRecovery.Detect(capture.Output, previousHermes)
                         : keepPendingSshRecovery ? previousHermes : default;
+                    var previousRemoteCodex = samePreviousSsh
+                        ? new RemoteCodexRecoveryState(oldEntry!.RemoteCodexWasActive, oldEntry.RemoteCodexSessionId,
+                            oldEntry.RemoteCodexWorkingDirectory, oldEntry.RemoteCodexModel, oldEntry.RemoteCodexSandboxMode,
+                            oldEntry.RemoteCodexApprovalPolicy, oldEntry.RemoteCodexPermissionProfile, oldEntry.RemoteCodexApprovalsReviewer)
+                        : default;
+                    var remoteCodexProbe = sshIsActive && !hermes.WasActive
+                        ? RemoteCodexRecovery.Probe(capture.SessionId, sshArguments)
+                        : default;
+                    var remoteCodex = remoteCodexProbe.Succeeded ? remoteCodexProbe.State
+                        : samePreviousSsh ? previousRemoteCodex : default;
                     var preserveTranscript = SshRecovery.ShouldPreserveTranscript(oldEntry, sshLaunch, sshProcess.IsActive, capture.Output);
                     var transcriptFile = saveTerminalTranscripts
                         ? preserveTranscript ? oldEntry?.TranscriptFile
@@ -507,6 +517,14 @@ public partial class MainWindow : Window
                         HermesSessionId = hermes.SessionId,
                         HermesModel = hermes.Model,
                         HermesUseTui = hermes.UseTui,
+                        RemoteCodexWasActive = remoteCodex.WasActive,
+                        RemoteCodexSessionId = remoteCodex.SessionId,
+                        RemoteCodexWorkingDirectory = remoteCodex.WorkingDirectory,
+                        RemoteCodexModel = remoteCodex.Model,
+                        RemoteCodexSandboxMode = remoteCodex.SandboxMode,
+                        RemoteCodexApprovalPolicy = remoteCodex.ApprovalPolicy,
+                        RemoteCodexPermissionProfile = remoteCodex.PermissionProfile,
+                        RemoteCodexApprovalsReviewer = remoteCodex.ApprovalsReviewer,
                         CapturedUtc = DateTime.UtcNow
                     };
                 }
@@ -1341,6 +1359,10 @@ public partial class MainWindow : Window
         var sshKeyPath = Path.Combine(Path.GetDirectoryName(reportPath)!, "vps recovery key");
         var safeSshAccepted = SshRecovery.TryNormalizeConnectionArguments(["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"], out var safeSshArguments, out var safeSshDestination)
             && safeSshDestination == "deploy@vps.example" && safeSshArguments.SequenceEqual(["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"]);
+        var expandedHomeIdentity = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "hermes_ovh_access");
+        var quotedHomeIdentityAccepted = SshRecovery.TryNormalizeConnectionArguments(["-i", expandedHomeIdentity, "ubuntu@15.204.82.129"], out var quotedHomeArguments, out var quotedHomeDestination)
+            && quotedHomeDestination == "ubuntu@15.204.82.129"
+            && quotedHomeArguments.SequenceEqual(["-i", expandedHomeIdentity, "ubuntu@15.204.82.129"]);
         var safeSshReliabilityOptionsAccepted = SshRecovery.TryNormalizeConnectionArguments([
             "-o", "ConnectionAttempts=2", "-o", "ConnectTimeout=12", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "deploy@vps.example"
         ], out _, out var reliabilityDestination) && reliabilityDestination == "deploy@vps.example";
@@ -1360,6 +1382,7 @@ public partial class MainWindow : Window
         var exitedHermesNotRestored = !HermesRecovery.Detect($"deploy@vps:~$ hermes{Environment.NewLine}Hermes Agent{Environment.NewLine}Resume this session with:{Environment.NewLine}  hermes --resume {hermesSessionId}").WasActive;
         var sshHermesRecovery = new SessionRecoveryEntry
         {
+            SessionId = profile.Id,
             SshWasActive = true,
             SshConnectionArguments = ["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"],
             HermesWasActive = true,
@@ -1369,21 +1392,23 @@ public partial class MainWindow : Window
             WorkingDirectory = profile.WorkingDirectory
         };
         var sshHermesScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, sshHermesRecovery));
-        var sshHermesExactResume = sshHermesScript.Contains($"& ssh '-p' '2222' '-i' '{sshKeyPath}' '-o' 'ConnectionAttempts=2' '-o' 'ConnectTimeout=12' '-o' 'ServerAliveInterval=15' '-o' 'ServerAliveCountMax=3' '-tt' 'deploy@vps.example' 'hermes' '--model' '{hermesModel}' '--tui' '--resume' '{hermesSessionId}'", StringComparison.Ordinal);
+        var sshHermesExactResume = sshHermesScript.Contains($"'-tt' 'deploy@vps.example' 'export POWERSHELLPLUS_PANE_ID=''{profile.Id}''; exec ''hermes'' ''--model'' ''{hermesModel}'' ''--tui'' ''--resume'' ''{hermesSessionId}'''", StringComparison.Ordinal);
         var sshRecoveryIsBoundedAndVisible = sshHermesScript.Contains("[PowerShellPlus] Restoring SSH and Hermes session", StringComparison.Ordinal)
             && sshHermesScript.Contains("$global:__PowerShellPlusSshRecoveryActive = $true", StringComparison.Ordinal)
             && sshHermesScript.Contains("saved session was kept", StringComparison.Ordinal)
             && sshHermesScript.Contains("PowerShell prompt remains interactive", StringComparison.Ordinal);
         var sshHermesFallbackScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
         {
+            SessionId = profile.Id,
             SshWasActive = true,
             SshConnectionArguments = ["deploy@vps.example"],
             HermesWasActive = true,
             HermesModel = changedHermesModel
         }));
-        var sshHermesFallbackResume = sshHermesFallbackScript.Contains($"'-tt' 'deploy@vps.example' 'hermes' '--model' '{changedHermesModel}' '--continue'", StringComparison.Ordinal);
+        var sshHermesFallbackResume = sshHermesFallbackScript.Contains($"exec ''hermes'' ''--model'' ''{changedHermesModel}'' ''--continue''", StringComparison.Ordinal);
         var unsafeHermesModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
         {
+            SessionId = profile.Id,
             SshWasActive = true,
             SshConnectionArguments = ["deploy@vps.example"],
             HermesWasActive = true,
@@ -1394,6 +1419,44 @@ public partial class MainWindow : Window
         var unsafeHermesResumeCommand = unsafeHermesResumeStart >= 0 ? unsafeHermesModelScript[unsafeHermesResumeStart..] : unsafeHermesModelScript;
         var unsafeHermesModelNotInjected = !unsafeHermesResumeCommand.Contains("Write-Output unsafe", StringComparison.Ordinal)
             && !unsafeHermesResumeCommand.Contains("'--model'", StringComparison.Ordinal);
+        const string remoteCodexId = "019f842c-c1b5-7ce2-a0f3-f1719eea9753";
+        const string remoteCodexDirectory = "/home/ubuntu/project with spaces";
+        var remoteProbeJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            active = true,
+            sessionId = remoteCodexId,
+            workingDirectory = remoteCodexDirectory,
+            model = savedModel,
+            sandboxMode = savedSandboxMode,
+            approvalPolicy = savedApprovalPolicy,
+            permissionProfile = (string?)null,
+            approvalsReviewer = savedApprovalsReviewer
+        });
+        var remoteProbeOutput = "noise\nPSP_REMOTE_CODEX:" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(remoteProbeJson));
+        var remoteProbeParsed = RemoteCodexRecovery.TryParseProbeOutput(remoteProbeOutput, out var remoteProbeState)
+            && remoteProbeState.WasActive && remoteProbeState.SessionId == remoteCodexId
+            && remoteProbeState.WorkingDirectory == remoteCodexDirectory && remoteProbeState.Model == savedModel;
+        var remoteCodexRecovery = new SessionRecoveryEntry
+        {
+            SessionId = profile.Id,
+            SshWasActive = true,
+            SshConnectionArguments = ["-i", expandedHomeIdentity, "ubuntu@15.204.82.129"],
+            RemoteCodexWasActive = true,
+            RemoteCodexSessionId = remoteCodexId,
+            RemoteCodexWorkingDirectory = remoteCodexDirectory,
+            RemoteCodexModel = savedModel,
+            RemoteCodexSandboxMode = savedSandboxMode,
+            RemoteCodexApprovalPolicy = savedApprovalPolicy,
+            RemoteCodexApprovalsReviewer = savedApprovalsReviewer
+        };
+        var remoteCodexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, remoteCodexRecovery));
+        var remoteCodexExactResume = remoteCodexScript.Contains("[PowerShellPlus] Restoring SSH and Codex session", StringComparison.Ordinal)
+            && remoteCodexScript.Contains($"codex resume ''{remoteCodexId}''", StringComparison.Ordinal)
+            && remoteCodexScript.Contains($"cd -- ''{remoteCodexDirectory}''", StringComparison.Ordinal)
+            && remoteCodexScript.Contains($"--model ''{savedModel}''", StringComparison.Ordinal)
+            && !remoteCodexScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
+        var unsafeRemoteProbeRejected = !RemoteCodexRecovery.TryParseProbeOutput(
+            "PSP_REMOTE_CODEX:" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"active\":true,\"sessionId\":\"bad'; touch /tmp/pwned\",\"workingDirectory\":\"/home/ubuntu\"}")), out _);
         var sshLoginOnlyScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
         {
             SshWasActive = true,
@@ -1570,6 +1633,7 @@ public partial class MainWindow : Window
         try { Directory.Delete(sshLaunchRoot, true); } catch { }
         var sshWrapperRuntimeRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "ssh-wrapper-runtime-fixture");
         var sshWrapperExecutesSafely = false;
+        const string sshWrapperDiagnostic = "validated";
         try
         {
             Directory.CreateDirectory(sshWrapperRuntimeRoot);
@@ -1591,7 +1655,13 @@ public partial class MainWindow : Window
                     RedirectStandardError = true,
                     Environment = { ["PATH"] = fakeBin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH") }
                 });
-                return runtimeProcess is not null && runtimeProcess.WaitForExit(10_000);
+                if (runtimeProcess is null) return false;
+                var runtimeOutput = runtimeProcess.StandardOutput.ReadToEndAsync();
+                var runtimeError = runtimeProcess.StandardError.ReadToEndAsync();
+                var exited = runtimeProcess.WaitForExit(10_000);
+                _ = runtimeOutput.GetAwaiter().GetResult();
+                _ = runtimeError.GetAwaiter().GetResult();
+                return exited;
             }
             var validWrapperExited = RunSshWrapper("runtime-pane", "$global:__PowerShellPlusSshRecoveryActive = $true; ssh '-o' 'ConnectTimeout=1' 'deploy@vps.example'");
             var runtimeMarker = SshLaunchStore.Load("runtime-pane", runtimeMarkers);
@@ -1605,6 +1675,7 @@ public partial class MainWindow : Window
         catch { sshWrapperExecutesSafely = false; }
         finally { try { Directory.Delete(sshWrapperRuntimeRoot, true); } catch { } }
         var sshBannerTimeoutFallsBackInteractive = false;
+        const string sshBannerDiagnostic = "bounded fallback validated";
         var previousSshLaunchOverride = SshLaunchStore.DirectoryOverride;
         var timeoutFixtureRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "ssh-timeout-fixture");
         System.Net.Sockets.TcpListener? stalledSshServer = null;
@@ -1619,6 +1690,7 @@ public partial class MainWindow : Window
             var acceptTask = stalledSshServer.AcceptTcpClientAsync();
             var timeoutRecovery = new SessionRecoveryEntry
             {
+                SessionId = profile.Id,
                 SshWasActive = true,
                 SshConnectionArguments = ["-p", timeoutPort.ToString(CultureInfo.InvariantCulture), "-o", "ConnectionAttempts=1", "-o", "ConnectTimeout=1", "127.0.0.1"]
             };
@@ -1639,7 +1711,7 @@ public partial class MainWindow : Window
                 var outputTask = timeoutProcess.StandardOutput.ReadToEndAsync();
                 var errorTask = timeoutProcess.StandardError.ReadToEndAsync();
                 stalledSshClient = await acceptTask.WaitAsync(TimeSpan.FromSeconds(5));
-                await timeoutProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));
+                await timeoutProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
                 var timeoutOutput = await outputTask + await errorTask;
                 var timeoutMarker = SshLaunchStore.Load(profile.Id, timeoutFixtureRoot);
                 sshBannerTimeoutFallsBackInteractive = timeoutProcess.ExitCode == 0
@@ -1688,7 +1760,11 @@ public partial class MainWindow : Window
             CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy,
             CodexPermissionProfile = savedPermissionProfile, CodexApprovalsReviewer = savedApprovalsReviewer,
             SshWasActive = true, SshConnectionArguments = safeSshArguments, HermesWasActive = true,
-            HermesSessionId = hermesSessionId, HermesModel = hermesModel, HermesUseTui = true
+            HermesSessionId = hermesSessionId, HermesModel = hermesModel, HermesUseTui = true,
+            RemoteCodexWasActive = true, RemoteCodexSessionId = remoteCodexId,
+            RemoteCodexWorkingDirectory = remoteCodexDirectory, RemoteCodexModel = savedModel,
+            RemoteCodexSandboxMode = savedSandboxMode, RemoteCodexApprovalPolicy = savedApprovalPolicy,
+            RemoteCodexApprovalsReviewer = savedApprovalsReviewer
         };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
@@ -1700,6 +1776,10 @@ public partial class MainWindow : Window
             && reloadedEntry.SshWasActive && reloadedEntry.SshConnectionArguments.SequenceEqual(safeSshArguments)
             && reloadedEntry.HermesWasActive && reloadedEntry.HermesSessionId == hermesSessionId
             && reloadedEntry.HermesModel == hermesModel && reloadedEntry.HermesUseTui
+            && reloadedEntry.RemoteCodexWasActive && reloadedEntry.RemoteCodexSessionId == remoteCodexId
+            && reloadedEntry.RemoteCodexWorkingDirectory == remoteCodexDirectory && reloadedEntry.RemoteCodexModel == savedModel
+            && reloadedEntry.RemoteCodexSandboxMode == savedSandboxMode && reloadedEntry.RemoteCodexApprovalPolicy == savedApprovalPolicy
+            && reloadedEntry.RemoteCodexApprovalsReviewer == savedApprovalsReviewer
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -1707,7 +1787,7 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 9 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 10 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
 
         var importedCodexTranscript = $"OpenAI Codex (fixture){Environment.NewLine}model: {savedModel}{Environment.NewLine}directory: {actualCodexDirectory}{Environment.NewLine}";
@@ -1753,11 +1833,11 @@ public partial class MainWindow : Window
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
         var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
-            && sshWrapperInstalled && safeSshAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && sshLoginOnlyRestored && unsafeSshResumeRejected
+            && sshWrapperInstalled && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
             && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
             && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}");
         return success;
     }
 
