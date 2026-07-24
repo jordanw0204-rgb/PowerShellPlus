@@ -37,6 +37,21 @@
         </Grid>
       </Border>
       <term:EasyTerminalControl x:Name="Terminal" Grid.Row="1" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys"/>
+      <Border x:Name="RemoteImagePasteIndicator" Grid.Row="1" Panel.ZIndex="4" Visibility="Collapsed"
+              HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="10,7"
+              Background="#F2181825" BorderBrush="#585B70" BorderThickness="1" CornerRadius="7">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Grid Width="22" Height="22" Margin="0,0,8,0">
+            <TextBlock x:Name="RemoteImagePasteGlyph" Text="&#x21E7;" FontSize="15" FontWeight="Bold" Foreground="#F9E2AF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <ProgressBar x:Name="RemoteImagePasteProgress" Width="22" Height="3" IsIndeterminate="True" VerticalAlignment="Bottom" Foreground="#89B4FA" Background="#313244" BorderThickness="0"/>
+          </Grid>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center">
+            <TextBlock x:Name="RemoteImagePasteStatusText" Text="Uploading image…" FontSize="11" FontWeight="SemiBold" Foreground="#CDD6F4"/>
+            <TextBlock x:Name="RemoteImagePasteDetailText" Text="Securely copying through SSH" FontSize="9" Foreground="#A6ADC8" Margin="0,1,0,0"/>
+          </StackPanel>
+        </Grid>
+      </Border>
       <Border x:Name="CommandBarContainer" Grid.Row="2" MinHeight="16" Background="#151520" BorderBrush="#313244" BorderThickness="0,1,0,0" Opacity="1" ClipToBounds="True">
         <Grid x:Name="CommandBarContent" Margin="6,4">
           <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="54"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions>
