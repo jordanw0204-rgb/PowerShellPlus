@@ -1902,10 +1902,14 @@ public partial class MainWindow : Window
         var importParsesQuotedSshIdentity = parsedSshCommand?.ProcessId == 4242
             && parsedSshCommand.ConnectionArguments.SequenceEqual(importedSshCapture.ConnectionArguments);
         var bridgeArguments = RemoteClipboardImageBridge.BuildSshArgumentsForTest(importedSshCapture.ConnectionArguments, "clipboard-test.png");
+        var shortImageName = RemoteClipboardImageBridge.CreateRemoteFileName(
+            new DateTime(2026, 7, 24, 9, 51, 29, DateTimeKind.Utc), Guid.Parse("1a22347c-8b6b-43c7-b00a-f880775cd32a"));
         var imageBridgeIsBoundedAndSafe = bridgeArguments.Contains("BatchMode=yes", StringComparer.Ordinal)
             && bridgeArguments.Contains("ubuntu@15.204.82.129", StringComparer.Ordinal)
             && bridgeArguments[^1].Contains("umask 077", StringComparison.Ordinal)
             && bridgeArguments[^1].Contains("$HOME/.cache/powershellplus/images", StringComparison.Ordinal)
+            && bridgeArguments[^1].Contains("set -C", StringComparison.Ordinal)
+            && shortImageName == "img-095129-1a22347c.png" && shortImageName.Length == 23
             && RemoteClipboardImageBridge.TryReadRemotePath("PSP_REMOTE_IMAGE:/home/ubuntu/.cache/powershellplus/images/clipboard-test.png", out _)
             && !RemoteClipboardImageBridge.TryReadRemotePath("PSP_REMOTE_IMAGE:/home/ubuntu/../etc/shadow", out _);
 
@@ -1985,6 +1989,7 @@ public partial class MainWindow : Window
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
             var handoffButtonReady = activationTarget.HandoffButtonReadyForTest;
             var terminalSurfaceHooked = activationTarget.HasTerminalSurfaceActivationHook;
+            var terminalInputRouterPrecedesConPty = activationTarget.TerminalInputRouterPrecedesConPtyForTest();
             var remoteImagePasteIndicatorReady = activationTarget.HasRemoteImagePasteIndicatorForTest;
             var remoteImageShortcutInterceptReady = TerminalPane.RemoteImageShortcutsClassifiedForTest();
             var remoteImagePasteModesWork = TerminalPane.RemoteImagePasteModesFormatForTest();
@@ -2238,7 +2243,7 @@ public partial class MainWindow : Window
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes;
             var titleLayoutControlsCentered = initiallyCentered && centeredAfterResize;
             var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && sidebarCollapses && sidebarExpands && sidebarStatePersists
-                && terminalSurfaceHooked && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteImagePasteIndicatorStatesWork
+                && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteImagePasteIndicatorStatesWork
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
                 && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
@@ -2248,7 +2253,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nTitleLayoutControlsCentered={titleLayoutControlsCentered}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
-            File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}");
+            File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}");
             if (!success)
             {
                 var paneIndex = 0;

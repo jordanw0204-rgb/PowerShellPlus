@@ -18,7 +18,7 @@ internal static class RemoteClipboardImageBridge
         if (!SshRecovery.TryNormalizeConnectionArguments(connectionArguments, out var normalized, out var destination))
             return new(false, null, "The active SSH connection could not be verified safely.");
 
-        var fileName = $"clipboard-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.png";
+        var fileName = CreateRemoteFileName(DateTime.UtcNow, Guid.NewGuid());
         var remoteCommand = BuildRemoteCommand(fileName);
         var startInfo = new ProcessStartInfo
         {
@@ -65,6 +65,9 @@ internal static class RemoteClipboardImageBridge
         return BuildSshArguments(normalized, destination, BuildRemoteCommand(fileName)).ToArray();
     }
 
+    internal static string CreateRemoteFileName(DateTime utcNow, Guid randomValue)
+        => $"img-{utcNow:HHmmss}-{randomValue:N}"[..19] + ".png";
+
     internal static bool TryReadRemotePath(string? output, out string remotePath)
     {
         remotePath = (output ?? string.Empty).Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
@@ -89,7 +92,7 @@ internal static class RemoteClipboardImageBridge
         if (!Regex.IsMatch(fileName, @"^[A-Za-z0-9._-]{1,128}$", RegexOptions.CultureInvariant))
             throw new ArgumentException("Unsafe remote image name.", nameof(fileName));
         return "umask 077; dir=\"$HOME/.cache/powershellplus/images\"; mkdir -p -- \"$dir\" "
-            + $"&& path=\"$dir/{fileName}\"; cat > \"$path\" && chmod 600 -- \"$path\" "
+            + $"&& path=\"$dir/{fileName}\"; set -C; cat > \"$path\" && chmod 600 -- \"$path\" "
             + $"&& printf '\\n{ResultPrefix}%s\\n' \"$path\"";
     }
 

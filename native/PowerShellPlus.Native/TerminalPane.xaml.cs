@@ -10,8 +10,11 @@ using System.Windows.Automation;
 using System.Windows.Automation.Text;
 using System.Text;
 using System.Runtime.InteropServices;
+using System.Reflection;
+using System.Collections;
 using EasyWindowsTerminalControl;
 using Microsoft.Terminal.Wpf;
+using System.Windows.Interop;
 
 namespace PowerShellPlus.Native;
 
@@ -105,6 +108,8 @@ public partial class TerminalPane : UserControl
     private SessionRecoveryEntry? startupRecovery;
     private string previousOutput = string.Empty;
     private TerminalContainer? terminalContainer;
+    private HwndSourceHook? terminalInternalMessageHook;
+    private bool terminalMessageRouterInstalled;
     private readonly WindowSubclassProc terminalWindowSubclassProc;
     private bool terminalWindowSubclassInstalled;
     private TermPTY? outputCaptureTerminal;
@@ -209,7 +214,7 @@ public partial class TerminalPane : UserControl
         PaneBorder.BorderThickness = active ? new Thickness(1.5) : new Thickness(1);
     }
 
-    public bool HasTerminalSurfaceActivationHook => terminalContainer is not null && terminalWindowSubclassInstalled;
+    public bool HasTerminalSurfaceActivationHook => terminalContainer is not null && terminalMessageRouterInstalled && terminalWindowSubclassInstalled;
 
     public bool HasNativeKeyboardFocus()
     {
@@ -913,10 +918,32 @@ public partial class TerminalPane : UserControl
         if (terminalContainer is null)
         {
             terminalContainer = FindVisualChild<TerminalContainer>(Terminal.Terminal);
-            if (terminalContainer is not null) terminalContainer.MessageHook += TerminalMessageHook;
         }
+        if (!terminalMessageRouterInstalled && terminalContainer is not null) InstallTerminalMessageRouter(terminalContainer);
         if (!terminalWindowSubclassInstalled && terminalContainer?.Handle is { } handle && handle != IntPtr.Zero)
             terminalWindowSubclassInstalled = SetWindowSubclass(handle, terminalWindowSubclassProc, UIntPtr.Zero, UIntPtr.Zero);
+    }
+
+    private void InstallTerminalMessageRouter(TerminalContainer container)
+    {
+        var method = typeof(TerminalContainer).GetMethod("TerminalContainer_MessageHook", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method is null) return;
+        try
+        {
+            terminalInternalMessageHook = (HwndSourceHook)method.CreateDelegate(typeof(HwndSourceHook), container);
+            // The terminal package registers this private hook in its constructor. Replace it
+            // with our router so image shortcuts can be consumed before it writes key events
+            // into ConPTY; all other messages are forwarded to the original handler.
+            container.MessageHook -= terminalInternalMessageHook;
+            container.MessageHook += TerminalMessageHook;
+            terminalMessageRouterInstalled = true;
+        }
+        catch (Exception exception)
+        {
+            terminalInternalMessageHook = null;
+            terminalMessageRouterInstalled = false;
+            try { ShowRemoteImageStatus("Image paste unavailable", exception.Message, false, true); } catch { }
+        }
     }
 
     private IntPtr TerminalWindowSubclassProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, UIntPtr subclassId, UIntPtr referenceData)
@@ -1176,7 +1203,8 @@ public partial class TerminalPane : UserControl
                 else if (controlDown && !altDown && TryPasteClipboardText()) handled = true;
             }
         }
-        return IntPtr.Zero;
+        if (handled) return IntPtr.Zero;
+        return terminalInternalMessageHook?.Invoke(hwnd, message, wParam, lParam, ref handled) ?? IntPtr.Zero;
     }
 
     private bool TryHandleEditShortcut(int virtualKey)
@@ -1311,6 +1339,15 @@ public partial class TerminalPane : UserControl
     internal string TitleTextForTest => TitleText.Text;
     internal bool TriggerEditShortcutForTest() => TryHandleEditShortcut(VkF2);
     internal bool HasRemoteImagePasteIndicatorForTest => RemoteImagePasteIndicator is not null;
+    internal bool TerminalInputRouterPrecedesConPtyForTest()
+    {
+        if (terminalContainer is null || !terminalMessageRouterInstalled) return false;
+        var field = typeof(HwndHost).GetField("_hooks", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (field?.GetValue(terminalContainer) is not ArrayList hooks) return false;
+        var callbacks = hooks.Cast<object>().OfType<HwndSourceHook>().ToList();
+        return callbacks.Any(value => ReferenceEquals(value.Target, this) && value.Method.Name == nameof(TerminalMessageHook))
+            && callbacks.All(value => value.Method.Name != "TerminalContainer_MessageHook");
+    }
     internal static bool RemoteImageShortcutsClassifiedForTest()
         => IsRemoteImageShortcutMessage(WmKeyDown, VkV, true, false)
             && IsRemoteImageShortcutMessage(WmSysKeyDown, VkV, false, true)
