@@ -16,7 +16,7 @@
 
       <StackPanel Grid.Row="1" Margin="24,20,24,14">
         <TextBlock x:Name="SourceTitleText" FontSize="20" FontWeight="SemiBold"/>
-        <TextBlock Text="Each Windows Terminal tab becomes one native PowerShellPlus session with the same tab name. Review every Codex match before the source window is closed." Foreground="#A6ADC8" Margin="0,7,0,0" TextWrapping="Wrap"/>
+        <TextBlock Text="Each Windows Terminal tab becomes one PowerShellPlus terminal with the same name. Review detected SSH connections and exact Codex threads before the source window closes." Foreground="#A6ADC8" Margin="0,7,0,0" TextWrapping="Wrap"/>
       </StackPanel>
 
       <ScrollViewer Grid.Row="2" Margin="24,0" VerticalScrollBarVisibility="Auto">
@@ -32,6 +32,10 @@
                     <TextBlock Text="{Binding CodexStatus}" Foreground="#89B4FA" FontSize="11" Margin="0,5,0,0" TextWrapping="Wrap"/>
                   </StackPanel>
                   <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                    <StackPanel Visibility="{Binding SshVisibility}" Margin="0,0,0,8">
+                      <TextBlock Text="SSH connection" Foreground="#A6ADC8" FontSize="11" Margin="0,0,0,5"/>
+                      <ComboBox ItemsSource="{Binding SshChoices}" SelectedItem="{Binding SelectedSshChoice, Mode=TwoWay}" DisplayMemberPath="DisplayName" MinHeight="34"/>
+                    </StackPanel>
                     <TextBlock Text="Resume behavior" Foreground="#A6ADC8" FontSize="11" Margin="0,0,0,5"/>
                     <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding SelectedChoice, Mode=TwoWay}" DisplayMemberPath="DisplayName" MinHeight="34"/>
                   </StackPanel>
@@ -46,7 +50,7 @@
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <TextBlock MaxWidth="570" HorizontalAlignment="Left" VerticalAlignment="Center" Foreground="#F9E2AF" TextWrapping="Wrap"
-                     Text="The original PowerShell processes cannot be transferred. Closing the source ends variables, jobs, SSH connections, and other in-memory state. Captured scrollback is retained as previous output."/>
+                     Text="The original process cannot be transferred. PowerShellPlus reconstructs verified SSH and exact Codex sessions, and retains captured scrollback; variables and local jobs still end when the source closes."/>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <Button Content="Cancel" MinWidth="92" Height="36" Margin="0,0,8,0" Click="CancelClick"/>
             <Button Content="Close source &amp; import" MinWidth="172" Height="36" Background="#89B4FA" Foreground="#11111B" FontWeight="SemiBold" Click="ImportClick"/>

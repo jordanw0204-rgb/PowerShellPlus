@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Management;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -12,9 +13,26 @@ using System.Windows.Threading;
 
 namespace PowerShellPlus.Native;
 
-public sealed record WindowsTerminalTabCapture(int Index, string Title, string Transcript, string? WorkingDirectory, bool LooksLikeCodex);
+public sealed record WindowsTerminalSshCapture(int ProcessId, string[] ConnectionArguments, string Destination, int? ClientPort = null);
 
-public sealed record WindowsTerminalWindowCapture(IntPtr WindowHandle, string WindowTitle, IReadOnlyList<WindowsTerminalTabCapture> Tabs);
+public sealed record WindowsTerminalTabCapture(int Index, string Title, string Transcript, string? WorkingDirectory, bool LooksLikeCodex,
+    string? RemoteWorkingDirectory = null, bool LooksLikeSsh = false);
+
+public sealed record WindowsTerminalWindowCapture(IntPtr WindowHandle, string WindowTitle, IReadOnlyList<WindowsTerminalTabCapture> Tabs,
+    IReadOnlyList<WindowsTerminalSshCapture>? SshConnections = null);
+
+public sealed class SshImportChoice
+{
+    public SshImportChoice(WindowsTerminalSshCapture? connection)
+    {
+        Connection = connection;
+        DisplayName = connection is null ? "Not an SSH tab" : $"Resume SSH · {string.Join(" ", connection.ConnectionArguments)}";
+    }
+
+    public WindowsTerminalSshCapture? Connection { get; }
+    public string DisplayName { get; }
+    public RemoteCodexProbeResult RemoteCodexProbe { get; set; }
+}
 
 public sealed class CodexImportChoice
 {
@@ -38,14 +56,19 @@ public sealed class CodexImportChoice
 public sealed class WindowsTerminalImportRow : INotifyPropertyChanged
 {
     private CodexImportChoice? selectedChoice;
+    private SshImportChoice? selectedSshChoice;
 
     public required WindowsTerminalTabCapture Tab { get; init; }
     public required ObservableCollection<CodexImportChoice> Choices { get; init; }
+    public required ObservableCollection<SshImportChoice> SshChoices { get; init; }
     public string Title => Tab.Title;
     public string Details => $"{Tab.WorkingDirectory ?? "Working directory unavailable"}  •  {Math.Max(0, Tab.Transcript.Length):N0} transcript characters";
-    public string CodexStatus => Tab.LooksLikeCodex
-        ? "Codex detected — select the exact thread and permission level"
-        : "PowerShell tab";
+    public string CodexStatus => SelectedSshChoice?.Connection is not null
+        ? SelectedSshChoice.RemoteCodexProbe.State.WasActive
+            ? $"SSH + remote Codex detected · {SelectedSshChoice.RemoteCodexProbe.State.SessionId} · {SelectedSshChoice.RemoteCodexProbe.State.Model ?? "default model"}"
+            : Tab.LooksLikeCodex ? "SSH detected · remote Codex thread could not be matched exactly" : "SSH detected"
+        : Tab.LooksLikeCodex ? "Codex detected — select the exact thread and permission level" : "PowerShell tab";
+    public Visibility SshVisibility => Tab.LooksLikeSsh || SshChoices.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
 
     public CodexImportChoice? SelectedChoice
     {
@@ -57,6 +80,20 @@ public sealed class WindowsTerminalImportRow : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedChoice)));
         }
     }
+
+    public SshImportChoice? SelectedSshChoice
+    {
+        get => selectedSshChoice;
+        set
+        {
+            if (ReferenceEquals(selectedSshChoice, value)) return;
+            selectedSshChoice = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedSshChoice)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CodexStatus)));
+        }
+    }
+
+    public void RefreshProbeStatus() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CodexStatus)));
 
     public event PropertyChangedEventHandler? PropertyChanged;
 }
@@ -73,6 +110,7 @@ public static class WindowsTerminalImportPlanner
     private static readonly Regex ClassicPowerShellPromptPattern = new(@"(?im)\bPS\s+(?<path>[A-Za-z]:\\[^>\r\n]*?)>", RegexOptions.Compiled);
     private static readonly Regex PowerlinePromptPattern = new(@"(?im)(?<path>[A-Za-z]:\\[^\r\n]*?)\s+[>]", RegexOptions.Compiled);
     private static readonly Regex CodexSpinnerPrefixPattern = new(@"^[\u2800-\u28ff]\s+", RegexOptions.Compiled);
+    private static readonly Regex RemoteCodexDirectoryPattern = new(@"(?im)\bdirectory:\s*(?<path>/[^\r\n│]+?)\s*(?:│|$)", RegexOptions.Compiled);
 
     public static WindowsTerminalImportPlan Create(WindowsTerminalWindowCapture capture, IEnumerable<CodexSessionMatch> sessions)
     {
@@ -84,15 +122,35 @@ public static class WindowsTerminalImportPlanner
             .ToList();
         var choices = new ObservableCollection<CodexImportChoice>(new[] { new CodexImportChoice(null) }
             .Concat(candidates.Select(value => new CodexImportChoice(value))));
+        var sshConnections = capture.SshConnections ?? [];
+        var sshChoices = new ObservableCollection<SshImportChoice>(new[] { new SshImportChoice(null) }
+            .Concat(sshConnections.Select(value => new SshImportChoice(value))));
         var rows = new ObservableCollection<WindowsTerminalImportRow>(capture.Tabs.Select(tab => new WindowsTerminalImportRow
         {
             Tab = tab,
             Choices = choices,
-            SelectedChoice = choices[0]
+            SelectedChoice = choices[0],
+            SshChoices = sshChoices,
+            SelectedSshChoice = sshChoices[0]
         }));
 
+        var usedSshProcesses = new HashSet<int>();
+        foreach (var row in rows)
+        {
+            var transcriptAndTitle = row.Tab.Title + "\n" + row.Tab.Transcript;
+            var matches = sshConnections.Where(value => transcriptAndTitle.Contains(value.Destination, StringComparison.OrdinalIgnoreCase)
+                || transcriptAndTitle.Contains(DestinationHost(value.Destination), StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches.Count != 1 || usedSshProcesses.Contains(matches[0].ProcessId)) continue;
+            row.SelectedSshChoice = sshChoices.First(value => value.Connection?.ProcessId == matches[0].ProcessId);
+            usedSshProcesses.Add(matches[0].ProcessId);
+        }
+        var unresolvedSshRows = rows.Where(value => value.Tab.LooksLikeSsh && value.SelectedSshChoice?.Connection is null).ToList();
+        var unusedSshConnections = sshConnections.Where(value => !usedSshProcesses.Contains(value.ProcessId)).ToList();
+        if (unresolvedSshRows.Count == 1 && unusedSshConnections.Count == 1)
+            unresolvedSshRows[0].SelectedSshChoice = sshChoices.First(value => value.Connection?.ProcessId == unusedSshConnections[0].ProcessId);
+
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var row in rows.Where(value => value.Tab.LooksLikeCodex && !string.IsNullOrWhiteSpace(value.Tab.WorkingDirectory)))
+        foreach (var row in rows.Where(value => value.Tab.LooksLikeCodex && !value.Tab.LooksLikeSsh && !string.IsNullOrWhiteSpace(value.Tab.WorkingDirectory)))
         {
             var matchingRows = rows.Count(value => value.Tab.LooksLikeCodex
                 && PathsEqual(value.Tab.WorkingDirectory, row.Tab.WorkingDirectory));
@@ -102,7 +160,7 @@ public static class WindowsTerminalImportPlanner
             used.Add(matchingSessions[0].SessionId);
         }
 
-        var descendantRows = rows.Where(value => value.Tab.LooksLikeCodex && value.SelectedChoice?.Session is null
+        var descendantRows = rows.Where(value => value.Tab.LooksLikeCodex && !value.Tab.LooksLikeSsh && value.SelectedChoice?.Session is null
             && !string.IsNullOrWhiteSpace(value.Tab.WorkingDirectory)).ToList();
         foreach (var row in descendantRows)
         {
@@ -117,7 +175,7 @@ public static class WindowsTerminalImportPlanner
             used.Add(candidate.SessionId);
         }
 
-        var unresolved = rows.Where(value => value.Tab.LooksLikeCodex && value.SelectedChoice?.Session is null).ToList();
+        var unresolved = rows.Where(value => value.Tab.LooksLikeCodex && !value.Tab.LooksLikeSsh && value.SelectedChoice?.Session is null).ToList();
         var unused = candidates.Where(value => !used.Contains(value.SessionId)).ToList();
         if (unresolved.Count == 1 && unused.Count == 1)
             unresolved[0].SelectedChoice = choices.First(value => value.Session?.SessionId == unused[0].SessionId);
@@ -129,15 +187,24 @@ public static class WindowsTerminalImportPlanner
     {
         var output = NormalizeTranscript(transcript ?? string.Empty);
         var looksLikeCodex = output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase);
+        var remoteWorkingDirectory = FindRemoteWorkingDirectory(output);
+        var looksLikeSsh = remoteWorkingDirectory is not null
+            || output.Contains("Welcome to Ubuntu", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("Last login:", StringComparison.OrdinalIgnoreCase) && output.Contains("@", StringComparison.Ordinal);
         var title = string.IsNullOrWhiteSpace(rawTitle) ? $"Windows Terminal {index + 1}" : rawTitle.Trim();
         if (looksLikeCodex) title = CodexSpinnerPrefixPattern.Replace(title, string.Empty).Trim();
         if (title.Length == 0) title = $"Windows Terminal {index + 1}";
-        return new WindowsTerminalTabCapture(index, title, output, FindWorkingDirectory(output), looksLikeCodex);
+        return new WindowsTerminalTabCapture(index, title, output, FindWorkingDirectory(output), looksLikeCodex, remoteWorkingDirectory, looksLikeSsh);
     }
 
     public static SessionRecoveryEntry CreateRecoveryEntry(WindowsTerminalImportRow row, string profileId, string? transcriptFile, CodexSessionMatch? refreshedSession = null)
     {
         var selected = refreshedSession ?? row.SelectedChoice?.Session;
+        var ssh = row.SelectedSshChoice?.Connection;
+        var remote = row.SelectedSshChoice?.RemoteCodexProbe ?? default;
+        string[] sshArguments = [];
+        var hasSsh = ssh is not null && SshRecovery.TryNormalizeConnectionArguments(ssh.ConnectionArguments, out sshArguments, out _);
+        var hasRemoteCodex = hasSsh && remote.Succeeded && remote.State.WasActive;
         var hasExactCodex = selected is not null
             && CodexSessionLocator.IsSafeCodexId(selected.SessionId)
             && CodexSessionLocator.IsSafeCodexPermissionState(selected.PermissionProfile, selected.SandboxMode, selected.ApprovalPolicy, selected.ApprovalsReviewer)
@@ -154,6 +221,16 @@ public static class WindowsTerminalImportPlanner
             CodexApprovalPolicy = hasExactCodex ? selected!.ApprovalPolicy : null,
             CodexPermissionProfile = hasExactCodex && CodexSessionLocator.IsSafeCodexPermissionProfile(selected!.PermissionProfile) ? selected.PermissionProfile : null,
             CodexApprovalsReviewer = hasExactCodex ? selected!.ApprovalsReviewer : null,
+            SshWasActive = hasSsh,
+            SshConnectionArguments = hasSsh ? sshArguments : [],
+            RemoteCodexWasActive = hasRemoteCodex,
+            RemoteCodexSessionId = hasRemoteCodex ? remote.State.SessionId : null,
+            RemoteCodexWorkingDirectory = hasRemoteCodex ? remote.State.WorkingDirectory : null,
+            RemoteCodexModel = hasRemoteCodex ? remote.State.Model : null,
+            RemoteCodexSandboxMode = hasRemoteCodex ? remote.State.SandboxMode : null,
+            RemoteCodexApprovalPolicy = hasRemoteCodex ? remote.State.ApprovalPolicy : null,
+            RemoteCodexPermissionProfile = hasRemoteCodex ? remote.State.PermissionProfile : null,
+            RemoteCodexApprovalsReviewer = hasRemoteCodex ? remote.State.ApprovalsReviewer : null,
             CapturedUtc = DateTime.UtcNow
         };
     }
@@ -170,6 +247,31 @@ public static class WindowsTerminalImportPlanner
             }
         }
         return null;
+    }
+
+    private static string? FindRemoteWorkingDirectory(string transcript)
+    {
+        var matches = RemoteCodexDirectoryPattern.Matches(transcript);
+        for (var index = matches.Count - 1; index >= 0; index--)
+        {
+            var value = matches[index].Groups["path"].Value.Trim().TrimEnd('|').Trim();
+            if (value.StartsWith("/", StringComparison.Ordinal) && value.Length <= 4096 && !value.Any(char.IsControl)) return value;
+        }
+        return null;
+    }
+
+    private static string DestinationHost(string destination)
+    {
+        var value = destination.Trim();
+        if (value.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase))
+        {
+            try { return new Uri(value).Host; } catch { return value; }
+        }
+        var at = value.LastIndexOf('@');
+        if (at >= 0 && at < value.Length - 1) value = value[(at + 1)..];
+        if (value.StartsWith("[", StringComparison.Ordinal) && value.IndexOf(']') is var end && end > 0) return value[1..end];
+        var colon = value.LastIndexOf(':');
+        return colon > 0 && value.Count(character => character == ':') == 1 ? value[..colon] : value;
     }
 
     private static bool LooksLikeWindowsPath(string value)
@@ -304,7 +406,78 @@ public static class WindowsTerminalImportService
                 catch { }
             }
         }
-        return new WindowsTerminalWindowCapture(windowHandle, windowTitle, captures);
+        _ = GetWindowThreadProcessId(windowHandle, out var processId);
+        return new WindowsTerminalWindowCapture(windowHandle, windowTitle, captures, CaptureSshConnections((int)processId));
+    }
+
+    internal static IReadOnlyList<WindowsTerminalSshCapture> CaptureSshConnections(int windowsTerminalProcessId)
+    {
+        if (windowsTerminalProcessId <= 0) return [];
+        try
+        {
+            var processes = new List<(int Id, int ParentId, string Name, string CommandLine)>();
+            using var searcher = new ManagementObjectSearcher("SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process");
+            using var results = searcher.Get();
+            foreach (ManagementObject item in results)
+            {
+                var id = Convert.ToInt32(item["ProcessId"] ?? 0);
+                var parentId = Convert.ToInt32(item["ParentProcessId"] ?? 0);
+                var name = Convert.ToString(item["Name"]) ?? string.Empty;
+                var commandLine = Convert.ToString(item["CommandLine"]) ?? string.Empty;
+                processes.Add((id, parentId, name, commandLine));
+            }
+            var descendants = new HashSet<int> { windowsTerminalProcessId };
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var process in processes.Where(value => descendants.Contains(value.ParentId)))
+                    if (descendants.Add(process.Id)) changed = true;
+            }
+            return processes.Where(value => descendants.Contains(value.Id) && value.Name.Equals("ssh.exe", StringComparison.OrdinalIgnoreCase))
+                .Select(value => TryParseSshCommandLine(value.Id, value.CommandLine) is { } capture
+                    ? capture with { ClientPort = TryGetEstablishedClientPort(value.Id) } : null)
+                .Where(value => value is not null).Cast<WindowsTerminalSshCapture>()
+                .GroupBy(value => string.Join("\0", value.ConnectionArguments), StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First()).ToList();
+        }
+        catch { return []; }
+    }
+
+    internal static WindowsTerminalSshCapture? TryParseSshCommandLine(int processId, string? commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine)) return null;
+        var pointer = CommandLineToArgvW(commandLine, out var count);
+        if (pointer == IntPtr.Zero || count < 2) return null;
+        try
+        {
+            var values = new string[count - 1];
+            for (var index = 1; index < count; index++)
+                values[index - 1] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(pointer, index * IntPtr.Size)) ?? string.Empty;
+            return SshRecovery.TryNormalizeConnectionArguments(values, out var normalized, out var destination)
+                ? new WindowsTerminalSshCapture(processId, normalized, destination) : null;
+        }
+        finally { _ = LocalFree(pointer); }
+    }
+
+    private static int? TryGetEstablishedClientPort(int processId)
+    {
+        try
+        {
+            var scope = new ManagementScope(@"\\.\root\StandardCimv2");
+            scope.Connect();
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery($"SELECT LocalPort, State FROM MSFT_NetTCPConnection WHERE OwningProcess = {processId}"));
+            using var results = searcher.Get();
+            foreach (ManagementObject item in results)
+            {
+                var port = Convert.ToInt32(item["LocalPort"] ?? 0);
+                var state = Convert.ToInt32(item["State"] ?? 0);
+                if (port is >= 1 and <= 65535 && state == 5) return port;
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static string ReadTerminalText(AutomationElement root)
@@ -345,6 +518,9 @@ public static class WindowsTerminalImportService
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsWindow(IntPtr windowHandle);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool PostMessage(IntPtr windowHandle, int message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(IntPtr windowHandle);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+    [DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
 }
 
 public sealed class WindowsTerminalDragMonitor : IDisposable

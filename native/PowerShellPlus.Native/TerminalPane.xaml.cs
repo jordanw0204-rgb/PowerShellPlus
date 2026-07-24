@@ -5,6 +5,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 using System.Text;
@@ -123,6 +124,7 @@ public partial class TerminalPane : UserControl
     private AgentKind detectedAgentKind;
     private AgentKind displayedAgentKind = (AgentKind)(-1);
     private bool hermesExitObserved;
+    private bool remoteImagePastePending;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
@@ -1114,7 +1116,13 @@ public partial class TerminalPane : UserControl
             {
                 handled = true;
             }
-            else if (wParam.ToInt32() == VkV && IsKeyDown(VkControl) && !IsKeyDown(VkMenu) && TryPasteClipboardText()) handled = true;
+            else if (wParam.ToInt32() == VkV)
+            {
+                var controlDown = IsKeyDown(VkControl);
+                var altDown = IsKeyDown(VkMenu);
+                if ((controlDown || altDown) && TryBeginRemoteClipboardImagePaste()) handled = true;
+                else if (controlDown && !altDown && TryPasteClipboardText()) handled = true;
+            }
         }
         return IntPtr.Zero;
     }
@@ -1142,6 +1150,70 @@ public partial class TerminalPane : UserControl
         catch (ExternalException) { return false; }
         catch (ObjectDisposedException) { return false; }
         catch (InvalidOperationException) { return false; }
+    }
+
+    private bool TryBeginRemoteClipboardImagePaste()
+    {
+        if (remoteImagePastePending || !TryGetActiveSshConnection(out var connectionArguments)) return false;
+        try
+        {
+            if (!Clipboard.ContainsImage() || Clipboard.GetImage() is not { } image) return false;
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(image));
+            using var stream = new MemoryStream();
+            encoder.Save(stream);
+            if (stream.Length is 0 or > RemoteClipboardImageBridge.MaximumImageBytes)
+            {
+                ShowRemoteImageStatus("Image paste rejected", "Clipboard image is empty or larger than 20 MB.");
+                return true;
+            }
+            remoteImagePastePending = true;
+            ShowRemoteImageStatus("Uploading clipboard image…", "The image is being copied privately through this pane's SSH connection.");
+            _ = UploadRemoteClipboardImageAsync(stream.ToArray(), connectionArguments);
+            return true;
+        }
+        catch (Exception exception) when (exception is ExternalException or InvalidOperationException or IOException or NotSupportedException)
+        {
+            ShowRemoteImageStatus("Image paste failed", exception.Message);
+            return true;
+        }
+    }
+
+    private bool TryGetActiveSshConnection(out string[] connectionArguments)
+    {
+        connectionArguments = [];
+        var marker = SshLaunchStore.Load(Profile.Id);
+        var candidate = marker?.IsActive == true ? marker.ConnectionArguments
+            : startupRecovery?.SshWasActive == true ? startupRecovery.SshConnectionArguments : [];
+        if (!SshRecovery.TryNormalizeConnectionArguments(candidate, out var normalized, out _)) return false;
+        connectionArguments = normalized;
+        return true;
+    }
+
+    private async Task UploadRemoteClipboardImageAsync(byte[] imageBytes, string[] connectionArguments)
+    {
+        try
+        {
+            var result = await RemoteClipboardImageBridge.UploadPngAsync(imageBytes, connectionArguments);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (result.Succeeded && result.RemotePath is { } remotePath && Terminal.ConPTYTerm is { } terminal)
+                {
+                    terminalActivity.RecordInput(DateTime.UtcNow);
+                    terminal.WriteToTerm(FormatClipboardText(remotePath));
+                    Terminal.Focus();
+                    ShowRemoteImageStatus("Remote image attached", remotePath);
+                }
+                else ShowRemoteImageStatus("Image paste failed", result.Error ?? "Unknown SSH image transfer error.");
+            });
+        }
+        finally { remoteImagePastePending = false; }
+    }
+
+    private void ShowRemoteImageStatus(string text, string detail)
+    {
+        StateText.Text = "  " + text;
+        StateText.ToolTip = detail;
     }
 
     private static string FormatClipboardText(string text)

@@ -247,6 +247,15 @@ public partial class MainWindow : Window
                 return CodexActivityStore.FindAllActiveCliSessions(existingCodexIds);
             });
             var plan = WindowsTerminalImportPlanner.Create(capture, candidates);
+            foreach (var row in plan.Rows.Where(value => value.SelectedSshChoice?.Connection is not null))
+            {
+                var choice = row.SelectedSshChoice!;
+                if (choice.RemoteCodexProbe.Succeeded) continue;
+                var connection = choice.Connection!;
+                choice.RemoteCodexProbe = await Task.Run(() => RemoteCodexRecovery.ProbeImported(
+                    connection.ConnectionArguments, row.Tab.RemoteWorkingDirectory, connection.ClientPort));
+                row.RefreshProbeStatus();
+            }
 
             TerminalHost.Visibility = Visibility.Hidden;
             var dialog = new WindowsTerminalImportDialog(plan) { Owner = this };
@@ -262,11 +271,14 @@ public partial class MainWindow : Window
             foreach (var row in plan.Rows)
             {
                 var selected = row.SelectedChoice?.Session;
+                var selectedSsh = row.SelectedSshChoice?.Connection;
                 if (selected is not null && (!CodexSessionLocator.IsSafeCodexId(selected.SessionId)
                     || !CodexSessionLocator.IsSafeCodexPermissionState(selected.PermissionProfile, selected.SandboxMode, selected.ApprovalPolicy, selected.ApprovalsReviewer)
                     || !CodexSessionLocator.IsSafeCodexApprovalsReviewer(selected.ApprovalsReviewer)))
                     throw new InvalidOperationException($"Codex permissions for {row.Title} are not safe to restore.");
-                var directory = selected?.WorkingDirectory ?? row.Tab.WorkingDirectory;
+                if (selectedSsh is not null && !SshRecovery.TryNormalizeConnectionArguments(selectedSsh.ConnectionArguments, out _, out _))
+                    throw new InvalidOperationException($"SSH connection for {row.Title} is not safe to restore.");
+                var directory = selectedSsh is null ? selected?.WorkingDirectory ?? row.Tab.WorkingDirectory : DefaultSessionDirectory;
                 if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) directory = DefaultSessionDirectory;
                 var profile = new SessionProfile
                 {
@@ -322,6 +334,7 @@ public partial class MainWindow : Window
                 if (original is not null && !recovery.CodexWasActive)
                     throw new InvalidOperationException($"The exact Codex permission level for {item.Row.Title} could not be restored.");
                 if (recovery.CodexWasActive) importedCodex++;
+                if (recovery.RemoteCodexWasActive) importedCodex++;
                 if (!string.IsNullOrWhiteSpace(recovery.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory))
                     item.Profile.WorkingDirectory = recovery.WorkingDirectory;
                 ready.Add((item.Profile, recovery, item.Row.Tab.Transcript));
@@ -1865,6 +1878,36 @@ public partial class MainWindow : Window
             WindowsTerminalImportPlanner.CreateTabCapture(1, "Second Codex", importedCodexTranscript)
         ]), [importedCandidate, secondCandidate]);
         var ambiguousImportRequiresChoice = ambiguousImport.Rows.All(value => value.SelectedChoice?.Session is null);
+        var importedSshCapture = new WindowsTerminalSshCapture(4242, ["-i", expandedHomeIdentity, "ubuntu@15.204.82.129"], "ubuntu@15.204.82.129");
+        var remoteImportTab = WindowsTerminalImportPlanner.CreateTabCapture(0, "VPS Codex",
+            $"Welcome to Ubuntu{Environment.NewLine}ubuntu@15.204.82.129{Environment.NewLine}OpenAI Codex{Environment.NewLine}directory: /home/ubuntu/project");
+        var remoteImportPlan = WindowsTerminalImportPlanner.Create(
+            new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [remoteImportTab], [importedSshCapture]), []);
+        var remoteImportRow = remoteImportPlan.Rows[0];
+        remoteImportRow.SelectedSshChoice!.RemoteCodexProbe = new RemoteCodexProbeResult(true,
+            new RemoteCodexRecoveryState(true, remoteCodexId, "/home/ubuntu/project", savedModel, savedSandboxMode,
+                savedApprovalPolicy, savedPermissionProfile, savedApprovalsReviewer));
+        var remoteImportedRecovery = WindowsTerminalImportPlanner.CreateRecoveryEntry(remoteImportRow, "remote-import", "remote-import.txt");
+        var importCapturesSshAndRemoteCodex = remoteImportRow.SelectedSshChoice.Connection?.ProcessId == 4242
+            && remoteImportedRecovery.SshWasActive
+            && remoteImportedRecovery.SshConnectionArguments.SequenceEqual(importedSshCapture.ConnectionArguments)
+            && remoteImportedRecovery.RemoteCodexWasActive && remoteImportedRecovery.RemoteCodexSessionId == remoteCodexId
+            && remoteImportedRecovery.RemoteCodexModel == savedModel && remoteImportedRecovery.RemoteCodexPermissionProfile == savedPermissionProfile;
+        var remoteImportedScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, remoteImportedRecovery));
+        var importRestoresSshAndRemoteCodex = remoteImportedScript.Contains("ubuntu@15.204.82.129", StringComparison.Ordinal)
+            && remoteImportedScript.Contains(remoteCodexId, StringComparison.Ordinal)
+            && remoteImportedScript.Contains(savedModel, StringComparison.Ordinal);
+        var parsedSshCommand = WindowsTerminalImportService.TryParseSshCommandLine(4242,
+            $"\"C:\\Windows\\System32\\OpenSSH\\ssh.exe\" -i \"{expandedHomeIdentity}\" ubuntu@15.204.82.129");
+        var importParsesQuotedSshIdentity = parsedSshCommand?.ProcessId == 4242
+            && parsedSshCommand.ConnectionArguments.SequenceEqual(importedSshCapture.ConnectionArguments);
+        var bridgeArguments = RemoteClipboardImageBridge.BuildSshArgumentsForTest(importedSshCapture.ConnectionArguments, "clipboard-test.png");
+        var imageBridgeIsBoundedAndSafe = bridgeArguments.Contains("BatchMode=yes", StringComparer.Ordinal)
+            && bridgeArguments.Contains("ubuntu@15.204.82.129", StringComparer.Ordinal)
+            && bridgeArguments[^1].Contains("umask 077", StringComparison.Ordinal)
+            && bridgeArguments[^1].Contains("$HOME/.cache/powershellplus/images", StringComparison.Ordinal)
+            && RemoteClipboardImageBridge.TryReadRemotePath("PSP_REMOTE_IMAGE:/home/ubuntu/.cache/powershellplus/images/clipboard-test.png", out _)
+            && !RemoteClipboardImageBridge.TryReadRemotePath("PSP_REMOTE_IMAGE:/home/ubuntu/../etc/shadow", out _);
 
         HideToTray();
         await Task.Delay(300);
@@ -1878,9 +1921,10 @@ public partial class MainWindow : Window
         var success = workspaceTestIsolated && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
             && sshWrapperInstalled && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
             && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
-            && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice;
+            && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
+            && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}");
         return success;
     }
 

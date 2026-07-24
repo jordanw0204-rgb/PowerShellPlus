@@ -17,6 +17,17 @@ public partial class WindowsTerminalImportDialog : Window
 
     private void ImportClick(object sender, RoutedEventArgs e)
     {
+        var selectedSsh = Plan.Rows.Select(value => value.SelectedSshChoice?.Connection).Where(value => value is not null)
+            .Cast<WindowsTerminalSshCapture>().ToList();
+        var duplicateSsh = selectedSsh.GroupBy(value => value.ProcessId).FirstOrDefault(group => group.Count() > 1);
+        if (duplicateSsh is not null)
+        {
+            PowerShellPlusDialog.ShowMessage(this, "The same live SSH connection cannot be restored into more than one terminal.", "Choose unique SSH connections", PowerShellPlusDialogKind.Warning);
+            return;
+        }
+        if (Plan.Rows.Any(value => value.Tab.LooksLikeSsh && value.SelectedSshChoice?.Connection is null)
+            && !PowerShellPlusDialog.Confirm(this, "One or more tabs appear to be connected through SSH, but no SSH process was matched. Those tabs will reopen as local PowerShell terminals. Continue?", "SSH connection not selected", PowerShellPlusDialogKind.Warning, "Continue", "Go back"))
+            return;
         var selected = Plan.Rows.Select(value => value.SelectedChoice?.Session).Where(value => value is not null).Cast<CodexSessionMatch>().ToList();
         var duplicate = selected.GroupBy(value => value.SessionId, StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null)
@@ -32,7 +43,8 @@ public partial class WindowsTerminalImportDialog : Window
             PowerShellPlusDialog.ShowMessage(this, "PowerShellPlus could not verify that Codex thread's permission profile, approval policy, and approval reviewer. Choose another thread or import the tab as PowerShell so permissions are never silently changed.", "Codex permissions unavailable", PowerShellPlusDialogKind.Warning);
             return;
         }
-        if (Plan.Rows.Any(value => value.Tab.LooksLikeCodex && value.SelectedChoice?.Session is null)
+        if (Plan.Rows.Any(value => value.Tab.LooksLikeCodex && value.SelectedChoice?.Session is null
+                && value.SelectedSshChoice?.RemoteCodexProbe.State.WasActive != true)
             && !PowerShellPlusDialog.Confirm(this, "One or more tabs appear to contain Codex but are set to open as PowerShell without resuming Codex. Continue?", "Codex session not selected", PowerShellPlusDialogKind.Warning, "Continue", "Go back"))
             return;
         DialogResult = true;

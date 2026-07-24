@@ -28,13 +28,19 @@ public static class RemoteCodexRecovery
     private const string ProbePython = """
 import base64, datetime, glob, json, os, sys
 pane = sys.argv[1]
-tag = ('POWERSHELLPLUS_PANE_ID=' + pane).encode()
+cwd_hint = base64.b64decode(sys.argv[2]).decode('utf-8') if len(sys.argv) > 2 and sys.argv[2] else ''
+client_port = sys.argv[3] if len(sys.argv) > 3 else ''
+tag = ('POWERSHELLPLUS_PANE_ID=' + pane).encode() if pane != '-' else None
 processes = []
 for proc in glob.glob('/proc/[0-9]*'):
     try:
         env = open(proc + '/environ', 'rb').read().split(b'\0')
-        if tag not in env:
+        if tag is not None and tag not in env:
             continue
+        if client_port:
+            ssh_values = [value.decode('utf-8', 'replace') for value in env if value.startswith(b'SSH_CONNECTION=')]
+            if not ssh_values or len(ssh_values[0].split()) < 3 or ssh_values[0].split()[1] != client_port:
+                continue
         cmd = open(proc + '/cmdline', 'rb').read().replace(b'\0', b' ').decode('utf-8', 'replace').lower()
         if 'codex' not in cmd or 'remote_codex' in cmd:
             continue
@@ -44,6 +50,8 @@ for proc in glob.glob('/proc/[0-9]*'):
         boot = next(float(x.split()[1]) for x in open('/proc/stat') if x.startswith('btime '))
         started = boot + int(stat[21]) / ticks
         cwd = os.readlink(proc + '/cwd')
+        if cwd_hint and cwd != cwd_hint:
+            continue
         fds = []
         for fd in glob.glob(proc + '/fd/*'):
             try:
@@ -55,6 +63,15 @@ for proc in glob.glob('/proc/[0-9]*'):
         processes.append((0 if fds else 1, started, pid, cwd, proc, fds))
     except Exception:
         pass
+if pane == '-':
+    exact = {}
+    for item in processes:
+        for path in item[5]:
+            exact[path] = item
+    if len(exact) != 1:
+        processes = []
+    else:
+        processes = [next(iter(exact.values()))]
 if not processes:
     print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps({'active': False}).encode()).decode())
     raise SystemExit(0)
@@ -119,10 +136,26 @@ print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps(result, separators=(',',
         if (!IsSafePaneId(paneId)
             || !SshRecovery.TryNormalizeConnectionArguments(connectionArguments, out var normalized, out var destination))
             return default;
+        return ProbeCore(paneId, string.Empty, normalized, destination, timeoutMilliseconds);
+    }
+
+    public static RemoteCodexProbeResult ProbeImported(string[] connectionArguments, string? workingDirectoryHint = null,
+        int? clientPort = null, int timeoutMilliseconds = 8_000)
+    {
+        if (!SshRecovery.TryNormalizeConnectionArguments(connectionArguments, out var normalized, out var destination)
+            || workingDirectoryHint is not null && !IsSafeRemoteDirectory(workingDirectoryHint)
+            || clientPort is not null && clientPort is not (>= 1 and <= 65535)) return default;
+        return ProbeCore("-", workingDirectoryHint ?? string.Empty, normalized, destination, timeoutMilliseconds, clientPort);
+    }
+
+    private static RemoteCodexProbeResult ProbeCore(string paneId, string workingDirectoryHint, string[] normalized, string destination,
+        int timeoutMilliseconds, int? clientPort = null)
+    {
         try
         {
             var encodedProbe = Convert.ToBase64String(Encoding.UTF8.GetBytes(ProbePython));
-            var remoteCommand = $"python3 -c \"import base64;exec(base64.b64decode('{encodedProbe}'))\" '{paneId}'";
+            var encodedDirectory = Convert.ToBase64String(Encoding.UTF8.GetBytes(workingDirectoryHint));
+            var remoteCommand = $"python3 -c \"import base64;exec(base64.b64decode('{encodedProbe}'))\" '{paneId}' '{encodedDirectory}' '{clientPort?.ToString() ?? string.Empty}'";
             var startInfo = new ProcessStartInfo
             {
                 FileName = "ssh.exe",
