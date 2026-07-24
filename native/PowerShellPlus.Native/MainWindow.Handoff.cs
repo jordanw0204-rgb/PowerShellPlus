@@ -18,17 +18,27 @@ public partial class MainWindow
         try
         {
             UpdateStatus($"Verifying {profile.Name} for Windows Terminal…");
+            var rootProcessId = pane.GetRootProcessId();
             var codexProcess = pane.GetCodexProcessState();
-            var recovery = codexProcess.IsActive
-                ? await ResolveExactLiveCodexRecoveryAsync(profile, pane, codexProcess)
-                : null;
+            var sshProcess = rootProcessId is int shellProcessId ? ProcessTreeInspector.FindSshProcess(shellProcessId) : default;
+            var sshLaunch = SshLaunchStore.Load(profile.Id);
+            var sshActive = sshProcess.IsActive && sshLaunch?.IsActive == true
+                && sshLaunch.ShellProcessId == rootProcessId;
+            var recovery = sshActive
+                ? await ResolveExactLiveSshRecoveryAsync(profile, pane, sshLaunch!)
+                : codexProcess.IsActive ? await ResolveExactLiveCodexRecoveryAsync(profile, pane, codexProcess) : null;
 
-            var descendants = pane.GetRootProcessId() is int rootProcessId
-                ? ProcessTreeInspector.FindDescendantProcesses(rootProcessId)
+            var descendants = rootProcessId is int root
+                ? ProcessTreeInspector.FindDescendantProcesses(root)
                 : [];
-            if (!codexProcess.IsActive && descendants.Count > 0)
+            var unsupportedDescendants = sshActive
+                ? descendants.Where(value => !value.Name.Equals("ssh", StringComparison.OrdinalIgnoreCase)).ToArray()
+                : descendants.ToArray();
+            if (!codexProcess.IsActive && !sshActive && descendants.Any(value => value.Name.Equals("ssh", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("SSH is running, but its verified connection record is unavailable. Leave this connection and reconnect once inside PowerShellPlus before moving it, so the destination and identity can be reconstructed safely.");
+            if (!codexProcess.IsActive && unsupportedDescendants.Length > 0)
             {
-                var names = string.Join(", ", descendants.Take(4).Select(value => $"{value.Name} ({value.ProcessId})"));
+                var names = string.Join(", ", unsupportedDescendants.Take(4).Select(value => $"{value.Name} ({value.ProcessId})"));
                 throw new InvalidOperationException($"A child program is still running in this shell: {names}. Exit it first so the handoff cannot silently destroy live process state.");
             }
 
@@ -43,7 +53,8 @@ public partial class MainWindow
                 return;
             }
 
-            await EnsureCodexStateStillMatchesAsync(profile, pane, plan);
+            if (plan.SshActive) await EnsureSshStateStillMatchesAsync(profile, pane, plan);
+            else await EnsureCodexStateStillMatchesAsync(profile, pane, plan);
 
             UpdateStatus($"Starting and verifying Windows Terminal for {profile.Name}…");
             var launched = await WindowsTerminalHandoff.LaunchAndWaitForStartAsync(plan);
@@ -54,7 +65,8 @@ public partial class MainWindow
                 return;
             }
             launchStarted = true;
-            await EnsureCodexStateStillMatchesAsync(profile, pane, plan);
+            if (plan.SshActive) await EnsureSshStateStillMatchesAsync(profile, pane, plan);
+            else await EnsureCodexStateStillMatchesAsync(profile, pane, plan);
             if (!WindowsTerminalHandoff.PrepareReleaseSignal(plan))
             {
                 WindowsTerminalHandoff.Cancel(plan, "PowerShellPlus could not prepare the release signal. The source session stayed open.");
@@ -85,9 +97,11 @@ public partial class MainWindow
                 PowerShellPlusDialog.ShowMessage(this, $"The source pane closed, but the external shell could not be released automatically. The saved handoff is at:\n\n{plan.DirectoryPath}", "Windows Terminal handoff needs attention", PowerShellPlusDialogKind.Error);
                 return;
             }
-            UpdateStatus(plan.CodexActive
-                ? $"{profile.Name} moved to Windows Terminal · resumed Codex {ShortId(plan.CodexSessionId!)}"
-                : $"{profile.Name} moved to Windows Terminal");
+            UpdateStatus(plan.SshActive
+                ? $"{profile.Name} moved to Windows Terminal · restored {plan.RemoteSessionDescription}"
+                : plan.CodexActive
+                    ? $"{profile.Name} moved to Windows Terminal · resumed Codex {ShortId(plan.CodexSessionId!)}"
+                    : $"{profile.Name} moved to Windows Terminal");
         }
         catch (Exception exception)
         {
@@ -123,14 +137,21 @@ public partial class MainWindow
             builder.AppendLine($"Permissions: {plan.PermissionDescription}");
             builder.AppendLine("The exact Codex conversation will continue with codex resume after the original process stops.");
         }
+        if (plan.SshActive)
+        {
+            builder.AppendLine();
+            builder.AppendLine($"SSH destination: {plan.SshDestination}");
+            builder.AppendLine($"Remote recovery: {plan.RemoteSessionDescription}");
+            builder.AppendLine("The verified SSH connection will reconnect after the original process stops; a detected remote Codex or Hermes thread will resume with its saved model and permissions.");
+        }
         if (descendants.Count > 0)
         {
             var names = string.Join(", ", descendants.Take(5).Select(value => value.Name));
             builder.AppendLine();
-            builder.AppendLine($"Active Codex process tree: {names}. Any in-progress turn or tool command will be interrupted before resume.");
+            builder.AppendLine($"Active process tree: {names}. Any in-progress turn or tool command will be interrupted before resume.");
         }
         builder.AppendLine();
-        builder.AppendLine("PowerShell variables, functions, jobs, SSH connections, and live process memory cannot move between ConPTY hosts.");
+        builder.AppendLine("PowerShell variables, functions, jobs, and live process memory cannot move between ConPTY hosts. Verified SSH and agent state is safely reconstructed instead.");
         builder.AppendLine("The source pane will close only after the new PowerShell process proves it started.");
         builder.AppendLine();
         builder.Append("Continue and remove the source pane?");
@@ -185,6 +206,73 @@ public partial class MainWindow
         var currentRecovery = await ResolveExactLiveCodexRecoveryAsync(profile, pane, currentCodexProcess);
         if (!WindowsTerminalHandoff.MatchesCodexState(plan, currentRecovery))
             throw new InvalidOperationException("The active Codex thread, model, or permission level changed during verification. Review the updated handoff and try again.");
+    }
+
+    private static async Task<SessionRecoveryEntry> ResolveExactLiveSshRecoveryAsync(
+        SessionProfile profile, TerminalPane pane, SshLaunchMarker launch)
+    {
+        var rootProcessId = pane.GetRootProcessId();
+        if (rootProcessId is not int shellProcessId || launch.ShellProcessId != shellProcessId || !launch.IsActive
+            || !ProcessTreeInspector.FindSshProcess(shellProcessId).IsActive
+            || !SshRecovery.TryNormalizeConnectionArguments(launch.ConnectionArguments, out var arguments, out _))
+            throw new InvalidOperationException("The active SSH process could not be bound to its verified PowerShellPlus connection record. Nothing was closed.");
+
+        SessionRecoveryStore.Load().Sessions.TryGetValue(profile.Id, out var previous);
+        var sameConnection = previous?.SshWasActive == true
+            && previous.SshConnectionArguments.SequenceEqual(arguments, StringComparer.Ordinal);
+        var previousHermes = sameConnection
+            ? new HermesRecoveryState(previous!.HermesWasActive, previous.HermesSessionId, previous.HermesModel, previous.HermesUseTui)
+            : default;
+        var hermes = HermesRecovery.Detect(pane.GetOutput(), previousHermes);
+        var previousRemoteCodex = sameConnection
+            ? new RemoteCodexRecoveryState(previous!.RemoteCodexWasActive, previous.RemoteCodexSessionId,
+                previous.RemoteCodexWorkingDirectory, previous.RemoteCodexModel, previous.RemoteCodexSandboxMode,
+                previous.RemoteCodexApprovalPolicy, previous.RemoteCodexPermissionProfile, previous.RemoteCodexApprovalsReviewer)
+            : default;
+        var remoteProbe = !hermes.WasActive
+            ? await Task.Run(() => RemoteCodexRecovery.Probe(profile.Id, arguments))
+            : default;
+        var remoteCodex = remoteProbe.Succeeded ? remoteProbe.State : previousRemoteCodex;
+        if (!hermes.WasActive && pane.DetectedAgentKind == AgentKind.Codex && !remoteCodex.WasActive)
+            throw new InvalidOperationException("A remote Codex process appears active, but its exact thread could not be verified through SSH. Nothing was closed; retry after the connection is responsive.");
+        if (remoteCodex.WasActive
+            && (!CodexSessionLocator.IsSafeCodexModel(remoteCodex.Model)
+                || !CodexSessionLocator.IsSafeCodexPermissionState(remoteCodex.PermissionProfile, remoteCodex.SandboxMode,
+                    remoteCodex.ApprovalPolicy, remoteCodex.ApprovalsReviewer)))
+            throw new InvalidOperationException("The remote Codex thread was found, but its exact model or permission level could not be verified. Nothing was closed.");
+        var recovery = new SessionRecoveryEntry
+        {
+            SessionId = profile.Id,
+            WorkingDirectory = launch.WorkingDirectory,
+            SshWasActive = true,
+            SshConnectionArguments = arguments,
+            HermesWasActive = hermes.WasActive,
+            HermesSessionId = hermes.SessionId,
+            HermesModel = hermes.Model,
+            HermesUseTui = hermes.UseTui,
+            RemoteCodexWasActive = !hermes.WasActive && remoteCodex.WasActive,
+            RemoteCodexSessionId = !hermes.WasActive ? remoteCodex.SessionId : null,
+            RemoteCodexWorkingDirectory = !hermes.WasActive ? remoteCodex.WorkingDirectory : null,
+            RemoteCodexModel = !hermes.WasActive ? remoteCodex.Model : null,
+            RemoteCodexSandboxMode = !hermes.WasActive ? remoteCodex.SandboxMode : null,
+            RemoteCodexApprovalPolicy = !hermes.WasActive ? remoteCodex.ApprovalPolicy : null,
+            RemoteCodexPermissionProfile = !hermes.WasActive ? remoteCodex.PermissionProfile : null,
+            RemoteCodexApprovalsReviewer = !hermes.WasActive ? remoteCodex.ApprovalsReviewer : null,
+            CapturedUtc = DateTime.UtcNow
+        };
+        SshRecovery.Sanitize(recovery);
+        return recovery;
+    }
+
+    private static async Task EnsureSshStateStillMatchesAsync(
+        SessionProfile profile, TerminalPane pane, WindowsTerminalHandoffPlan plan)
+    {
+        if (!plan.SshActive) return;
+        var launch = SshLaunchStore.Load(profile.Id)
+            ?? throw new InvalidOperationException("The verified SSH connection record disappeared during handoff. The source session remains open.");
+        var current = await ResolveExactLiveSshRecoveryAsync(profile, pane, launch);
+        if (!WindowsTerminalHandoff.MatchesSshState(plan, current))
+            throw new InvalidOperationException("The SSH destination or remote agent session changed during verification. Review the updated state and try again.");
     }
 
     private static IReadOnlyList<SourceProcessIdentity> CaptureSourceProcesses(TerminalPane pane)
@@ -275,6 +363,7 @@ public partial class MainWindow
         };
         WindowsTerminalHandoffPlan? plan = null;
         WindowsTerminalHandoffPlan? canceledPlan = null;
+        WindowsTerminalHandoffPlan? sshPlan = null;
         Process? descendantFixture = null;
         try
         {
@@ -329,6 +418,39 @@ public partial class MainWindow
                     .Select(value => value.GetString()).SequenceEqual(arguments);
             }
 
+            var sshRecovery = new SessionRecoveryEntry
+            {
+                SessionId = profile.Id,
+                WorkingDirectory = fixtureRoot,
+                SshWasActive = true,
+                SshConnectionArguments = ["-i", Path.Combine(fixtureRoot, "test key"), "ubuntu@example.test"],
+                RemoteCodexWasActive = true,
+                RemoteCodexSessionId = sessionId,
+                RemoteCodexWorkingDirectory = "/srv/project",
+                RemoteCodexModel = "gpt-5.6-sol",
+                RemoteCodexApprovalPolicy = "never",
+                RemoteCodexPermissionProfile = ":danger-full-access",
+                RemoteCodexApprovalsReviewer = "user"
+            };
+            sshPlan = WindowsTerminalHandoff.CreatePlan(profile, terminalProfile.ProfileName, terminalProfile.CommandLine,
+                "ssh transcript", sshRecovery, false, true, fixtureRoot);
+            var expectedSshResume = SshRecovery.BuildResumePlan(sshRecovery)!;
+            var sshPlanPreservesVerifiedRecovery = sshPlan.SshActive && !sshPlan.CodexActive
+                && sshPlan.SshDestination == "ubuntu@example.test"
+                && sshPlan.SshArguments.SequenceEqual(expectedSshResume.Arguments, StringComparer.Ordinal)
+                && WindowsTerminalHandoff.MatchesSshState(sshPlan, sshRecovery);
+            var sshLaunched = await WindowsTerminalHandoff.LaunchAndWaitForStartAsync(sshPlan, false, TimeSpan.FromSeconds(8));
+            var sshReleasePrepared = WindowsTerminalHandoff.PrepareReleaseSignal(sshPlan);
+            var sshReleaseCommitted = WindowsTerminalHandoff.CommitReleaseSignal(sshPlan);
+            var sshBootstrapCompleted = await WindowsTerminalHandoff.WaitForCompletionAsync(sshPlan, TimeSpan.FromSeconds(8));
+            var sshBootstrapForwardsArguments = false;
+            if (sshBootstrapCompleted)
+            {
+                using var sshCompleted = JsonDocument.Parse(File.ReadAllText(sshPlan.CompletedPath));
+                sshBootstrapForwardsArguments = sshCompleted.RootElement.GetProperty("ObservedArguments").EnumerateArray()
+                    .Select(value => value.GetString()).SequenceEqual(expectedSshResume.Arguments);
+            }
+
             var unsafePermissionBlocked = false;
             try
             {
@@ -370,9 +492,11 @@ public partial class MainWindow
 
             var success = exactResumeArguments && revalidationDetectsChanges && terminalCommandIsStructured && transcriptIsSafeAndPersisted && queuePersisted
                 && payloadIsDataOnly && waitsBeforeSourceRelease && releasePrepared && releaseCommitted && bootstrapCompleted
-                && bootstrapForwardsArguments && unsafePermissionBlocked && canceledHandoffNeverReleased && detectsLiveChildProcess;
+                && bootstrapForwardsArguments && sshPlanPreservesVerifiedRecovery && sshLaunched.Success && sshReleasePrepared
+                && sshReleaseCommitted && sshBootstrapCompleted && sshBootstrapForwardsArguments
+                && unsafePermissionBlocked && canceledHandoffNeverReleased && detectsLiveChildProcess;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Windows Terminal handoff used a verified two-phase release and preserved exact Codex resume state.\nExactResumeArguments={exactResumeArguments}\nRevalidationDetectsChanges={revalidationDetectsChanges}\nTerminalCommandIsStructured={terminalCommandIsStructured}\nTranscriptIsSafeAndPersisted={transcriptIsSafeAndPersisted}\nQueuePersisted={queuePersisted}\nPayloadIsDataOnly={payloadIsDataOnly}\nExternalPowerShellVerified={launched.Success}\nWaitsBeforeSourceRelease={waitsBeforeSourceRelease}\nReleasePrepared={releasePrepared}\nReleaseCommitted={releaseCommitted}\nBootstrapCompleted={bootstrapCompleted}\nBootstrapForwardsArguments={bootstrapForwardsArguments}\nUnsafePermissionBlocked={unsafePermissionBlocked}\nCanceledHandoffNeverReleased={canceledHandoffNeverReleased}\nDetectsLiveChildProcess={detectsLiveChildProcess}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Windows Terminal handoff used a verified two-phase release and preserved exact local and SSH agent resume state.\nExactResumeArguments={exactResumeArguments}\nRevalidationDetectsChanges={revalidationDetectsChanges}\nTerminalCommandIsStructured={terminalCommandIsStructured}\nTranscriptIsSafeAndPersisted={transcriptIsSafeAndPersisted}\nQueuePersisted={queuePersisted}\nPayloadIsDataOnly={payloadIsDataOnly}\nExternalPowerShellVerified={launched.Success}\nWaitsBeforeSourceRelease={waitsBeforeSourceRelease}\nReleasePrepared={releasePrepared}\nReleaseCommitted={releaseCommitted}\nBootstrapCompleted={bootstrapCompleted}\nBootstrapForwardsArguments={bootstrapForwardsArguments}\nSshPlanPreservesVerifiedRecovery={sshPlanPreservesVerifiedRecovery}\nSshExternalPowerShellVerified={sshLaunched.Success}\nSshReleasePrepared={sshReleasePrepared}\nSshReleaseCommitted={sshReleaseCommitted}\nSshBootstrapCompleted={sshBootstrapCompleted}\nSshBootstrapForwardsArguments={sshBootstrapForwardsArguments}\nUnsafePermissionBlocked={unsafePermissionBlocked}\nCanceledHandoffNeverReleased={canceledHandoffNeverReleased}\nDetectsLiveChildProcess={detectsLiveChildProcess}");
             return success;
         }
         finally
@@ -381,6 +505,7 @@ public partial class MainWindow
             descendantFixture?.Dispose();
             if (plan is not null) WindowsTerminalHandoff.Discard(plan);
             if (canceledPlan is not null) WindowsTerminalHandoff.Discard(canceledPlan);
+            if (sshPlan is not null) WindowsTerminalHandoff.Discard(sshPlan);
             try { Directory.Delete(fixtureRoot, true); } catch { }
         }
     }

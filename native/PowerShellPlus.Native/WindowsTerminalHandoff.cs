@@ -23,10 +23,14 @@ public sealed class WindowsTerminalHandoffPlan
     public required string CancelPath { get; init; }
     public required string CompletedPath { get; init; }
     public required IReadOnlyList<string> CodexArguments { get; init; }
+    public required IReadOnlyList<string> SshArguments { get; init; }
     public string? CodexSessionId { get; init; }
     public string? CodexModel { get; init; }
     public string? PermissionDescription { get; init; }
+    public string? SshDestination { get; init; }
+    public string? RemoteSessionDescription { get; init; }
     public bool CodexActive => CodexSessionId is not null;
+    public bool SshActive => SshArguments.Count > 0;
     internal bool SmokeTest { get; init; }
 }
 
@@ -45,6 +49,7 @@ internal sealed class WindowsTerminalHandoffPayload
     public string CancelPath { get; set; } = string.Empty;
     public string CompletedPath { get; set; } = string.Empty;
     public string[] CodexArguments { get; set; } = [];
+    public string[] SshArguments { get; set; } = [];
     public bool SmokeTest { get; set; }
 }
 
@@ -71,14 +76,16 @@ public static class WindowsTerminalHandoff
         var shell = ResolvePowerShellExecutable(profile.CommandLine)
             ?? ResolvePowerShellExecutable(preferredPowerShellCommand)
             ?? throw new InvalidOperationException("This session is not backed by Windows PowerShell or PowerShell 7, so it cannot be handed off safely.");
-        var workingDirectory = codexActive && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory)
+        var sshResume = SshRecovery.BuildResumePlan(recovery);
+        var sshActive = sshResume is not null;
+        var workingDirectory = codexActive && !sshActive && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory)
             ? recovery.WorkingDirectory
             : profile.WorkingDirectory;
         if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
             workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        var codexArguments = codexActive ? BuildCodexArguments(recovery) : [];
-        var permissionDescription = codexActive ? DescribePermissions(recovery!) : null;
+        var codexArguments = codexActive && !sshActive ? BuildCodexArguments(recovery) : [];
+        var permissionDescription = codexActive && !sshActive ? DescribePermissions(recovery!) : null;
         var transferId = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{SessionRecoveryStore.SafeSessionId(profile.Id)}-{Guid.NewGuid():N}";
         var root = directoryOverride ?? DirectoryPath;
         var directory = Path.Combine(root, transferId);
@@ -104,9 +111,12 @@ public static class WindowsTerminalHandoff
             CancelPath = Path.Combine(directory, "cancel.signal"),
             CompletedPath = Path.Combine(directory, "completed.json"),
             CodexArguments = codexArguments,
-            CodexSessionId = codexActive ? recovery!.CodexSessionId : null,
-            CodexModel = codexActive && CodexSessionLocator.IsSafeCodexModel(recovery!.CodexModel) ? recovery.CodexModel : null,
+            SshArguments = sshResume?.Arguments ?? [],
+            CodexSessionId = codexActive && !sshActive ? recovery!.CodexSessionId : null,
+            CodexModel = codexActive && !sshActive && CodexSessionLocator.IsSafeCodexModel(recovery!.CodexModel) ? recovery.CodexModel : null,
             PermissionDescription = permissionDescription,
+            SshDestination = sshResume?.Destination,
+            RemoteSessionDescription = sshResume?.Description,
             SmokeTest = smokeTest
         };
 
@@ -124,6 +134,7 @@ public static class WindowsTerminalHandoff
             CancelPath = plan.CancelPath,
             CompletedPath = plan.CompletedPath,
             CodexArguments = plan.CodexArguments.ToArray(),
+            SshArguments = plan.SshArguments.ToArray(),
             SmokeTest = smokeTest
         };
         File.WriteAllText(plan.PayloadPath, JsonSerializer.Serialize(payload, JsonOptions), new UTF8Encoding(false));
@@ -224,6 +235,12 @@ public static class WindowsTerminalHandoff
     {
         try { return plan.CodexActive && plan.CodexArguments.SequenceEqual(BuildCodexArguments(recovery)); }
         catch (InvalidOperationException) { return false; }
+    }
+
+    public static bool MatchesSshState(WindowsTerminalHandoffPlan plan, SessionRecoveryEntry recovery)
+    {
+        var current = SshRecovery.BuildResumePlan(recovery);
+        return plan.SshActive && current is not null && plan.SshArguments.SequenceEqual(current.Arguments, StringComparer.Ordinal);
     }
 
     private static ProcessStartInfo CreateStartInfo(WindowsTerminalHandoffPlan plan, bool useWindowsTerminal)
@@ -396,10 +413,15 @@ if (-not (Test-Path -LiteralPath $payload.ReadyPath)) {
 }
 try {
     $codexArguments = @($payload.CodexArguments | ForEach-Object { [string]$_ })
+    $sshArguments = @($payload.SshArguments | ForEach-Object { [string]$_ })
     $observedArguments = @()
     if ($payload.SmokeTest) {
-        $observedArguments = @(& { @($args | ForEach-Object { [string]$_ }) } @codexArguments)
+        $forwardedArguments = if ($sshArguments.Count -gt 0) { $sshArguments } else { $codexArguments }
+        $observedArguments = @(& { @($args | ForEach-Object { [string]$_ }) } @forwardedArguments)
         Write-Output 'POWERSHELLPLUS_HANDOFF_SMOKE_READY'
+    } elseif ($sshArguments.Count -gt 0) {
+        Write-Host ('PowerShellPlus reconnecting ' + $payload.SessionName + ' through SSH.') -ForegroundColor Cyan
+        & ssh @sshArguments
     } elseif ($codexArguments.Count -gt 0) {
         Write-Host ('PowerShellPlus resumed session "' + $payload.SessionName + '". Transcript: ' + $payload.TranscriptPath) -ForegroundColor DarkGray
         & codex @codexArguments

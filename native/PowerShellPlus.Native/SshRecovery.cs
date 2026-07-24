@@ -209,6 +209,7 @@ if ($global:__PowerShellPlusSshCommand) {
 }
 
 public readonly record struct HermesRecoveryState(bool WasActive, string? SessionId, string? Model, bool UseTui);
+public sealed record SshResumePlan(string[] Arguments, string Destination, string Description);
 
 public static class HermesRecovery
 {
@@ -317,6 +318,17 @@ public static class SshRecovery
 
     public static string? BuildPowerShellResumeCommand(SessionRecoveryEntry? recovery)
     {
+        var plan = BuildResumePlan(recovery);
+        if (plan is null) return null;
+        var invocation = "& ssh " + string.Join(" ", plan.Arguments.Select(QuotePowerShell));
+        return $"Write-Host '[PowerShellPlus] Restoring {plan.Description}...' -ForegroundColor Cyan; "
+            + "$global:__PowerShellPlusSshRecoveryActive = $true; "
+            + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}; "
+            + "if ($LASTEXITCODE -ne 0) { Write-Warning '[PowerShellPlus] Automatic recovery could not connect. The saved session was kept; click the pane restart button to retry. This PowerShell prompt remains interactive.' }";
+    }
+
+    public static SshResumePlan? BuildResumePlan(SessionRecoveryEntry? recovery)
+    {
         if (recovery?.SshWasActive != true
             || !TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out var arguments, out var destination)) return null;
         var commandArguments = arguments.Take(arguments.Length - 1).ToList();
@@ -348,13 +360,9 @@ public static class SshRecovery
         }
         else remoteCommand = RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery);
         commandArguments.Add(remoteCommand);
-        var invocation = "& ssh " + string.Join(" ", commandArguments.Select(QuotePowerShell));
         var description = recovery.HermesWasActive ? "SSH and Hermes session"
             : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";
-        return $"Write-Host '[PowerShellPlus] Restoring {description}...' -ForegroundColor Cyan; "
-            + "$global:__PowerShellPlusSshRecoveryActive = $true; "
-            + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}; "
-            + "if ($LASTEXITCODE -ne 0) { Write-Warning '[PowerShellPlus] Automatic recovery could not connect. The saved session was kept; click the pane restart button to retry. This PowerShell prompt remains interactive.' }";
+        return new SshResumePlan(commandArguments.ToArray(), destination, description);
     }
 
     public static bool ShouldKeepPendingRecovery(SessionRecoveryEntry? previous, SshLaunchMarker? launch, bool sshProcessActive)

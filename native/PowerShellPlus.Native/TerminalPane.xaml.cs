@@ -23,6 +23,7 @@ internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
 internal enum RemoteImagePasteMode { Attachment, FilePath }
+internal enum RemoteClipboardPasteContent { Image, Text, Empty }
 
 internal sealed class TerminalOutputActivityTracker
 {
@@ -955,7 +956,7 @@ public partial class TerminalPane : UserControl
             var controlDown = keyboardMessage && IsKeyDown(VkControl);
             var altDown = keyboardMessage && IsKeyDown(VkMenu);
             if (keyboardMessage && IsRemoteImageShortcutMessage(message, virtualKey, controlDown, altDown)
-                && TryBeginRemoteClipboardImagePaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment))
+                && TryHandleRemoteClipboardPaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment))
             {
                 suppressRemoteImagePasteVSequence = true;
                 terminalActivity.RecordInput(DateTime.UtcNow);
@@ -1199,7 +1200,7 @@ public partial class TerminalPane : UserControl
             {
                 var controlDown = IsKeyDown(VkControl);
                 var altDown = IsKeyDown(VkMenu);
-                if ((controlDown || altDown) && TryBeginRemoteClipboardImagePaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment)) handled = true;
+                if ((controlDown || altDown) && TryHandleRemoteClipboardPaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment)) handled = true;
                 else if (controlDown && !altDown && TryPasteClipboardText()) handled = true;
             }
         }
@@ -1232,16 +1233,45 @@ public partial class TerminalPane : UserControl
         catch (InvalidOperationException) { return false; }
     }
 
-    private bool TryBeginRemoteClipboardImagePaste(RemoteImagePasteMode mode = RemoteImagePasteMode.Attachment)
+    private bool TryHandleRemoteClipboardPaste(RemoteImagePasteMode mode)
     {
         if (!TryGetActiveSshConnection(out var connectionArguments)) return false;
         try
         {
-            if (!Clipboard.ContainsImage()) return false;
+            if (Clipboard.ContainsImage()) return TryBeginRemoteClipboardImagePaste(connectionArguments, mode);
+            if (Clipboard.ContainsText(TextDataFormat.UnicodeText))
+            {
+                var text = Clipboard.GetText(TextDataFormat.UnicodeText);
+                if (!string.IsNullOrEmpty(text) && Terminal.ConPTYTerm is { } terminal)
+                {
+                    terminalActivity.RecordInput(DateTime.UtcNow);
+                    terminal.WriteToTerm(FormatClipboardText(text));
+                    ShowRemoteImageStatus("Text pasted", "Windows clipboard text inserted without using the remote X11 clipboard", false, true);
+                    return true;
+                }
+            }
+            ShowRemoteImageStatus("Nothing to paste", "The Windows clipboard does not contain text or an image.", false, true);
+            return true;
+        }
+        catch (Exception exception) when (exception is ExternalException or InvalidOperationException or IOException or NotSupportedException)
+        {
+            ShowRemoteImageStatus("Clipboard paste failed", exception.Message, false, true);
+            return true;
+        }
+    }
+
+    private bool TryBeginRemoteClipboardImagePaste(string[] connectionArguments, RemoteImagePasteMode mode)
+    {
+        try
+        {
             // Consume key-repeat messages while the same image is uploading so the hosted
             // terminal never forwards a second Ctrl+V to a headless remote agent.
             if (remoteImagePastePending) return true;
-            if (Clipboard.GetImage() is not { } image) return false;
+            if (Clipboard.GetImage() is not { } image)
+            {
+                ShowRemoteImageStatus("Image paste failed", "The clipboard image became unavailable before it could be copied.", false, true);
+                return true;
+            }
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(image));
             using var stream = new MemoryStream();
@@ -1337,6 +1367,7 @@ public partial class TerminalPane : UserControl
     private static bool IsKeyDown(int virtualKey) => (GetKeyState(virtualKey) & 0x8000) != 0;
 
     internal string TitleTextForTest => TitleText.Text;
+    internal AgentKind DetectedAgentKind => detectedAgentKind;
     internal bool TriggerEditShortcutForTest() => TryHandleEditShortcut(VkF2);
     internal bool HasRemoteImagePasteIndicatorForTest => RemoteImagePasteIndicator is not null;
     internal bool TerminalInputRouterPrecedesConPtyForTest()
@@ -1361,6 +1392,11 @@ public partial class TerminalPane : UserControl
         return FormatRemoteImagePasteText(path, RemoteImagePasteMode.Attachment) == path
             && FormatRemoteImagePasteText(path, RemoteImagePasteMode.FilePath) == $"`{path}`";
     }
+    internal static bool RemoteSshPasteRoutingConsumesAllClipboardKindsForTest()
+        => Enum.GetValues<RemoteClipboardPasteContent>().All(value => ShouldConsumeRemoteSshPasteForTest(value))
+            && !ShouldConsumeRemoteSshPasteForTest(RemoteClipboardPasteContent.Text, false);
+    private static bool ShouldConsumeRemoteSshPasteForTest(RemoteClipboardPasteContent content, bool sshActive = true)
+        => sshActive && content is RemoteClipboardPasteContent.Image or RemoteClipboardPasteContent.Text or RemoteClipboardPasteContent.Empty;
     internal bool ExerciseRemoteImagePasteIndicatorForTest()
     {
         ShowRemoteImageStatus("Pasting image…", "Securely copying through SSH", true);
