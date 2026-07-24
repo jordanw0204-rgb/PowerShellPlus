@@ -19,6 +19,7 @@ internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string 
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
+internal enum RemoteImagePasteMode { Attachment, FilePath }
 
 internal sealed class TerminalOutputActivityTracker
 {
@@ -83,7 +84,11 @@ public partial class TerminalPane : UserControl
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
     private const int WmKeyDown = 0x0100;
+    private const int WmKeyUp = 0x0101;
+    private const int WmChar = 0x0102;
     private const int WmSysKeyDown = 0x0104;
+    private const int WmSysKeyUp = 0x0105;
+    private const int WmSysChar = 0x0106;
     private const int VkF2 = 0x71;
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
@@ -128,6 +133,7 @@ public partial class TerminalPane : UserControl
     private AgentKind displayedAgentKind = (AgentKind)(-1);
     private bool hermesExitObserved;
     private bool remoteImagePastePending;
+    private bool suppressRemoteImagePasteVSequence;
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
 
@@ -918,10 +924,20 @@ public partial class TerminalPane : UserControl
         try
         {
             var keyboardMessage = message == WmKeyDown || message == WmSysKeyDown;
-            if (keyboardMessage && IsRemoteImageShortcutMessage(message, unchecked((int)wParam.ToInt64()), IsKeyDown(VkControl), IsKeyDown(VkMenu))
-                && TryBeginRemoteClipboardImagePaste())
+            var virtualKey = unchecked((int)wParam.ToInt64());
+            var controlDown = keyboardMessage && IsKeyDown(VkControl);
+            var altDown = keyboardMessage && IsKeyDown(VkMenu);
+            if (keyboardMessage && IsRemoteImageShortcutMessage(message, virtualKey, controlDown, altDown)
+                && TryBeginRemoteClipboardImagePaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment))
             {
+                suppressRemoteImagePasteVSequence = true;
                 terminalActivity.RecordInput(DateTime.UtcNow);
+                return IntPtr.Zero;
+            }
+            if (suppressRemoteImagePasteVSequence && IsRemoteImagePasteCharacter(message, virtualKey)) return IntPtr.Zero;
+            if (suppressRemoteImagePasteVSequence && IsRemoteImagePasteKeyUp(message, virtualKey))
+            {
+                suppressRemoteImagePasteVSequence = false;
                 return IntPtr.Zero;
             }
         }
@@ -935,6 +951,10 @@ public partial class TerminalPane : UserControl
 
     private static bool IsRemoteImageShortcutMessage(uint message, int virtualKey, bool controlDown, bool altDown)
         => (message == WmKeyDown || message == WmSysKeyDown) && virtualKey == VkV && (controlDown || altDown);
+    private static bool IsRemoteImagePasteCharacter(uint message, int value)
+        => (message == WmChar || message == WmSysChar) && char.ToUpperInvariant(unchecked((char)value)) == 'V';
+    private static bool IsRemoteImagePasteKeyUp(uint message, int virtualKey)
+        => (message == WmKeyUp || message == WmSysKeyUp) && virtualKey == VkV;
 
     private void AttachTerminalOutputFilter()
     {
@@ -1152,7 +1172,7 @@ public partial class TerminalPane : UserControl
             {
                 var controlDown = IsKeyDown(VkControl);
                 var altDown = IsKeyDown(VkMenu);
-                if ((controlDown || altDown) && TryBeginRemoteClipboardImagePaste()) handled = true;
+                if ((controlDown || altDown) && TryBeginRemoteClipboardImagePaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment)) handled = true;
                 else if (controlDown && !altDown && TryPasteClipboardText()) handled = true;
             }
         }
@@ -1184,7 +1204,7 @@ public partial class TerminalPane : UserControl
         catch (InvalidOperationException) { return false; }
     }
 
-    private bool TryBeginRemoteClipboardImagePaste()
+    private bool TryBeginRemoteClipboardImagePaste(RemoteImagePasteMode mode = RemoteImagePasteMode.Attachment)
     {
         if (!TryGetActiveSshConnection(out var connectionArguments)) return false;
         try
@@ -1204,8 +1224,9 @@ public partial class TerminalPane : UserControl
                 return true;
             }
             remoteImagePastePending = true;
-            ShowRemoteImageStatus("Pasting image…", "Securely copying through SSH", true);
-            _ = UploadRemoteClipboardImageAsync(stream.ToArray(), connectionArguments);
+            ShowRemoteImageStatus(mode == RemoteImagePasteMode.FilePath ? "Pasting image path…" : "Pasting image…",
+                mode == RemoteImagePasteMode.FilePath ? "Uploading and inserting a copyable remote path" : "Securely copying through SSH", true);
+            _ = UploadRemoteClipboardImageAsync(stream.ToArray(), connectionArguments, mode);
             return true;
         }
         catch (Exception exception) when (exception is ExternalException or InvalidOperationException or IOException or NotSupportedException)
@@ -1226,7 +1247,7 @@ public partial class TerminalPane : UserControl
         return true;
     }
 
-    private async Task UploadRemoteClipboardImageAsync(byte[] imageBytes, string[] connectionArguments)
+    private async Task UploadRemoteClipboardImageAsync(byte[] imageBytes, string[] connectionArguments, RemoteImagePasteMode mode)
     {
         try
         {
@@ -1236,9 +1257,10 @@ public partial class TerminalPane : UserControl
                 if (result.Succeeded && result.RemotePath is { } remotePath && Terminal.ConPTYTerm is { } terminal)
                 {
                     terminalActivity.RecordInput(DateTime.UtcNow);
-                    terminal.WriteToTerm(FormatClipboardText(remotePath));
+                    terminal.WriteToTerm(FormatClipboardText(FormatRemoteImagePasteText(remotePath, mode)));
                     Terminal.Focus();
-                    ShowRemoteImageStatus("Image pasted", "Attached to the remote agent", false, true);
+                    ShowRemoteImageStatus(mode == RemoteImagePasteMode.FilePath ? "Image path pasted" : "Image pasted",
+                        mode == RemoteImagePasteMode.FilePath ? "Copyable remote path inserted" : "Attached to the remote agent", false, true);
                 }
                 else ShowRemoteImageStatus("Image paste failed", result.Error ?? "Unknown SSH image transfer error.", false, true);
             });
@@ -1281,6 +1303,9 @@ public partial class TerminalPane : UserControl
         return $"\u001b[200~{safeText}\u001b[201~";
     }
 
+    private static string FormatRemoteImagePasteText(string remotePath, RemoteImagePasteMode mode)
+        => mode == RemoteImagePasteMode.FilePath ? $"`{remotePath}`" : remotePath;
+
     private static bool IsKeyDown(int virtualKey) => (GetKeyState(virtualKey) & 0x8000) != 0;
 
     internal string TitleTextForTest => TitleText.Text;
@@ -1289,8 +1314,16 @@ public partial class TerminalPane : UserControl
     internal static bool RemoteImageShortcutsClassifiedForTest()
         => IsRemoteImageShortcutMessage(WmKeyDown, VkV, true, false)
             && IsRemoteImageShortcutMessage(WmSysKeyDown, VkV, false, true)
+            && IsRemoteImagePasteCharacter(WmChar, 'v') && IsRemoteImagePasteCharacter(WmSysChar, 'V')
+            && IsRemoteImagePasteKeyUp(WmKeyUp, VkV) && IsRemoteImagePasteKeyUp(WmSysKeyUp, VkV)
             && !IsRemoteImageShortcutMessage(WmKeyDown, VkV, false, false)
             && !IsRemoteImageShortcutMessage(WmKeyDown, VkF2, true, false);
+    internal static bool RemoteImagePasteModesFormatForTest()
+    {
+        const string path = "/home/ubuntu/.cache/powershellplus/images/clipboard-test.png";
+        return FormatRemoteImagePasteText(path, RemoteImagePasteMode.Attachment) == path
+            && FormatRemoteImagePasteText(path, RemoteImagePasteMode.FilePath) == $"`{path}`";
+    }
     internal bool ExerciseRemoteImagePasteIndicatorForTest()
     {
         ShowRemoteImageStatus("Pasting image…", "Securely copying through SSH", true);
