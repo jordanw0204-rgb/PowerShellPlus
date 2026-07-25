@@ -52,15 +52,37 @@
           </StackPanel>
         </Grid>
       </Border>
+      <Grid x:Name="AttachmentPreviewOverlay" Grid.Row="1" Panel.ZIndex="8" Background="#F20B0B12" Visibility="Collapsed" MouseLeftButtonDown="AttachmentPreviewBackdropClick">
+        <Border MaxWidth="720" MaxHeight="520" Margin="24" Padding="12" HorizontalAlignment="Center" VerticalAlignment="Center"
+                Background="#181825" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="10" MouseLeftButtonDown="AttachmentPreviewCardClick">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+            <Grid Grid.Row="0" Margin="2,0,0,8">
+              <TextBlock x:Name="AttachmentPreviewTitle" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <Button Content="&#x00D7;" Width="28" Height="26" HorizontalAlignment="Right" Padding="0" Click="CloseAttachmentPreviewClick"/>
+            </Grid>
+            <Border Grid.Row="1" Background="#0B0B12" BorderBrush="#313244" BorderThickness="1" CornerRadius="7" Padding="6">
+              <Image x:Name="AttachmentPreviewImage" MaxWidth="680" MaxHeight="460" Stretch="Uniform"/>
+            </Border>
+          </Grid>
+        </Border>
+      </Grid>
       <Border x:Name="CommandBarContainer" Grid.Row="2" MinHeight="16" Background="#151520" BorderBrush="#313244" BorderThickness="0,1,0,0" Opacity="1" ClipToBounds="True">
         <Grid x:Name="CommandBarContent" Margin="6,4">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="54"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions>
-          <Button x:Name="QuickAccessButton" Grid.Column="0" Content="&#x26A1;" Width="30" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QuickAccessClick" ToolTip="Quick access commands"/>
-          <TextBox x:Name="CommandInput" Grid.Column="1" MinLines="1" MaxLines="6" MinHeight="26" Padding="7,3" BorderBrush="#45475A" BorderThickness="1" Background="#11111B" FontFamily="Cascadia Mono" FontSize="11" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" PreviewKeyDown="CommandInputPreviewKeyDown" PreviewKeyUp="CommandInputPreviewKeyUp" ToolTip="Enter runs · Ctrl+Enter queues · Up/Down browses queued commands"/>
-          <Button x:Name="QueueCommandButton" Grid.Column="2" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
+          <Border x:Name="AttachmentStrip" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Visibility="Collapsed" Margin="0,0,0,5" Padding="5,4"
+                  Background="#181825" BorderBrush="#45475A" BorderThickness="1" CornerRadius="7">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+              <StackPanel x:Name="AttachmentPillPanel" Orientation="Horizontal"/>
+            </ScrollViewer>
+          </Border>
+          <Button x:Name="QuickAccessButton" Grid.Row="1" Grid.Column="0" Content="&#x26A1;" Width="30" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QuickAccessClick" ToolTip="Quick access commands"/>
+          <TextBox x:Name="CommandInput" Grid.Row="1" Grid.Column="1" MinLines="1" MaxLines="6" MinHeight="26" Padding="7,3" BorderBrush="#45475A" BorderThickness="1" Background="#11111B" FontFamily="Cascadia Mono" FontSize="11" AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" PreviewKeyDown="CommandInputPreviewKeyDown" PreviewKeyUp="CommandInputPreviewKeyUp" ToolTip="Enter runs · Ctrl+Enter queues · paste images or files to attach"/>
+          <Button x:Name="QueueCommandButton" Grid.Row="1" Grid.Column="2" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
             <Grid><TextBlock Text="Queue" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="#89B4FA" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
           </Button>
-          <Button x:Name="RunCommandButton" Grid.Column="3" Content="&#x25B6;" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom" Click="RunCommandClick" MouseEnter="RunCommandMouseEnter" ToolTip="Run in this terminal (Enter)"/>
+          <Button x:Name="RunCommandButton" Grid.Row="1" Grid.Column="3" Content="&#x25B6;" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom" Click="RunCommandClick" MouseEnter="RunCommandMouseEnter" ToolTip="Run in this terminal (Enter)"/>
         </Grid>
       </Border>
       <Border x:Name="BottomCommandReveal" Grid.Row="2" Panel.ZIndex="5" Width="62" Height="16" Background="#01000000" HorizontalAlignment="Center" VerticalAlignment="Bottom">

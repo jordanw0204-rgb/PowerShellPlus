@@ -20,6 +20,7 @@ namespace PowerShellPlus.Native;
 
 internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
+internal sealed record ComposerAttachment(string Id, string LocalPath, string DisplayName, bool IsImage, bool IsTemporary);
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
 internal enum RemoteImagePasteMode { Attachment, FilePath }
@@ -100,6 +101,7 @@ public partial class TerminalPane : UserControl
     private const int MaximumQueuedCommands = 100;
     private const int MaximumCommandLength = 32_768;
     private const int MaximumClipboardCharacters = 1_000_000;
+    private const int MaximumComposerAttachments = 10;
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
@@ -113,6 +115,7 @@ public partial class TerminalPane : UserControl
     private bool terminalMessageRouterInstalled;
     private readonly WindowSubclassProc terminalWindowSubclassProc;
     private bool terminalWindowSubclassInstalled;
+    private bool terminalThreadMessageHookInstalled;
     private TermPTY? outputCaptureTerminal;
     private readonly Func<IEnumerable<CommandSnippet>> quickAccessProvider;
     private readonly Action commandStateChanged;
@@ -140,8 +143,13 @@ public partial class TerminalPane : UserControl
     private bool hermesExitObserved;
     private bool remoteImagePastePending;
     private bool suppressRemoteImagePasteVSequence;
+    private Func<RemoteImagePasteMode, bool>? remoteClipboardPasteTestOverride;
+    private (bool Control, bool Alt)? terminalShortcutTestModifiers;
+    private long terminalThreadMessageInterceptCount;
+    private long terminalInternalMessageForwardCount;
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
+    private readonly List<ComposerAttachment> composerAttachments = [];
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -178,6 +186,7 @@ public partial class TerminalPane : UserControl
         Loaded += async (_, _) =>
         {
             agentStatusTimer.Start();
+            RegisterTerminalThreadMessageHook();
             AttachTerminalActivationHook();
             AttachTerminalOutputFilter();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
@@ -206,7 +215,11 @@ public partial class TerminalPane : UserControl
             RefreshRemoteDimensions();
             ConfigureRecoveryView();
         };
-        Unloaded += (_, _) => agentStatusTimer.Stop();
+        Unloaded += (_, _) =>
+        {
+            agentStatusTimer.Stop();
+            UnregisterTerminalThreadMessageHook();
+        };
     }
 
     public void SetActive(bool active)
@@ -298,6 +311,12 @@ public partial class TerminalPane : UserControl
         if (commandExecutionPending) return false;
         var command = CommandInput.Text.Trim();
         if (command.Length == 0 || command.Length > MaximumCommandLength) return false;
+        var referencedAttachments = composerAttachments.Where(value => command.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (sendToAll && referencedAttachments.Length > 0)
+        {
+            ShowRemoteImageStatus("Choose one terminal", "Attached files are transferred for the current terminal's SSH connection. Send without the all-terminals modifier.", false, true);
+            return false;
+        }
         commandExecutionPending = true;
         RunCommandButton.IsEnabled = false;
         try
@@ -306,8 +325,11 @@ public partial class TerminalPane : UserControl
                 && string.Equals(Profile.PendingCommands[selected], command, StringComparison.Ordinal)
                     ? selected
                     : (int?)null;
-            if (!await (sendToAll ? sendAllCommand(command) : SendCommandAsync(command))) return false;
+            var preparedCommand = await PrepareComposerCommandAsync(command, referencedAttachments);
+            if (preparedCommand is null) return false;
+            if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendCommandAsync(preparedCommand))) return false;
             if (queuedIndex is int index) Profile.PendingCommands.RemoveAt(index);
+            RemoveComposerAttachments(referencedAttachments);
             PromoteNextQueuedCommand();
             UpdateQueueDisplay();
             commandStateChanged();
@@ -318,6 +340,48 @@ public partial class TerminalPane : UserControl
             commandExecutionPending = false;
             RunCommandButton.IsEnabled = true;
         }
+    }
+
+    private async Task<string?> PrepareComposerCommandAsync(string command, IReadOnlyList<ComposerAttachment> attachments)
+    {
+        if (attachments.Count == 0 || !TryGetActiveSshConnection(out var connectionArguments)) return command;
+        ShowRemoteImageStatus($"Uploading {attachments.Count} file{(attachments.Count == 1 ? string.Empty : "s")}…",
+            "Securely copying composer attachments through the verified SSH connection", true);
+        var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var attachment in attachments)
+        {
+            var result = await RemoteClipboardFileBridge.UploadFileAsync(attachment.LocalPath, connectionArguments);
+            if (!result.Succeeded || string.IsNullOrWhiteSpace(result.RemotePath))
+            {
+                ShowRemoteImageStatus("Attachment upload failed", result.Error ?? $"Could not upload {attachment.DisplayName}.", false, true);
+                return null;
+            }
+            replacements[attachment.LocalPath] = result.RemotePath;
+        }
+        ShowRemoteImageStatus("Attachments ready", "Local paths were replaced with private VPS paths", false, true);
+        return RewriteAttachmentPaths(command, replacements);
+    }
+
+    private static string RewriteAttachmentPaths(string command, IReadOnlyDictionary<string, string> replacements)
+    {
+        var rewritten = command;
+        foreach (var replacement in replacements.OrderByDescending(value => value.Key.Length))
+            rewritten = rewritten.Replace(replacement.Key, replacement.Value, StringComparison.OrdinalIgnoreCase);
+        return rewritten;
+    }
+
+    private void RemoveComposerAttachments(IEnumerable<ComposerAttachment> attachments)
+    {
+        foreach (var attachment in attachments.ToArray())
+        {
+            composerAttachments.Remove(attachment);
+            if (attachment.IsTemporary)
+            {
+                try { File.Delete(attachment.LocalPath); } catch { }
+            }
+        }
+        RefreshAttachmentPills();
+        if (composerAttachments.Count == 0) CloseAttachmentPreview();
     }
 
     private void PromoteNextQueuedCommand()
@@ -925,6 +989,55 @@ public partial class TerminalPane : UserControl
             terminalWindowSubclassInstalled = SetWindowSubclass(handle, terminalWindowSubclassProc, UIntPtr.Zero, UIntPtr.Zero);
     }
 
+    private void RegisterTerminalThreadMessageHook()
+    {
+        if (terminalThreadMessageHookInstalled) return;
+        ComponentDispatcher.ThreadPreprocessMessage += TerminalThreadPreprocessMessage;
+        terminalThreadMessageHookInstalled = true;
+    }
+
+    private void UnregisterTerminalThreadMessageHook()
+    {
+        if (!terminalThreadMessageHookInstalled) return;
+        ComponentDispatcher.ThreadPreprocessMessage -= TerminalThreadPreprocessMessage;
+        terminalThreadMessageHookInstalled = false;
+    }
+
+    private void TerminalThreadPreprocessMessage(ref MSG message, ref bool handled)
+    {
+        if (handled || terminalContainer?.Handle is not { } terminalHandle || terminalHandle == IntPtr.Zero
+            || message.hwnd != terminalHandle && !IsChild(terminalHandle, message.hwnd)) return;
+        var nativeMessage = unchecked((uint)message.message);
+        var virtualKey = unchecked((int)message.wParam.ToInt64());
+        var keyboardMessage = nativeMessage == WmKeyDown || nativeMessage == WmSysKeyDown;
+        var modifiers = terminalShortcutTestModifiers;
+        var controlDown = keyboardMessage && (modifiers?.Control ?? IsKeyDown(VkControl));
+        var altDown = keyboardMessage && (modifiers?.Alt ?? IsKeyDown(VkMenu));
+        if (keyboardMessage && IsRemoteImageShortcutMessage(nativeMessage, virtualKey, controlDown, altDown))
+        {
+            var mode = altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment;
+            var consumed = remoteClipboardPasteTestOverride?.Invoke(mode) ?? TryHandleRemoteClipboardPaste(mode);
+            if (consumed)
+            {
+                suppressRemoteImagePasteVSequence = true;
+                terminalActivity.RecordInput(DateTime.UtcNow);
+                Interlocked.Increment(ref terminalThreadMessageInterceptCount);
+                handled = true;
+            }
+            return;
+        }
+        if (suppressRemoteImagePasteVSequence && IsRemoteImagePasteCharacter(nativeMessage, virtualKey))
+        {
+            handled = true;
+            return;
+        }
+        if (suppressRemoteImagePasteVSequence && IsRemoteImagePasteKeyUp(nativeMessage, virtualKey))
+        {
+            suppressRemoteImagePasteVSequence = false;
+            handled = true;
+        }
+    }
+
     private void InstallTerminalMessageRouter(TerminalContainer container)
     {
         var method = typeof(TerminalContainer).GetMethod("TerminalContainer_MessageHook", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1205,6 +1318,7 @@ public partial class TerminalPane : UserControl
             }
         }
         if (handled) return IntPtr.Zero;
+        Interlocked.Increment(ref terminalInternalMessageForwardCount);
         return terminalInternalMessageHook?.Invoke(hwnd, message, wParam, lParam, ref handled) ?? IntPtr.Zero;
     }
 
@@ -1392,11 +1506,51 @@ public partial class TerminalPane : UserControl
         return FormatRemoteImagePasteText(path, RemoteImagePasteMode.Attachment) == path
             && FormatRemoteImagePasteText(path, RemoteImagePasteMode.FilePath) == $"`{path}`";
     }
+    internal bool AddComposerAttachmentForTest(string path, bool isImage)
+        => AddComposerAttachment(path, isImage, false, true);
+    internal int ComposerAttachmentCountForTest => composerAttachments.Count;
+    internal bool AttachmentStripVisibleForTest => AttachmentStrip.Visibility == Visibility.Visible;
+    internal bool OpenFirstAttachmentPreviewForTest()
+    {
+        var attachment = composerAttachments.FirstOrDefault(value => value.IsImage);
+        if (attachment is null) return false;
+        OpenAttachmentPreview(attachment);
+        return AttachmentPreviewOverlay.Visibility == Visibility.Visible && AttachmentPreviewImage.Source is not null;
+    }
+    internal void ClearComposerAttachmentsForTest() => RemoveComposerAttachments(composerAttachments.ToArray());
+    internal static string RewriteAttachmentPathsForTest(string command, IReadOnlyDictionary<string, string> replacements)
+        => RewriteAttachmentPaths(command, replacements);
     internal static bool RemoteSshPasteRoutingConsumesAllClipboardKindsForTest()
         => Enum.GetValues<RemoteClipboardPasteContent>().All(value => ShouldConsumeRemoteSshPasteForTest(value))
             && !ShouldConsumeRemoteSshPasteForTest(RemoteClipboardPasteContent.Text, false);
     private static bool ShouldConsumeRemoteSshPasteForTest(RemoteClipboardPasteContent content, bool sshActive = true)
         => sshActive && content is RemoteClipboardPasteContent.Image or RemoteClipboardPasteContent.Text or RemoteClipboardPasteContent.Empty;
+    internal bool ExerciseThreadMessagePasteInterceptionForTest()
+    {
+        AttachTerminalActivationHook();
+        RegisterTerminalThreadMessageHook();
+        if (terminalContainer?.Handle is not { } handle || handle == IntPtr.Zero) return false;
+        var beforeIntercept = Volatile.Read(ref terminalThreadMessageInterceptCount);
+        var beforeForward = Volatile.Read(ref terminalInternalMessageForwardCount);
+        remoteClipboardPasteTestOverride = _ => true;
+        terminalShortcutTestModifiers = (true, false);
+        try
+        {
+            var keyDown = new MSG { hwnd = handle, message = WmKeyDown, wParam = new IntPtr(VkV) };
+            var keyDownHandled = ComponentDispatcher.RaiseThreadMessage(ref keyDown);
+            var keyUp = new MSG { hwnd = handle, message = WmKeyUp, wParam = new IntPtr(VkV) };
+            var keyUpHandled = ComponentDispatcher.RaiseThreadMessage(ref keyUp);
+            return keyDownHandled && keyUpHandled
+                && Volatile.Read(ref terminalThreadMessageInterceptCount) == beforeIntercept + 1
+                && Volatile.Read(ref terminalInternalMessageForwardCount) == beforeForward;
+        }
+        finally
+        {
+            remoteClipboardPasteTestOverride = null;
+            terminalShortcutTestModifiers = null;
+            suppressRemoteImagePasteVSequence = false;
+        }
+    }
     internal bool ExerciseRemoteImagePasteIndicatorForTest()
     {
         ShowRemoteImageStatus("Pasting image…", "Securely copying through SSH", true);
@@ -1526,11 +1680,177 @@ public partial class TerminalPane : UserControl
     }
     private async Task<bool> HandleCommandInputKeyAsync(Key key, ModifierKeys modifiers)
     {
+        if (key == Key.V && (modifiers.HasFlag(ModifierKeys.Control) || modifiers.HasFlag(ModifierKeys.Alt))
+            && TryPasteComposerAttachments()) return true;
         if (key == Key.Enter && modifiers.HasFlag(ModifierKeys.Control)) { QueueCurrentCommand(); return true; }
         if (key == Key.Enter) { await RunCommandInputAsync(IsSendToAllActive(modifiers)); return true; }
         if (key == Key.Up) { NavigateQueue(-1); return true; }
         if (key == Key.Down) { NavigateQueue(1); return true; }
         return false;
+    }
+
+    private bool TryPasteComposerAttachments()
+    {
+        try
+        {
+            var data = Clipboard.GetDataObject();
+            if (data is null) return false;
+            var attached = false;
+            if (data.GetDataPresent(DataFormats.FileDrop, true)
+                && data.GetData(DataFormats.FileDrop, true) is string[] droppedFiles)
+            {
+                foreach (var path in droppedFiles.Where(File.Exists).Take(MaximumComposerAttachments - composerAttachments.Count))
+                    attached |= AddComposerAttachment(path, IsImageFile(path), false, true);
+                if (attached) return true;
+            }
+            if (data.GetDataPresent(DataFormats.Bitmap, true) && Clipboard.GetImage() is { } image)
+            {
+                var directory = Path.Combine(Path.GetTempPath(), "PowerShellPlus", "composer", SessionRecoveryStore.SafeSessionId(Profile.Id));
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, $"image-{DateTime.UtcNow:HHmmss}-{Guid.NewGuid():N}"[..22] + ".png");
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(image));
+                using (var stream = File.Create(path)) encoder.Save(stream);
+                return AddComposerAttachment(path, true, true, true);
+            }
+            if (data.GetDataPresent(DataFormats.UnicodeText, true))
+            {
+                var candidate = (data.GetData(DataFormats.UnicodeText, true) as string ?? string.Empty).Trim().Trim('"', '\'', '`');
+                if (File.Exists(candidate)) return AddComposerAttachment(candidate, IsImageFile(candidate), false, true);
+            }
+            return false;
+        }
+        catch (Exception exception) when (exception is ExternalException or IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException)
+        {
+            ShowRemoteImageStatus("Attachment paste failed", exception.Message, false, true);
+            return true;
+        }
+    }
+
+    private bool AddComposerAttachment(string path, bool isImage, bool isTemporary, bool insertPath)
+    {
+        if (composerAttachments.Count >= MaximumComposerAttachments)
+        {
+            ShowRemoteImageStatus("Attachment limit reached", $"A command can include up to {MaximumComposerAttachments} files.", false, true);
+            return true;
+        }
+        var fullPath = Path.GetFullPath(path);
+        var file = new FileInfo(fullPath);
+        if (!file.Exists || file.Length is <= 0 or > RemoteClipboardFileBridge.MaximumFileBytes)
+        {
+            ShowRemoteImageStatus("Attachment rejected", "Files must exist locally and be between 1 byte and 100 MB.", false, true);
+            if (isTemporary) try { File.Delete(fullPath); } catch { }
+            return true;
+        }
+        var attachment = composerAttachments.FirstOrDefault(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
+        if (attachment is null)
+        {
+            var imageNumber = composerAttachments.Count(value => value.IsImage) + 1;
+            attachment = new ComposerAttachment(Guid.NewGuid().ToString("N"), fullPath,
+                isImage ? $"Image {imageNumber}" : Path.GetFileName(fullPath), isImage, isTemporary);
+            composerAttachments.Add(attachment);
+            RefreshAttachmentPills();
+        }
+        if (insertPath) InsertComposerPath(fullPath);
+        ShowRemoteImageStatus(isImage ? "Image attached" : "File attached",
+            "The local path is in the command and will be replaced with a private VPS path when sent over SSH.", false, true);
+        return true;
+    }
+
+    private void InsertComposerPath(string path)
+    {
+        var insertion = $"\"{path}\"";
+        var caret = CommandInput.CaretIndex;
+        if (caret > 0 && !char.IsWhiteSpace(CommandInput.Text[caret - 1])) insertion = " " + insertion;
+        if (caret < CommandInput.Text.Length && !char.IsWhiteSpace(CommandInput.Text[caret])) insertion += " ";
+        CommandInput.SelectedText = insertion;
+        CommandInput.CaretIndex = caret + insertion.Length;
+        CommandInput.Focus();
+    }
+
+    private void RefreshAttachmentPills()
+    {
+        AttachmentPillPanel.Children.Clear();
+        foreach (var attachment in composerAttachments)
+        {
+            var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            if (attachment.IsImage && LoadAttachmentBitmap(attachment.LocalPath, 72) is { } thumbnail)
+                content.Children.Add(new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill, Margin = new Thickness(0, 0, 7, 0) });
+            content.Children.Add(new TextBlock
+            {
+                Text = attachment.DisplayName,
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = new SolidColorBrush(Color.FromRgb(205, 214, 244))
+            });
+            var remove = new Button { Content = "×", Width = 20, Height = 20, Padding = new Thickness(0), Margin = new Thickness(7, 0, 0, 0), Tag = attachment };
+            remove.Click += RemoveAttachmentClick;
+            content.Children.Add(remove);
+            var pill = new Border
+            {
+                Child = content,
+                Tag = attachment,
+                Padding = new Thickness(6, 3, 5, 3),
+                Margin = new Thickness(0, 0, 5, 0),
+                Background = new SolidColorBrush(Color.FromRgb(36, 36, 56)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(88, 91, 112)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(7),
+                Cursor = attachment.IsImage ? Cursors.Hand : Cursors.Arrow,
+                ToolTip = attachment.IsImage ? "Open image preview" : attachment.LocalPath
+            };
+            if (attachment.IsImage) pill.MouseLeftButtonDown += (_, eventArgs) => { OpenAttachmentPreview(attachment); eventArgs.Handled = true; };
+            AttachmentPillPanel.Children.Add(pill);
+        }
+        AttachmentStrip.Visibility = composerAttachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RemoveAttachmentClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ComposerAttachment attachment })
+        {
+            CommandInput.Text = CommandInput.Text.Replace($"\"{attachment.LocalPath}\"", string.Empty, StringComparison.OrdinalIgnoreCase)
+                .Replace(attachment.LocalPath, string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+            RemoveComposerAttachments([attachment]);
+        }
+        e.Handled = true;
+    }
+
+    private void OpenAttachmentPreview(ComposerAttachment attachment)
+    {
+        if (!attachment.IsImage || LoadAttachmentBitmap(attachment.LocalPath, 1400) is not { } image) return;
+        AttachmentPreviewTitle.Text = attachment.DisplayName;
+        AttachmentPreviewImage.Source = image;
+        AttachmentPreviewOverlay.Visibility = Visibility.Visible;
+    }
+
+    private static BitmapImage? LoadAttachmentBitmap(string path, int decodeWidth)
+    {
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.DecodePixelWidth = decodeWidth;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch { return null; }
+    }
+
+    private static bool IsImageFile(string path)
+        => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".tif" or ".tiff";
+
+    private void AttachmentPreviewBackdropClick(object sender, MouseButtonEventArgs e) => CloseAttachmentPreview();
+    private void AttachmentPreviewCardClick(object sender, MouseButtonEventArgs e) => e.Handled = true;
+    private void CloseAttachmentPreviewClick(object sender, RoutedEventArgs e) { CloseAttachmentPreview(); e.Handled = true; }
+    private void CloseAttachmentPreview()
+    {
+        AttachmentPreviewOverlay.Visibility = Visibility.Collapsed;
+        AttachmentPreviewImage.Source = null;
     }
     private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
