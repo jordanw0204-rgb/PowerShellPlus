@@ -205,9 +205,8 @@ public partial class TerminalPane : UserControl
         UpdateSendButtonVisual(false);
         AttachTerminalActivationHook();
         TitleText.Text = profile.Name;
-        var skipPreviouslyStalledProfile = PowerShellProfileHealthStore.ShouldSkip(profile.CommandLine);
-        startupProfileFallbackAttempted = skipPreviouslyStalledProfile;
-        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery, skipPreviouslyStalledProfile);
+        startupProfileFallbackAttempted = false;
+        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = EffectiveTerminalFontSize(appearance);
         Terminal.Theme = appearance.Theme;
@@ -786,24 +785,17 @@ public partial class TerminalPane : UserControl
         if (startupProfileFallbackAttempted
             || !IsPowerShellCommand(Profile.CommandLine)
             || Profile.CommandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) return;
-        await Task.Delay(1500);
+        // First-run package validation can make prompt helpers legitimately slow.
+        // Give the real profile enough time to finish before considering recovery.
+        await Task.Delay(10000);
         if (!IsLoaded || Terminal.ConPTYTerm?.TermProcIsStarted != true || GetRootProcessId() is not int processId) return;
         IReadOnlyList<ConsoleDescendantProcess> descendants;
         try { descendants = ProcessTreeInspector.FindDescendantProcesses(processId); }
         catch { return; }
-        if (!HasKnownStalledPromptHelper(descendants))
-        {
-            await Task.Delay(5500);
-            if (!IsLoaded || Terminal.ConPTYTerm?.TermProcIsStarted != true || GetRootProcessId() is not int delayedProcessId) return;
-            try { descendants = ProcessTreeInspector.FindDescendantProcesses(delayedProcessId); }
-            catch { return; }
-        }
         if (!ShouldRecoverStalledProfile(GetOutput(), descendants)) return;
 
         startupProfileFallbackAttempted = true;
-        var helperName = descendants.FirstOrDefault(value => IsKnownPromptHelper(value.Name))?.Name ?? "profile command";
-        PowerShellProfileHealthStore.RecordFailure(Profile.CommandLine, helperName);
-        StateText.Text = "  Profile timed out · starting safe shell";
+        StateText.Text = "  Prompt initialization timed out · starting safe shell";
         try
         {
             Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
@@ -811,7 +803,7 @@ public partial class TerminalPane : UserControl
             AttachTerminalOutputFilter();
             await Task.Delay(600);
             RefreshRemoteDimensions();
-            StateText.Text = "  Profile skipped · native renderer";
+            StateText.Text = "  Safe shell · native renderer";
         }
         catch (Exception exception)
         {
@@ -823,7 +815,7 @@ public partial class TerminalPane : UserControl
 
     private static bool ShouldRecoverStalledProfile(string output, IReadOnlyList<ConsoleDescendantProcess> descendants)
     {
-        return HasKnownStalledPromptHelper(descendants) || string.IsNullOrWhiteSpace(output) && descendants.Count > 0;
+        return string.IsNullOrWhiteSpace(output) && HasKnownStalledPromptHelper(descendants);
     }
 
     private static bool HasKnownStalledPromptHelper(IReadOnlyList<ConsoleDescendantProcess> descendants)
@@ -1924,8 +1916,6 @@ public partial class TerminalPane : UserControl
         {
             if (skipPowerShellProfile && !command.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) command += " -NoProfile";
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
-            if (skipPowerShellProfile)
-                script += "Write-Host '[PowerShellPlus] Prompt customization was skipped because the PowerShell profile previously stalled.' -ForegroundColor DarkYellow; ";
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
             script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
             if (resumeSsh) script += "; " + sshResumeCommand;
@@ -1949,11 +1939,11 @@ public partial class TerminalPane : UserControl
         };
         var commandLine = BuildCommandLine(profile, null, true);
         return commandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)
-            && DecodePowerShellStartupScript(commandLine).Contains("profile previously stalled", StringComparison.OrdinalIgnoreCase)
             && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(42, "oh-my-posh")])
             && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(43, "starship")])
-            && !ShouldRecoverStalledProfile("PS C:\\Users\\Example>", [])
-            && PowerShellProfileHealthStore.VerifyPersistenceForTest();
+            && !ShouldRecoverStalledProfile("PS C:\\Users\\Example>", [new ConsoleDescendantProcess(44, "oh-my-posh")])
+            && !ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(45, "git")])
+            && !DecodePowerShellStartupScript(commandLine).Contains("profile previously stalled", StringComparison.OrdinalIgnoreCase);
     }
 
     public static string DecodePowerShellStartupScript(string commandLine)
