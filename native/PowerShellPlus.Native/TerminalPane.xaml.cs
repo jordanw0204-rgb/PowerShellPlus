@@ -21,6 +21,7 @@ namespace PowerShellPlus.Native;
 internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
 internal sealed record ComposerAttachment(string Id, string LocalPath, string DisplayName, bool IsImage, bool IsTemporary);
+internal enum AttachmentPreviewKind { Image, Media, Text, Generic }
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
 internal enum RemoteImagePasteMode { Attachment, FilePath }
@@ -167,7 +168,14 @@ public partial class TerminalPane : UserControl
         remoteFontFace = appearance.FontFace;
         remoteFontSize = appearance.FontSize;
         Profile.PendingCommands ??= [];
+        Profile.CommandDraft ??= string.Empty;
+        Profile.ComposerAttachments ??= [];
         InitializeComponent();
+        RestoreComposerAttachments();
+        CommandInput.Text = Profile.CommandDraft;
+        CommandInput.CaretIndex = CommandInput.Text.Length;
+        CommandInput.TextChanged += CommandInputTextChanged;
+        RefreshAttachmentPills();
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
         agentStatusTimer.Tick += (_, _) => RefreshAgentStatus();
         Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
@@ -381,7 +389,47 @@ public partial class TerminalPane : UserControl
             }
         }
         RefreshAttachmentPills();
+        PersistComposerAttachments();
         if (composerAttachments.Count == 0) CloseAttachmentPreview();
+    }
+
+    private void RestoreComposerAttachments()
+    {
+        foreach (var saved in Profile.ComposerAttachments.Take(MaximumComposerAttachments))
+        {
+            try
+            {
+                var fullPath = Path.GetFullPath(saved.LocalPath);
+                if (!File.Exists(fullPath) || !Profile.CommandDraft.Contains(fullPath, StringComparison.OrdinalIgnoreCase)) continue;
+                composerAttachments.Add(new ComposerAttachment(Guid.NewGuid().ToString("N"), fullPath,
+                    string.IsNullOrWhiteSpace(saved.DisplayName) ? Path.GetFileName(fullPath) : saved.DisplayName,
+                    saved.IsImage || IsImageFile(fullPath), saved.IsTemporary));
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException) { }
+        }
+        PersistComposerAttachments(false);
+    }
+
+    private void PersistComposerAttachments(bool notify = true)
+    {
+        Profile.ComposerAttachments = composerAttachments.Select(value => new ComposerAttachmentState
+        {
+            LocalPath = value.LocalPath,
+            DisplayName = value.DisplayName,
+            IsImage = value.IsImage,
+            IsTemporary = value.IsTemporary
+        }).ToList();
+        if (notify) commandStateChanged();
+    }
+
+    private void CommandInputTextChanged(object sender, TextChangedEventArgs e)
+    {
+        Profile.CommandDraft = CommandInput.Text;
+        var detached = composerAttachments
+            .Where(value => !CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (detached.Length > 0) RemoveComposerAttachments(detached);
+        else commandStateChanged();
     }
 
     private void PromoteNextQueuedCommand()
@@ -1517,6 +1565,21 @@ public partial class TerminalPane : UserControl
         OpenAttachmentPreview(attachment);
         return AttachmentPreviewOverlay.Visibility == Visibility.Visible && AttachmentPreviewImage.Source is not null;
     }
+    internal bool RemoveFirstAttachmentPathForTest()
+    {
+        var attachment = composerAttachments.FirstOrDefault();
+        if (attachment is null) return false;
+        CommandInput.Text = CommandInput.Text.Replace(attachment.LocalPath, string.Empty, StringComparison.OrdinalIgnoreCase);
+        return composerAttachments.Count == 0 && Profile.ComposerAttachments.Count == 0
+            && AttachmentStrip.Visibility == Visibility.Collapsed && Profile.CommandDraft == CommandInput.Text;
+    }
+    internal bool ComposerDraftPersistedForTest => Profile.CommandDraft == CommandInput.Text
+        && Profile.ComposerAttachments.Count == composerAttachments.Count;
+    internal static bool AttachmentPreviewKindsForTest()
+        => GetAttachmentPreviewKind("preview.png") == AttachmentPreviewKind.Image
+            && GetAttachmentPreviewKind("preview.mp4") == AttachmentPreviewKind.Media
+            && GetAttachmentPreviewKind("preview.md") == AttachmentPreviewKind.Text
+            && GetAttachmentPreviewKind("preview.zip") == AttachmentPreviewKind.Generic;
     internal void ClearComposerAttachmentsForTest() => RemoveComposerAttachments(composerAttachments.ToArray());
     internal static string RewriteAttachmentPathsForTest(string command, IReadOnlyDictionary<string, string> replacements)
         => RewriteAttachmentPaths(command, replacements);
@@ -1705,7 +1768,7 @@ public partial class TerminalPane : UserControl
             }
             if (data.GetDataPresent(DataFormats.Bitmap, true) && Clipboard.GetImage() is { } image)
             {
-                var directory = Path.Combine(Path.GetTempPath(), "PowerShellPlus", "composer", SessionRecoveryStore.SafeSessionId(Profile.Id));
+                var directory = Path.Combine(WorkspaceStore.DirectoryPath, "composer-attachments", SessionRecoveryStore.SafeSessionId(Profile.Id));
                 Directory.CreateDirectory(directory);
                 var path = Path.Combine(directory, $"image-{DateTime.UtcNow:HHmmss}-{Guid.NewGuid():N}"[..22] + ".png");
                 var encoder = new PngBitmapEncoder();
@@ -1750,6 +1813,7 @@ public partial class TerminalPane : UserControl
                 isImage ? $"Image {imageNumber}" : Path.GetFileName(fullPath), isImage, isTemporary);
             composerAttachments.Add(attachment);
             RefreshAttachmentPills();
+            PersistComposerAttachments();
         }
         if (insertPath) InsertComposerPath(fullPath);
         ShowRemoteImageStatus(isImage ? "Image attached" : "File attached",
@@ -1797,10 +1861,15 @@ public partial class TerminalPane : UserControl
                 BorderBrush = new SolidColorBrush(Color.FromRgb(88, 91, 112)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(7),
-                Cursor = attachment.IsImage ? Cursors.Hand : Cursors.Arrow,
-                ToolTip = attachment.IsImage ? "Open image preview" : attachment.LocalPath
+                Cursor = Cursors.Hand,
+                ToolTip = $"Open preview · {attachment.LocalPath}"
             };
-            if (attachment.IsImage) pill.MouseLeftButtonDown += (_, eventArgs) => { OpenAttachmentPreview(attachment); eventArgs.Handled = true; };
+            pill.MouseLeftButtonDown += (_, eventArgs) =>
+            {
+                if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove)) return;
+                OpenAttachmentPreview(attachment);
+                eventArgs.Handled = true;
+            };
             AttachmentPillPanel.Children.Add(pill);
         }
         AttachmentStrip.Visibility = composerAttachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -1810,19 +1879,68 @@ public partial class TerminalPane : UserControl
     {
         if (sender is Button { Tag: ComposerAttachment attachment })
         {
-            CommandInput.Text = CommandInput.Text.Replace($"\"{attachment.LocalPath}\"", string.Empty, StringComparison.OrdinalIgnoreCase)
+            var updated = CommandInput.Text.Replace($"\"{attachment.LocalPath}\"", string.Empty, StringComparison.OrdinalIgnoreCase)
                 .Replace(attachment.LocalPath, string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
-            RemoveComposerAttachments([attachment]);
+            if (updated != CommandInput.Text) CommandInput.Text = updated;
+            else RemoveComposerAttachments([attachment]);
         }
         e.Handled = true;
     }
 
     private void OpenAttachmentPreview(ComposerAttachment attachment)
     {
-        if (!attachment.IsImage || LoadAttachmentBitmap(attachment.LocalPath, 1400) is not { } image) return;
+        CloseAttachmentPreview();
+        if (!File.Exists(attachment.LocalPath)) return;
         AttachmentPreviewTitle.Text = attachment.DisplayName;
-        AttachmentPreviewImage.Source = image;
+        var kind = GetAttachmentPreviewKind(attachment.LocalPath);
+        switch (kind)
+        {
+            case AttachmentPreviewKind.Image when LoadAttachmentBitmap(attachment.LocalPath, 1400) is { } image:
+                AttachmentPreviewImage.Source = image;
+                AttachmentPreviewImage.Visibility = Visibility.Visible;
+                break;
+            case AttachmentPreviewKind.Media:
+                AttachmentPreviewMediaPanel.Visibility = Visibility.Visible;
+                AttachmentPreviewMediaStatus.Text = "Loading mediaâ€¦";
+                AttachmentPreviewMedia.Source = new Uri(attachment.LocalPath, UriKind.Absolute);
+                break;
+            case AttachmentPreviewKind.Text:
+                AttachmentPreviewText.Text = ReadTextPreview(attachment.LocalPath);
+                AttachmentPreviewText.Visibility = Visibility.Visible;
+                break;
+            default:
+                ShowGenericAttachmentPreview(attachment.LocalPath);
+                break;
+        }
         AttachmentPreviewOverlay.Visibility = Visibility.Visible;
+    }
+
+    private void ShowGenericAttachmentPreview(string path, string? detail = null)
+    {
+        var file = new FileInfo(path);
+        AttachmentPreviewGenericName.Text = file.Name;
+        AttachmentPreviewGenericDetails.Text = string.Join(Environment.NewLine,
+            new[] { detail, $"{FormatFileSize(file.Length)} · {file.Extension.TrimStart('.').ToUpperInvariant()} file", file.FullName }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
+        AttachmentPreviewGeneric.Visibility = Visibility.Visible;
+    }
+
+    private static string ReadTextPreview(string path)
+    {
+        const int maximumCharacters = 100_000;
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream, Encoding.UTF8, true);
+            var buffer = new char[maximumCharacters];
+            var count = reader.ReadBlock(buffer, 0, buffer.Length);
+            var text = new string(buffer, 0, count);
+            return reader.Peek() >= 0 ? text + $"{Environment.NewLine}{Environment.NewLine}— Preview truncated at {maximumCharacters:N0} characters —" : text;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
+        {
+            return $"Preview unavailable: {exception.Message}";
+        }
     }
 
     private static BitmapImage? LoadAttachmentBitmap(string path, int decodeWidth)
@@ -1844,13 +1962,57 @@ public partial class TerminalPane : UserControl
     private static bool IsImageFile(string path)
         => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".tif" or ".tiff";
 
+    private static AttachmentPreviewKind GetAttachmentPreviewKind(string path)
+    {
+        if (IsImageFile(path)) return AttachmentPreviewKind.Image;
+        return Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".mp4" or ".m4v" or ".mov" or ".avi" or ".wmv" or ".webm" or ".mkv" or ".mpeg" or ".mpg" or ".mp3" or ".wav" or ".wma" or ".aac" or ".m4a" => AttachmentPreviewKind.Media,
+            ".txt" or ".md" or ".log" or ".json" or ".jsonl" or ".xml" or ".yaml" or ".yml" or ".toml" or ".ini" or ".cfg" or ".conf" or ".env"
+                or ".csv" or ".tsv" or ".ps1" or ".psm1" or ".psd1" or ".cs" or ".fs" or ".vb" or ".js" or ".jsx" or ".ts" or ".tsx"
+                or ".html" or ".htm" or ".css" or ".scss" or ".py" or ".rb" or ".rs" or ".go" or ".java" or ".kt" or ".sh" or ".bash"
+                or ".bat" or ".cmd" or ".sql" or ".gitignore" => AttachmentPreviewKind.Text,
+            _ => AttachmentPreviewKind.Generic
+        };
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        string[] suffixes = ["B", "KB", "MB", "GB"];
+        var value = (double)Math.Max(0, bytes);
+        var suffix = 0;
+        while (value >= 1024 && suffix < suffixes.Length - 1) { value /= 1024; suffix++; }
+        return $"{value:0.##} {suffixes[suffix]}";
+    }
+
     private void AttachmentPreviewBackdropClick(object sender, MouseButtonEventArgs e) => CloseAttachmentPreview();
     private void AttachmentPreviewCardClick(object sender, MouseButtonEventArgs e) => e.Handled = true;
     private void CloseAttachmentPreviewClick(object sender, RoutedEventArgs e) { CloseAttachmentPreview(); e.Handled = true; }
+    private void AttachmentPreviewMediaOpened(object sender, RoutedEventArgs e)
+    {
+        AttachmentPreviewMediaStatus.Text = "Playing";
+        AttachmentPreviewMedia.Play();
+    }
+    private void AttachmentPreviewMediaFailed(object sender, ExceptionRoutedEventArgs e)
+    {
+        var path = AttachmentPreviewMedia.Source?.LocalPath;
+        AttachmentPreviewMedia.Close();
+        AttachmentPreviewMediaPanel.Visibility = Visibility.Collapsed;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) ShowGenericAttachmentPreview(path, $"Media preview unavailable: {e.ErrorException?.Message}");
+    }
+    private void PlayAttachmentPreviewClick(object sender, RoutedEventArgs e) { AttachmentPreviewMedia.Play(); AttachmentPreviewMediaStatus.Text = "Playing"; }
+    private void PauseAttachmentPreviewClick(object sender, RoutedEventArgs e) { AttachmentPreviewMedia.Pause(); AttachmentPreviewMediaStatus.Text = "Paused"; }
     private void CloseAttachmentPreview()
     {
         AttachmentPreviewOverlay.Visibility = Visibility.Collapsed;
         AttachmentPreviewImage.Source = null;
+        AttachmentPreviewImage.Visibility = Visibility.Collapsed;
+        AttachmentPreviewMedia.Close();
+        AttachmentPreviewMedia.Source = null;
+        AttachmentPreviewMediaPanel.Visibility = Visibility.Collapsed;
+        AttachmentPreviewText.Clear();
+        AttachmentPreviewText.Visibility = Visibility.Collapsed;
+        AttachmentPreviewGeneric.Visibility = Visibility.Collapsed;
     }
     private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();

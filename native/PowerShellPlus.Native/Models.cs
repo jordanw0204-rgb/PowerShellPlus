@@ -69,8 +69,18 @@ public sealed class SessionProfile
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
     public bool CommandBarExpanded { get; set; } = true;
+    public string CommandDraft { get; set; } = string.Empty;
+    public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];
     [JsonIgnore] public string Subtitle => WorkingDirectory;
+}
+
+public sealed class ComposerAttachmentState
+{
+    public string LocalPath { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsImage { get; set; }
+    public bool IsTemporary { get; set; }
 }
 
 public sealed class CommandSnippet

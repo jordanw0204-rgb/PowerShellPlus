@@ -23,7 +23,16 @@ public static class WorkspaceStore
                 loaded.Settings ??= new WorkspaceSettings();
                     if (string.Equals(loaded.Settings.SendToAllModifier, "Ctrl", StringComparison.OrdinalIgnoreCase)) loaded.Settings.SendToAllModifier = "Shift";
                 loaded.LayoutSizes ??= [];
-                foreach (var session in loaded.Sessions) session.PendingCommands ??= [];
+                foreach (var session in loaded.Sessions)
+                {
+                    session.CommandDraft ??= string.Empty;
+                    session.ComposerAttachments ??= [];
+                    session.ComposerAttachments = session.ComposerAttachments
+                        .Where(value => value is not null && !string.IsNullOrWhiteSpace(value.LocalPath))
+                        .Take(10)
+                        .ToList();
+                    session.PendingCommands ??= [];
+                }
                 loaded.TerminalSessions ??= [];
                 if (loaded.TerminalSessions.Count == 0)
                 {
@@ -115,6 +124,51 @@ public static class WorkspaceStore
                 && migrated.TerminalSessions[0].TerminalIds.SequenceEqual([first.Id, second.Id]);
         }
         finally { DirectoryOverride = originalDirectory; }
+    }
+
+    internal static bool VerifyComposerDraftPersistenceForTest(WindowsTerminalProfile terminalProfile, string directory)
+    {
+        var originalDirectory = DirectoryOverride;
+        try
+        {
+            DirectoryOverride = directory;
+            Directory.CreateDirectory(directory);
+            var terminal = new SessionProfile
+            {
+                Name = "Composer persistence",
+                CommandDraft = "inspect \"C:\\fixtures\\preview.png\"",
+                ComposerAttachments =
+                [
+                    new ComposerAttachmentState
+                    {
+                        LocalPath = "C:\\fixtures\\preview.png",
+                        DisplayName = "Image 1",
+                        IsImage = true,
+                        IsTemporary = true
+                    }
+                ]
+            };
+            var state = new WorkspaceState
+            {
+                Sessions = [terminal],
+                ActiveSessionId = terminal.Id,
+                TerminalSessions = [new TerminalSession { Name = "Session 1", TerminalIds = [terminal.Id], ActiveTerminalId = terminal.Id }]
+            };
+            state.ActiveTerminalSessionId = state.TerminalSessions[0].Id;
+            Save(state);
+            var restored = Load(terminalProfile).Sessions.Single();
+            return restored.CommandDraft == terminal.CommandDraft
+                && restored.ComposerAttachments.Count == 1
+                && restored.ComposerAttachments[0].LocalPath == terminal.ComposerAttachments[0].LocalPath
+                && restored.ComposerAttachments[0].DisplayName == "Image 1"
+                && restored.ComposerAttachments[0].IsImage
+                && restored.ComposerAttachments[0].IsTemporary;
+        }
+        finally
+        {
+            DirectoryOverride = originalDirectory;
+            try { Directory.Delete(directory, true); } catch { }
+        }
     }
 
     public static void Save(WorkspaceState state)

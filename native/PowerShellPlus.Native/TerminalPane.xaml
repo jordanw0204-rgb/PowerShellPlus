@@ -61,8 +61,29 @@
               <TextBlock x:Name="AttachmentPreviewTitle" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
               <Button Content="&#x00D7;" Width="28" Height="26" HorizontalAlignment="Right" Padding="0" Click="CloseAttachmentPreviewClick"/>
             </Grid>
-            <Border Grid.Row="1" Background="#0B0B12" BorderBrush="#313244" BorderThickness="1" CornerRadius="7" Padding="6">
-              <Image x:Name="AttachmentPreviewImage" MaxWidth="680" MaxHeight="460" Stretch="Uniform"/>
+            <Border Grid.Row="1" MinWidth="420" MinHeight="260" Background="#0B0B12" BorderBrush="#313244" BorderThickness="1" CornerRadius="7" Padding="8">
+              <Grid>
+                <Image x:Name="AttachmentPreviewImage" MaxWidth="680" MaxHeight="460" Stretch="Uniform" Visibility="Collapsed"/>
+                <Grid x:Name="AttachmentPreviewMediaPanel" Visibility="Collapsed">
+                  <Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                  <MediaElement x:Name="AttachmentPreviewMedia" Grid.Row="0" MinWidth="400" MinHeight="220" MaxWidth="680" MaxHeight="410"
+                                Stretch="Uniform" LoadedBehavior="Manual" UnloadedBehavior="Close"
+                                MediaOpened="AttachmentPreviewMediaOpened" MediaFailed="AttachmentPreviewMediaFailed"/>
+                  <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                    <Button Content="Play" Padding="12,5" Click="PlayAttachmentPreviewClick"/>
+                    <Button Content="Pause" Padding="12,5" Margin="7,0,0,0" Click="PauseAttachmentPreviewClick"/>
+                    <TextBlock x:Name="AttachmentPreviewMediaStatus" Text="Loading mediaâ€¦" Margin="12,0,0,0" Foreground="#A6ADC8" VerticalAlignment="Center"/>
+                  </StackPanel>
+                </Grid>
+                <TextBox x:Name="AttachmentPreviewText" Visibility="Collapsed" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                         FontFamily="Cascadia Mono" FontSize="12" Background="#0B0B12" BorderThickness="0" Padding="8"
+                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+                <StackPanel x:Name="AttachmentPreviewGeneric" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="560">
+                  <TextBlock Text="&#x1F4C4;" FontSize="52" HorizontalAlignment="Center"/>
+                  <TextBlock x:Name="AttachmentPreviewGenericName" Margin="0,12,0,0" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="AttachmentPreviewGenericDetails" Margin="0,7,0,0" Foreground="#A6ADC8" TextAlignment="Center" TextWrapping="Wrap"/>
+                </StackPanel>
+              </Grid>
             </Border>
           </Grid>
         </Border>
