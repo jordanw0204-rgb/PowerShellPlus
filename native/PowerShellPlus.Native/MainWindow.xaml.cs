@@ -2029,6 +2029,7 @@ public partial class MainWindow : Window
             var attachmentPillReorderUpdatesCommand = activationTarget.ReorderFirstTwoAttachmentsForTest();
             var composerScrollbarThemed = activationTarget.ComposerScrollbarThemedForTest;
             var perTerminalFontZoomPersists = activationTarget.PerTerminalFontZoomPersistsForTest();
+            var profileStartupWatchdogWorks = TerminalPane.ProfileStartupWatchdogWorksForTest();
             var composerSshPathsRewrite = TerminalPane.RewriteAttachmentPathsForTest(
                 $"inspect {attachmentFixture}", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
@@ -2295,6 +2296,7 @@ public partial class MainWindow : Window
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTokensMatchCanonicalPaths && attachmentPillReorderUpdatesCommand && composerScrollbarThemed && perTerminalFontZoomPersists
+                && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
                 && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
@@ -2308,6 +2310,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
+            File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
             if (!success)
             {
                 var paneIndex = 0;

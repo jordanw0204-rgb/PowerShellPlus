@@ -165,6 +165,7 @@ public partial class TerminalPane : UserControl
     private Point? attachmentDragStart;
     private string? attachmentDragId;
     private bool attachmentDragOccurred;
+    private bool startupProfileFallbackAttempted;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -240,6 +241,7 @@ public partial class TerminalPane : UserControl
             AttachTerminalOutputFilter();
             RefreshRemoteDimensions();
             ConfigureRecoveryView();
+            await RecoverFromStalledPowerShellProfileAsync();
         };
         Unloaded += (_, _) =>
         {
@@ -777,6 +779,54 @@ public partial class TerminalPane : UserControl
     public string GetOutput()
     {
         try { return Terminal.ConPTYTerm?.GetConsoleText() ?? string.Empty; } catch { return string.Empty; }
+    }
+
+    private async Task RecoverFromStalledPowerShellProfileAsync()
+    {
+        if (startupProfileFallbackAttempted
+            || !IsPowerShellCommand(Profile.CommandLine)
+            || Profile.CommandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) return;
+        await Task.Delay(7000);
+        if (!IsLoaded || Terminal.ConPTYTerm?.TermProcIsStarted != true || GetRootProcessId() is not int processId) return;
+        IReadOnlyList<ConsoleDescendantProcess> descendants;
+        try { descendants = ProcessTreeInspector.FindDescendantProcesses(processId); }
+        catch { return; }
+        if (!ShouldRecoverStalledProfile(GetOutput(), descendants)) return;
+
+        startupProfileFallbackAttempted = true;
+        StateText.Text = "  Profile timed out · starting safe shell";
+        try
+        {
+            Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
+            await Terminal.RestartTerm();
+            AttachTerminalOutputFilter();
+            await Task.Delay(600);
+            RefreshRemoteDimensions();
+            StateText.Text = "  Profile skipped · native renderer";
+        }
+        catch (Exception exception)
+        {
+            StateText.Text = "  Profile fallback failed";
+            Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
+            File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] PowerShell profile fallback: {exception}\n");
+        }
+    }
+
+    private static bool ShouldRecoverStalledProfile(string output, IReadOnlyList<ConsoleDescendantProcess> descendants)
+    {
+        var knownPromptHelper = descendants.Any(value => value.Name.Equals("oh-my-posh", StringComparison.OrdinalIgnoreCase)
+            || value.Name.Equals("starship", StringComparison.OrdinalIgnoreCase));
+        return knownPromptHelper || string.IsNullOrWhiteSpace(output) && descendants.Count > 0;
+    }
+
+    private static bool IsPowerShellCommand(string commandLine)
+    {
+        var command = Environment.ExpandEnvironmentVariables(commandLine.Trim());
+        var executable = command.StartsWith('"')
+            ? command[1..].Split('"', 2)[0]
+            : command.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+        var name = Path.GetFileNameWithoutExtension(executable);
+        return name.Equals("powershell", StringComparison.OrdinalIgnoreCase) || name.Equals("pwsh", StringComparison.OrdinalIgnoreCase);
     }
 
     public string GetRawOutputForTest()
@@ -1826,7 +1876,7 @@ public partial class TerminalPane : UserControl
     [DllImport("comctl32.dll")]
     private static extern IntPtr DefSubclassProc(IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam);
 
-    public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery)
+    public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery, bool skipPowerShellProfile = false)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
         var sshResumeCommand = SshRecovery.BuildPowerShellResumeCommand(recovery);
@@ -1850,7 +1900,10 @@ public partial class TerminalPane : UserControl
                     : string.Empty;
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
+            if (skipPowerShellProfile && !command.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) command += " -NoProfile";
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
+            if (skipPowerShellProfile)
+                script += "Write-Warning '[PowerShellPlus] Your PowerShell profile did not finish loading, so this pane was restarted without the profile.'; ";
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
             script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
             if (resumeSsh) script += "; " + sshResumeCommand;
@@ -1862,6 +1915,22 @@ public partial class TerminalPane : UserControl
         if (resumeCodex && Path.GetFileNameWithoutExtension(command.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).Equals("codex", StringComparison.OrdinalIgnoreCase))
             return $"codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
         return command;
+    }
+
+    internal static bool ProfileStartupWatchdogWorksForTest()
+    {
+        var profile = new SessionProfile
+        {
+            Id = "profile-watchdog-test",
+            CommandLine = "powershell.exe",
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+        };
+        var commandLine = BuildCommandLine(profile, null, true);
+        return commandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)
+            && DecodePowerShellStartupScript(commandLine).Contains("profile did not finish loading", StringComparison.OrdinalIgnoreCase)
+            && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(42, "oh-my-posh")])
+            && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(43, "starship")])
+            && !ShouldRecoverStalledProfile("PS C:\\Users\\Example>", []);
     }
 
     public static string DecodePowerShellStartupScript(string commandLine)
