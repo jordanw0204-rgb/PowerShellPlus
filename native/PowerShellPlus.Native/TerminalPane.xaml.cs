@@ -89,6 +89,7 @@ public partial class TerminalPane : UserControl
 {
     private const int WmLeftButtonDown = 0x0201;
     private const int WmLeftButtonUp = 0x0202;
+    private const int WmMouseWheel = 0x020A;
     private const int WmKeyDown = 0x0100;
     private const int WmKeyUp = 0x0101;
     private const int WmChar = 0x0102;
@@ -103,6 +104,10 @@ public partial class TerminalPane : UserControl
     private const int MaximumCommandLength = 32_768;
     private const int MaximumClipboardCharacters = 1_000_000;
     private const int MaximumComposerAttachments = 10;
+    private const int MinimumTerminalFontSize = 6;
+    private const int MaximumTerminalFontSize = 36;
+    private const int MinimumComposerFontSize = 8;
+    private const int MaximumComposerFontSize = 28;
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
@@ -151,12 +156,18 @@ public partial class TerminalPane : UserControl
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
     private readonly List<ComposerAttachment> composerAttachments = [];
+    private TerminalAppearance currentAppearance;
+    private bool synchronizingComposerAttachments;
+    private Point? attachmentDragStart;
+    private string? attachmentDragId;
+    private bool attachmentDragOccurred;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
         Func<string, Task<bool>>? sendAllCommand = null, Func<bool>? sendAllModifierEnabled = null, Func<ModifierKeys>? sendAllModifier = null)
     {
         Profile = profile;
+        currentAppearance = appearance;
         terminalWindowSubclassProc = TerminalWindowSubclassProc;
         startupRecovery = recovery;
         previousOutput = recoveredOutput ?? string.Empty;
@@ -166,12 +177,13 @@ public partial class TerminalPane : UserControl
         this.sendAllModifierEnabled = sendAllModifierEnabled ?? (() => true);
         this.sendAllModifier = sendAllModifier ?? (() => ModifierKeys.Shift);
         remoteFontFace = appearance.FontFace;
-        remoteFontSize = appearance.FontSize;
+        remoteFontSize = EffectiveTerminalFontSize(appearance);
         Profile.PendingCommands ??= [];
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
         RestoreComposerAttachments();
+        CommandInput.ApplyComposerFontSize(Profile.CommandFontSize ?? 11);
         CommandInput.Text = Profile.CommandDraft;
         CommandInput.CaretIndex = CommandInput.Text.Length;
         CommandInput.TextChanged += CommandInputTextChanged;
@@ -187,7 +199,7 @@ public partial class TerminalPane : UserControl
         TitleText.Text = profile.Name;
         Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
-        Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
+        Terminal.FontSizeWhenSettingTheme = EffectiveTerminalFontSize(appearance);
         Terminal.Theme = appearance.Theme;
         configuredCursorStyleCode = CursorStyleCode(appearance.Theme.CursorStyle);
         AttachTerminalOutputFilter();
@@ -424,12 +436,17 @@ public partial class TerminalPane : UserControl
 
     private void CommandInputTextChanged(object sender, TextChangedEventArgs e)
     {
+        if (synchronizingComposerAttachments) return;
         Profile.CommandDraft = CommandInput.Text;
         var detached = composerAttachments
             .Where(value => !CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (detached.Length > 0) RemoveComposerAttachments(detached);
-        else commandStateChanged();
+        else
+        {
+            RefreshAttachmentPills();
+            commandStateChanged();
+        }
     }
 
     private void PromoteNextQueuedCommand()
@@ -886,15 +903,60 @@ public partial class TerminalPane : UserControl
 
     public void ApplyAppearance(TerminalAppearance appearance)
     {
+        currentAppearance = appearance;
         // Font properties only take effect when the theme is (re)applied; the
         // Theme setter pushes everything to the native control immediately.
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
-        Terminal.FontSizeWhenSettingTheme = appearance.FontSize;
+        var terminalFontSize = EffectiveTerminalFontSize(appearance);
+        Terminal.FontSizeWhenSettingTheme = terminalFontSize;
         Terminal.Theme = appearance.Theme;
         remoteFontFace = appearance.FontFace;
-        Volatile.Write(ref remoteFontSize, appearance.FontSize);
+        Volatile.Write(ref remoteFontSize, terminalFontSize);
+        CommandInput.ApplyComposerFontSize(Profile.CommandFontSize ?? 11);
         configuredCursorStyleCode = CursorStyleCode(appearance.Theme.CursorStyle);
         AttachTerminalOutputFilter();
+    }
+
+    private int EffectiveTerminalFontSize(TerminalAppearance appearance)
+        => Math.Clamp(Profile.TerminalFontSize ?? appearance.FontSize, MinimumTerminalFontSize, MaximumTerminalFontSize);
+
+    private void TerminalPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+        AdjustTerminalFontSize(e.Delta);
+        e.Handled = true;
+    }
+
+    private void CommandInputPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+        AdjustComposerFontSize(e.Delta);
+        e.Handled = true;
+    }
+
+    private void AdjustComposerFontSize(int wheelDelta)
+    {
+        var current = Profile.CommandFontSize ?? (int)Math.Round(CommandInput.FontSize);
+        var next = Math.Clamp(current + Math.Sign(wheelDelta), MinimumComposerFontSize, MaximumComposerFontSize);
+        if (next != current)
+        {
+            Profile.CommandFontSize = next;
+            CommandInput.ApplyComposerFontSize(next);
+            commandStateChanged();
+        }
+    }
+
+    private void AdjustTerminalFontSize(int wheelDelta)
+    {
+        var current = EffectiveTerminalFontSize(currentAppearance);
+        var next = Math.Clamp(current + Math.Sign(wheelDelta), MinimumTerminalFontSize, MaximumTerminalFontSize);
+        if (next == current) return;
+        Profile.TerminalFontSize = next;
+        Terminal.FontSizeWhenSettingTheme = next;
+        Terminal.Theme = currentAppearance.Theme;
+        Volatile.Write(ref remoteFontSize, next);
+        commandStateChanged();
+        ScheduleRemoteDimensionRefresh();
     }
 
     public void ApplyProfile(SessionProfile profile)
@@ -922,9 +984,12 @@ public partial class TerminalPane : UserControl
     public int QueuedCommandCountForTest => Profile.PendingCommands.Count;
     public string QueueCountTextForTest => QueueCountText.Text;
     public string CommandInputTextForTest => CommandInput.Text;
-    public bool CommandInputAutoGrowsForTest => CommandInput.TextWrapping == TextWrapping.Wrap && CommandInput.MinLines == 1
-        && CommandInput.MaxLines == 6 && CommandInput.VerticalContentAlignment == VerticalAlignment.Top;
+    public bool CommandInputAutoGrowsForTest => CommandInput.MinLines == 1 && CommandInput.MaxLines == 8
+        && CommandInput.VerticalContentAlignment == VerticalAlignment.Top
+        && CommandInput.VerticalScrollBarVisibility == ScrollBarVisibility.Auto
+        && CommandInput.MaxHeight > CommandInput.MinHeight;
     public double CommandInputHeightForTest => CommandInput.ActualHeight;
+    public bool CommandInputRespectsLineCapForTest => CommandInput.ActualHeight <= CommandInput.MaxHeight + .5;
     public bool HandoffButtonReadyForTest => DetachButton.IsEnabled && DetachButton.Content?.ToString() == ">_"
         && DetachButton.ToolTip?.ToString()?.Contains("Windows Terminal", StringComparison.Ordinal) == true;
     public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
@@ -1112,6 +1177,12 @@ public partial class TerminalPane : UserControl
     {
         try
         {
+            if (message == WmMouseWheel && IsKeyDown(VkControl))
+            {
+                var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
+                Dispatcher.BeginInvoke(() => AdjustTerminalFontSize(delta), System.Windows.Threading.DispatcherPriority.Input);
+                return IntPtr.Zero;
+            }
             var keyboardMessage = message == WmKeyDown || message == WmSysKeyDown;
             var virtualKey = unchecked((int)wParam.ToInt64());
             var controlDown = keyboardMessage && IsKeyDown(VkControl);
@@ -1350,6 +1421,12 @@ public partial class TerminalPane : UserControl
             Activated?.Invoke(this, EventArgs.Empty);
             SetFocus(hwnd);
         }
+        else if (message == WmMouseWheel && IsKeyDown(VkControl))
+        {
+            var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
+            AdjustTerminalFontSize(delta);
+            handled = true;
+        }
         else if (message == WmKeyDown)
         {
             terminalActivity.RecordInput(DateTime.UtcNow);
@@ -1575,6 +1652,33 @@ public partial class TerminalPane : UserControl
     }
     internal bool ComposerDraftPersistedForTest => Profile.CommandDraft == CommandInput.Text
         && Profile.ComposerAttachments.Count == composerAttachments.Count;
+    internal bool ComposerTokensMatchCanonicalPathsForTest => composerAttachments.Count > 0
+        && CommandInput.RenderedTokenLabelsForTest.SequenceEqual(composerAttachments.Select(value => value.DisplayName))
+        && composerAttachments.All(value => CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
+        && CommandInput.ToggleFirstTokenForTest();
+    internal bool ComposerScrollbarThemedForTest => CommandInput.UsesThemedScrollbarForTest && CommandInput.MaxLines == 8;
+    internal bool ReorderFirstTwoAttachmentsForTest()
+    {
+        if (composerAttachments.Count < 2) return false;
+        var first = composerAttachments[0];
+        var second = composerAttachments[1];
+        var before = CommandInput.Text;
+        CommandInput.Text = SwapAttachmentPaths(before, first.LocalPath, second.LocalPath);
+        return composerAttachments.Count >= 2 && composerAttachments[0].Id == second.Id
+            && composerAttachments[0].DisplayName == "Image 1" && composerAttachments[1].DisplayName == "Image 2"
+            && FirstAttachmentPathIndex(CommandInput.Text, second.LocalPath) < FirstAttachmentPathIndex(CommandInput.Text, first.LocalPath);
+    }
+    internal bool PerTerminalFontZoomPersistsForTest()
+    {
+        var terminalBefore = EffectiveTerminalFontSize(currentAppearance);
+        var composerBefore = Profile.CommandFontSize ?? (int)Math.Round(CommandInput.FontSize);
+        AdjustTerminalFontSize(120);
+        AdjustComposerFontSize(120);
+        return Profile.TerminalFontSize == Math.Min(MaximumTerminalFontSize, terminalBefore + 1)
+            && Profile.CommandFontSize == Math.Min(MaximumComposerFontSize, composerBefore + 1)
+            && Terminal.FontSizeWhenSettingTheme == Profile.TerminalFontSize
+            && Math.Abs(CommandInput.FontSize - Profile.CommandFontSize.Value) < .1;
+    }
     internal static bool AttachmentPreviewKindsForTest()
         => GetAttachmentPreviewKind("preview.png") == AttachmentPreviewKind.Image
             && GetAttachmentPreviewKind("preview.mp4") == AttachmentPreviewKind.Media
@@ -1808,9 +1912,8 @@ public partial class TerminalPane : UserControl
         var attachment = composerAttachments.FirstOrDefault(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
         if (attachment is null)
         {
-            var imageNumber = composerAttachments.Count(value => value.IsImage) + 1;
             attachment = new ComposerAttachment(Guid.NewGuid().ToString("N"), fullPath,
-                isImage ? $"Image {imageNumber}" : Path.GetFileName(fullPath), isImage, isTemporary);
+                Path.GetFileName(fullPath), isImage, isTemporary);
             composerAttachments.Add(attachment);
             RefreshAttachmentPills();
             PersistComposerAttachments();
@@ -1834,45 +1937,138 @@ public partial class TerminalPane : UserControl
 
     private void RefreshAttachmentPills()
     {
-        AttachmentPillPanel.Children.Clear();
-        foreach (var attachment in composerAttachments)
+        if (synchronizingComposerAttachments) return;
+        synchronizingComposerAttachments = true;
+        try
         {
-            var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            if (attachment.IsImage && LoadAttachmentBitmap(attachment.LocalPath, 72) is { } thumbnail)
-                content.Children.Add(new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill, Margin = new Thickness(0, 0, 7, 0) });
-            content.Children.Add(new TextBlock
+            var changed = SynchronizeComposerAttachmentOrder();
+            CommandInput.SetAttachmentTokens(composerAttachments.Select(value => new ComposerTokenDescriptor(
+                value.Id, value.LocalPath, value.DisplayName, GetAttachmentPreviewKind(value.LocalPath))));
+            AttachmentPillPanel.Children.Clear();
+            foreach (var attachment in composerAttachments)
             {
-                Text = attachment.DisplayName,
-                FontSize = 10,
-                FontWeight = FontWeights.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = new SolidColorBrush(Color.FromRgb(205, 214, 244))
-            });
-            var remove = new Button { Content = "×", Width = 20, Height = 20, Padding = new Thickness(0), Margin = new Thickness(7, 0, 0, 0), Tag = attachment };
-            remove.Click += RemoveAttachmentClick;
-            content.Children.Add(remove);
-            var pill = new Border
-            {
-                Child = content,
-                Tag = attachment,
-                Padding = new Thickness(6, 3, 5, 3),
-                Margin = new Thickness(0, 0, 5, 0),
-                Background = new SolidColorBrush(Color.FromRgb(36, 36, 56)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(88, 91, 112)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(7),
-                Cursor = Cursors.Hand,
-                ToolTip = $"Open preview · {attachment.LocalPath}"
-            };
-            pill.MouseLeftButtonDown += (_, eventArgs) =>
-            {
-                if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove)) return;
-                OpenAttachmentPreview(attachment);
-                eventArgs.Handled = true;
-            };
-            AttachmentPillPanel.Children.Add(pill);
+                var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                if (attachment.IsImage && LoadAttachmentBitmap(attachment.LocalPath, 72) is { } thumbnail)
+                    content.Children.Add(new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill, Margin = new Thickness(0, 0, 7, 0) });
+                content.Children.Add(new TextBlock
+                {
+                    Text = attachment.DisplayName,
+                    FontSize = 10,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = new SolidColorBrush(AttachmentLabelColor(GetAttachmentPreviewKind(attachment.LocalPath)))
+                });
+                var remove = new Button { Content = "×", Width = 20, Height = 20, Padding = new Thickness(0), Margin = new Thickness(7, 0, 0, 0), Tag = attachment };
+                remove.Click += RemoveAttachmentClick;
+                content.Children.Add(remove);
+                var pill = new Border
+                {
+                    Child = content,
+                    Tag = attachment,
+                    AllowDrop = true,
+                    Padding = new Thickness(6, 3, 5, 3),
+                    Margin = new Thickness(0, 0, 5, 0),
+                    Background = new SolidColorBrush(Color.FromRgb(36, 36, 56)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(88, 91, 112)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(7),
+                    Cursor = Cursors.Hand,
+                    ToolTip = $"Open preview · drag to reorder · {attachment.LocalPath}"
+                };
+                pill.PreviewMouseLeftButtonDown += (_, eventArgs) =>
+                {
+                    if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove)) return;
+                    attachmentDragStart = eventArgs.GetPosition(pill);
+                    attachmentDragId = attachment.Id;
+                    attachmentDragOccurred = false;
+                };
+                pill.PreviewMouseMove += AttachmentPillMouseMove;
+                pill.MouseLeftButtonUp += (_, eventArgs) =>
+                {
+                    if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove) || attachmentDragOccurred) return;
+                    OpenAttachmentPreview(attachment);
+                    eventArgs.Handled = true;
+                };
+                pill.Drop += AttachmentPillDrop;
+                AttachmentPillPanel.Children.Add(pill);
+            }
+            AttachmentStrip.Visibility = composerAttachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (changed) PersistComposerAttachments(false);
         }
-        AttachmentStrip.Visibility = composerAttachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        finally { synchronizingComposerAttachments = false; }
+    }
+
+    private bool SynchronizeComposerAttachmentOrder()
+    {
+        var original = composerAttachments.Select(value => (value.Id, value.DisplayName)).ToArray();
+        var ordered = composerAttachments
+            .OrderBy(value => FirstAttachmentPathIndex(CommandInput.Text, value.LocalPath))
+            .ThenBy(value => value.Id, StringComparer.Ordinal)
+            .ToList();
+        var counters = new Dictionary<string, int>(StringComparer.Ordinal);
+        composerAttachments.Clear();
+        foreach (var attachment in ordered)
+        {
+            var stem = AttachmentLabelStem(GetAttachmentPreviewKind(attachment.LocalPath));
+            var number = counters.TryGetValue(stem, out var count) ? count + 1 : 1;
+            counters[stem] = number;
+            composerAttachments.Add(attachment with { DisplayName = $"{stem} {number}" });
+        }
+        return !original.SequenceEqual(composerAttachments.Select(value => (value.Id, value.DisplayName)));
+    }
+
+    private static int FirstAttachmentPathIndex(string command, string path)
+    {
+        var index = command.IndexOf(path, StringComparison.OrdinalIgnoreCase);
+        return index < 0 ? int.MaxValue : index;
+    }
+
+    private static string AttachmentLabelStem(AttachmentPreviewKind kind) => kind switch
+    {
+        AttachmentPreviewKind.Image => "Image",
+        AttachmentPreviewKind.Media => "Video",
+        AttachmentPreviewKind.Text => "Text",
+        _ => "File"
+    };
+
+    private static Color AttachmentLabelColor(AttachmentPreviewKind kind) => kind switch
+    {
+        AttachmentPreviewKind.Image => Color.FromRgb(166, 227, 161),
+        AttachmentPreviewKind.Media => Color.FromRgb(137, 180, 250),
+        AttachmentPreviewKind.Text => Color.FromRgb(249, 226, 175),
+        _ => Color.FromRgb(203, 166, 247)
+    };
+
+    private void AttachmentPillMouseMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not Border pill || attachmentDragStart is not { } start || attachmentDragId is null || e.LeftButton != MouseButtonState.Pressed) return;
+        var current = e.GetPosition(pill);
+        if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        attachmentDragOccurred = true;
+        DragDrop.DoDragDrop(pill, new DataObject("PowerShellPlus.ComposerAttachment", attachmentDragId), DragDropEffects.Move);
+        attachmentDragStart = null;
+        attachmentDragId = null;
+    }
+
+    private void AttachmentPillDrop(object sender, DragEventArgs e)
+    {
+        if (sender is not Border { Tag: ComposerAttachment target }
+            || e.Data.GetData("PowerShellPlus.ComposerAttachment") is not string sourceId
+            || sourceId == target.Id) return;
+        var source = composerAttachments.FirstOrDefault(value => value.Id == sourceId);
+        if (source is null) return;
+        CommandInput.Text = SwapAttachmentPaths(CommandInput.Text, source.LocalPath, target.LocalPath);
+        CommandInput.CaretIndex = CommandInput.Text.Length;
+        e.Handled = true;
+    }
+
+    private static string SwapAttachmentPaths(string command, string first, string second)
+    {
+        var marker = $"__PSPLUS_ATTACHMENT_{Guid.NewGuid():N}__";
+        return command.Replace(first, marker, StringComparison.OrdinalIgnoreCase)
+            .Replace(second, first, StringComparison.OrdinalIgnoreCase)
+            .Replace(marker, second, StringComparison.Ordinal);
     }
 
     private void RemoveAttachmentClick(object sender, RoutedEventArgs e)

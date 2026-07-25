@@ -2019,15 +2019,27 @@ public partial class MainWindow : Window
             var composerImagePreviewOpens = activationTarget.OpenFirstAttachmentPreviewForTest();
             var composerDraftTracksAttachments = activationTarget.ComposerDraftPersistedForTest;
             var attachmentPreviewKindsWork = TerminalPane.AttachmentPreviewKindsForTest();
+            var attachmentFixtureTwo = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-preview-fixture-2.png");
+            File.Copy(attachmentFixture, attachmentFixtureTwo, true);
+            var secondComposerAttachmentAdded = activationTarget.AddComposerAttachmentForTest(attachmentFixtureTwo, true)
+                && activationTarget.ComposerAttachmentCountForTest == 2;
+            var composerTokensMatchCanonicalPaths = activationTarget.ComposerTokensMatchCanonicalPathsForTest;
+            var attachmentPillReorderUpdatesCommand = activationTarget.ReorderFirstTwoAttachmentsForTest();
+            var composerScrollbarThemed = activationTarget.ComposerScrollbarThemedForTest;
+            var perTerminalFontZoomPersists = activationTarget.PerTerminalFontZoomPersistsForTest();
             var composerSshPathsRewrite = TerminalPane.RewriteAttachmentPathsForTest(
                 $"inspect \"{attachmentFixture}\"", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     [attachmentFixture] = "/home/ubuntu/.cache/powershellplus/files/file-test.png"
                 }) == "inspect \"/home/ubuntu/.cache/powershellplus/files/file-test.png\"";
+            activationTarget.ClearComposerAttachmentsForTest();
+            activationTarget.SetCommandInputForTest("inspect ");
+            _ = activationTarget.AddComposerAttachmentForTest(attachmentFixture, true);
             var removingPathRemovesPill = activationTarget.RemoveFirstAttachmentPathForTest();
             activationTarget.ClearComposerAttachmentsForTest();
             activationTarget.SetCommandInputForTest(string.Empty);
             try { File.Delete(attachmentFixture); } catch { }
+            try { File.Delete(attachmentFixtureTwo); } catch { }
             var terminalClickSent = activationTarget.SimulateTerminalSurfaceClickForTest();
             var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
                 && ReferenceEquals(SessionList.SelectedItem, activationTarget.Profile);
@@ -2036,7 +2048,8 @@ public partial class MainWindow : Window
             activationTarget.UpdateLayout();
             await Dispatcher.Yield(DispatcherPriority.Render);
             activationTarget.UpdateLayout();
-            var commandInputAutoGrows = activationTarget.CommandInputAutoGrowsForTest && activationTarget.CommandInputHeightForTest > 30;
+            var commandInputAutoGrows = activationTarget.CommandInputAutoGrowsForTest && activationTarget.CommandInputHeightForTest > 30
+                && activationTarget.CommandInputRespectsLineCapForTest;
             var composerChromeStaysCompact = activationTarget.ComposerChromeStaysCompactForTest;
             activationTarget.SetCommandInputForTest(string.Empty);
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Working);
@@ -2278,7 +2291,9 @@ public partial class MainWindow : Window
             var titleLayoutControlsCentered = initiallyCentered && centeredAfterResize;
             var success = inputReady && outputReady && scrollbarsHidden && titleLayoutControlsCentered && sidebarCollapses && sidebarExpands && sidebarStatePersists
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
-                && composerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
+                && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
+                && composerTokensMatchCanonicalPaths && attachmentPillReorderUpdatesCommand && composerScrollbarThemed && perTerminalFontZoomPersists
+                && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
                 && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
@@ -2290,6 +2305,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
+            File.AppendAllText(reportPath, $"\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             if (!success)
             {
                 var paneIndex = 0;

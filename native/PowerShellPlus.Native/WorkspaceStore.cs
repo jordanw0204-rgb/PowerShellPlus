@@ -25,6 +25,8 @@ public static class WorkspaceStore
                 loaded.LayoutSizes ??= [];
                 foreach (var session in loaded.Sessions)
                 {
+                    session.TerminalFontSize = NormalizeFontSize(session.TerminalFontSize, 6, 36);
+                    session.CommandFontSize = NormalizeFontSize(session.CommandFontSize, 8, 28);
                     session.CommandDraft ??= string.Empty;
                     session.ComposerAttachments ??= [];
                     session.ComposerAttachments = session.ComposerAttachments
@@ -136,6 +138,8 @@ public static class WorkspaceStore
             var terminal = new SessionProfile
             {
                 Name = "Composer persistence",
+                TerminalFontSize = 15,
+                CommandFontSize = 13,
                 CommandDraft = "inspect \"C:\\fixtures\\preview.png\"",
                 ComposerAttachments =
                 [
@@ -158,6 +162,8 @@ public static class WorkspaceStore
             Save(state);
             var restored = Load(terminalProfile).Sessions.Single();
             return restored.CommandDraft == terminal.CommandDraft
+                && restored.TerminalFontSize == 15
+                && restored.CommandFontSize == 13
                 && restored.ComposerAttachments.Count == 1
                 && restored.ComposerAttachments[0].LocalPath == terminal.ComposerAttachments[0].LocalPath
                 && restored.ComposerAttachments[0].DisplayName == "Image 1"
@@ -179,4 +185,7 @@ public static class WorkspaceStore
         if (File.Exists(FilePath)) File.Copy(FilePath, FilePath + ".bak", true);
         File.Move(temporary, FilePath, true);
     }
+
+    private static int? NormalizeFontSize(int? value, int minimum, int maximum)
+        => value is null ? null : Math.Clamp(value.Value, minimum, maximum);
 }

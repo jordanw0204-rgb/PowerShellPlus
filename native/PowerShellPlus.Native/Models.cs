@@ -69,6 +69,8 @@ public sealed class SessionProfile
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
     public bool CommandBarExpanded { get; set; } = true;
+    public int? TerminalFontSize { get; set; }
+    public int? CommandFontSize { get; set; }
     public string CommandDraft { get; set; } = string.Empty;
     public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];
