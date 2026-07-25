@@ -222,7 +222,16 @@ public static class WindowsTerminalHandoff
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (File.Exists(plan.CompletedPath)) return true;
+            if (File.Exists(plan.CompletedPath))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(File.ReadAllText(plan.CompletedPath));
+                    if (document.RootElement.ValueKind == JsonValueKind.Object) return true;
+                }
+                catch (IOException) { }
+                catch (JsonException) { }
+            }
             await Task.Delay(60);
         }
         return false;

@@ -166,6 +166,7 @@ public partial class TerminalPane : UserControl
     private string? attachmentDragId;
     private bool attachmentDragOccurred;
     private bool startupProfileFallbackAttempted;
+    private int attachmentPillRefreshCount;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -204,7 +205,9 @@ public partial class TerminalPane : UserControl
         UpdateSendButtonVisual(false);
         AttachTerminalActivationHook();
         TitleText.Text = profile.Name;
-        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
+        var skipPreviouslyStalledProfile = PowerShellProfileHealthStore.ShouldSkip(profile.CommandLine);
+        startupProfileFallbackAttempted = skipPreviouslyStalledProfile;
+        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery, skipPreviouslyStalledProfile);
         Terminal.FontFamilyWhenSettingTheme = new FontFamily(appearance.FontFace);
         Terminal.FontSizeWhenSettingTheme = EffectiveTerminalFontSize(appearance);
         Terminal.Theme = appearance.Theme;
@@ -450,11 +453,8 @@ public partial class TerminalPane : UserControl
             .Where(value => !CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (detached.Length > 0) RemoveComposerAttachments(detached);
-        else
-        {
-            RefreshAttachmentPills();
-            commandStateChanged();
-        }
+        else if (composerAttachments.Count > 1 && SynchronizeComposerAttachmentOrder()) RefreshAttachmentPills();
+        else commandStateChanged();
     }
 
     private void PromotePastedLocalFiles(string pastedText)
@@ -786,14 +786,23 @@ public partial class TerminalPane : UserControl
         if (startupProfileFallbackAttempted
             || !IsPowerShellCommand(Profile.CommandLine)
             || Profile.CommandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) return;
-        await Task.Delay(7000);
+        await Task.Delay(1500);
         if (!IsLoaded || Terminal.ConPTYTerm?.TermProcIsStarted != true || GetRootProcessId() is not int processId) return;
         IReadOnlyList<ConsoleDescendantProcess> descendants;
         try { descendants = ProcessTreeInspector.FindDescendantProcesses(processId); }
         catch { return; }
+        if (!HasKnownStalledPromptHelper(descendants))
+        {
+            await Task.Delay(5500);
+            if (!IsLoaded || Terminal.ConPTYTerm?.TermProcIsStarted != true || GetRootProcessId() is not int delayedProcessId) return;
+            try { descendants = ProcessTreeInspector.FindDescendantProcesses(delayedProcessId); }
+            catch { return; }
+        }
         if (!ShouldRecoverStalledProfile(GetOutput(), descendants)) return;
 
         startupProfileFallbackAttempted = true;
+        var helperName = descendants.FirstOrDefault(value => IsKnownPromptHelper(value.Name))?.Name ?? "profile command";
+        PowerShellProfileHealthStore.RecordFailure(Profile.CommandLine, helperName);
         StateText.Text = "  Profile timed out · starting safe shell";
         try
         {
@@ -814,10 +823,14 @@ public partial class TerminalPane : UserControl
 
     private static bool ShouldRecoverStalledProfile(string output, IReadOnlyList<ConsoleDescendantProcess> descendants)
     {
-        var knownPromptHelper = descendants.Any(value => value.Name.Equals("oh-my-posh", StringComparison.OrdinalIgnoreCase)
-            || value.Name.Equals("starship", StringComparison.OrdinalIgnoreCase));
-        return knownPromptHelper || string.IsNullOrWhiteSpace(output) && descendants.Count > 0;
+        return HasKnownStalledPromptHelper(descendants) || string.IsNullOrWhiteSpace(output) && descendants.Count > 0;
     }
+
+    private static bool HasKnownStalledPromptHelper(IReadOnlyList<ConsoleDescendantProcess> descendants)
+        => descendants.Any(value => IsKnownPromptHelper(value.Name));
+
+    private static bool IsKnownPromptHelper(string name)
+        => name.Equals("oh-my-posh", StringComparison.OrdinalIgnoreCase) || name.Equals("starship", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsPowerShellCommand(string commandLine)
     {
@@ -1754,6 +1767,15 @@ public partial class TerminalPane : UserControl
     }
     internal int ComposerAttachmentCountForTest => composerAttachments.Count;
     internal bool AttachmentStripVisibleForTest => AttachmentStrip.Visibility == Visibility.Visible;
+    internal bool ComposerTypingAvoidsPillRebuildForTest()
+    {
+        if (composerAttachments.Count == 0) return false;
+        var original = CommandInput.Text;
+        var refreshes = attachmentPillRefreshCount;
+        CommandInput.Text = original + "x";
+        CommandInput.Text = original;
+        return attachmentPillRefreshCount == refreshes && composerAttachments.Count > 0;
+    }
     internal bool OpenFirstAttachmentPreviewForTest()
     {
         var attachment = composerAttachments.FirstOrDefault(value => value.IsImage);
@@ -1903,7 +1925,7 @@ public partial class TerminalPane : UserControl
             if (skipPowerShellProfile && !command.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) command += " -NoProfile";
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
             if (skipPowerShellProfile)
-                script += "Write-Warning '[PowerShellPlus] Your PowerShell profile did not finish loading, so this pane was restarted without the profile.'; ";
+                script += "Write-Host '[PowerShellPlus] Prompt customization was skipped because the PowerShell profile previously stalled.' -ForegroundColor DarkYellow; ";
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
             script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
             if (resumeSsh) script += "; " + sshResumeCommand;
@@ -1927,10 +1949,11 @@ public partial class TerminalPane : UserControl
         };
         var commandLine = BuildCommandLine(profile, null, true);
         return commandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)
-            && DecodePowerShellStartupScript(commandLine).Contains("profile did not finish loading", StringComparison.OrdinalIgnoreCase)
+            && DecodePowerShellStartupScript(commandLine).Contains("profile previously stalled", StringComparison.OrdinalIgnoreCase)
             && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(42, "oh-my-posh")])
             && ShouldRecoverStalledProfile(string.Empty, [new ConsoleDescendantProcess(43, "starship")])
-            && !ShouldRecoverStalledProfile("PS C:\\Users\\Example>", []);
+            && !ShouldRecoverStalledProfile("PS C:\\Users\\Example>", [])
+            && PowerShellProfileHealthStore.VerifyPersistenceForTest();
     }
 
     public static string DecodePowerShellStartupScript(string commandLine)
@@ -2078,6 +2101,7 @@ public partial class TerminalPane : UserControl
     private void RefreshAttachmentPills()
     {
         if (synchronizingComposerAttachments) return;
+        attachmentPillRefreshCount++;
         synchronizingComposerAttachments = true;
         try
         {
