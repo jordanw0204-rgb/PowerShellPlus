@@ -52,7 +52,8 @@ public partial class MainWindow : Window
     public MainWindow(bool automationMode = false)
     {
         this.automationMode = automationMode;
-        terminalProfile = WindowsTerminalProfile.Load();
+        var loadedTerminalProfile = WindowsTerminalProfile.Load();
+        terminalProfile = automationMode ? loadedTerminalProfile.ForAutomation() : loadedTerminalProfile;
         state = WorkspaceStore.Load(terminalProfile);
         loadedRecovery = automationMode || !state.Settings.RestoreSessionsAfterRestart ? new SessionRecoverySnapshot() : SessionRecoveryStore.Load();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) ReconcileCodexRecovery();
@@ -2013,7 +2014,8 @@ public partial class MainWindow : Window
             var attachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-preview-fixture.png");
             File.WriteAllBytes(attachmentFixture, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
             activationTarget.SetCommandInputForTest("inspect ");
-            var composerAttachmentAdded = activationTarget.AddComposerAttachmentForTest(attachmentFixture, true)
+            var plainTextPathPromoted = activationTarget.PastePlainTextAttachmentForTest($"please inspect {attachmentFixture}", attachmentFixture);
+            var composerAttachmentAdded = plainTextPathPromoted
                 && activationTarget.ComposerAttachmentCountForTest == 1 && activationTarget.AttachmentStripVisibleForTest
                 && activationTarget.CommandInputTextForTest.Contains(attachmentFixture, StringComparison.OrdinalIgnoreCase);
             var composerImagePreviewOpens = activationTarget.OpenFirstAttachmentPreviewForTest();
@@ -2028,10 +2030,10 @@ public partial class MainWindow : Window
             var composerScrollbarThemed = activationTarget.ComposerScrollbarThemedForTest;
             var perTerminalFontZoomPersists = activationTarget.PerTerminalFontZoomPersistsForTest();
             var composerSshPathsRewrite = TerminalPane.RewriteAttachmentPathsForTest(
-                $"inspect \"{attachmentFixture}\"", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                $"inspect {attachmentFixture}", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     [attachmentFixture] = "/home/ubuntu/.cache/powershellplus/files/file-test.png"
-                }) == "inspect \"/home/ubuntu/.cache/powershellplus/files/file-test.png\"";
+                }) == "inspect /home/ubuntu/.cache/powershellplus/files/file-test.png";
             activationTarget.ClearComposerAttachmentsForTest();
             activationTarget.SetCommandInputForTest("inspect ");
             _ = activationTarget.AddComposerAttachmentForTest(attachmentFixture, true);
@@ -2305,7 +2307,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
-            File.AppendAllText(reportPath, $"\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
+            File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             if (!success)
             {
                 var paneIndex = 0;

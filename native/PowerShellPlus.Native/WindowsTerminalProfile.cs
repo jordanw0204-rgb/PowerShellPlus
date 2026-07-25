@@ -17,6 +17,25 @@ public sealed class WindowsTerminalProfile
     public TerminalTheme Theme { get; init; }
     public Color Background { get; init; } = Color.FromRgb(12, 12, 12);
 
+    public WindowsTerminalProfile ForAutomation()
+    {
+        var commandLine = CommandLine;
+        if ((commandLine.Contains("powershell", StringComparison.OrdinalIgnoreCase)
+                || commandLine.TrimStart().StartsWith("pwsh", StringComparison.OrdinalIgnoreCase))
+            && !commandLine.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase))
+            commandLine += " -NoLogo -NoProfile";
+        return new WindowsTerminalProfile
+        {
+            ProfileName = ProfileName,
+            CommandLine = commandLine,
+            FontFace = FontFace,
+            FontSize = FontSize,
+            SchemeName = SchemeName,
+            Theme = Theme,
+            Background = Background
+        };
+    }
+
     public static WindowsTerminalProfile Load()
     {
         var defaultTheme = CreateDefaultTheme();

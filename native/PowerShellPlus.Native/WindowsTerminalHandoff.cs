@@ -267,6 +267,7 @@ public static class WindowsTerminalHandoff
             start.ArgumentList.Add("-NoExit");
         }
         else start.ArgumentList.Add("-NoLogo");
+        if (plan.SmokeTest) start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-ExecutionPolicy");
         start.ArgumentList.Add("Bypass");
         start.ArgumentList.Add("-File");

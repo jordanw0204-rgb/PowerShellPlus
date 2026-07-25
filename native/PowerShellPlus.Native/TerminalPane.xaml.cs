@@ -12,6 +12,7 @@ using System.Text;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Collections;
+using System.Text.RegularExpressions;
 using EasyWindowsTerminalControl;
 using Microsoft.Terminal.Wpf;
 using System.Windows.Interop;
@@ -108,6 +109,9 @@ public partial class TerminalPane : UserControl
     private const int MaximumTerminalFontSize = 36;
     private const int MinimumComposerFontSize = 8;
     private const int MaximumComposerFontSize = 28;
+    private static readonly Regex LocalFilePathRegex = new(
+        """(?<![A-Za-z0-9_])(?<path>(?:[A-Za-z]:\\|\\\\)[^\r\n"'`<>|?*]+?\.[A-Za-z0-9]{1,32})(?=$|[\s,"'`;:!?)\]}])""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
@@ -183,10 +187,12 @@ public partial class TerminalPane : UserControl
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
         RestoreComposerAttachments();
+        Profile.CommandDraft = StripRedundantAttachmentQuotes(Profile.CommandDraft, composerAttachments.Select(value => value.LocalPath));
         CommandInput.ApplyComposerFontSize(Profile.CommandFontSize ?? 11);
         CommandInput.Text = Profile.CommandDraft;
         CommandInput.CaretIndex = CommandInput.Text.Length;
         CommandInput.TextChanged += CommandInputTextChanged;
+        CommandInput.PlainTextPasted += PromotePastedLocalFiles;
         RefreshAttachmentPills();
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
         agentStatusTimer.Tick += (_, _) => RefreshAgentStatus();
@@ -447,6 +453,60 @@ public partial class TerminalPane : UserControl
             RefreshAttachmentPills();
             commandStateChanged();
         }
+    }
+
+    private void PromotePastedLocalFiles(string pastedText)
+    {
+        var recognizedPaths = DiscoverExistingLocalFiles(pastedText).ToArray();
+        var paths = recognizedPaths
+            .Where(path => !composerAttachments.Any(value => value.LocalPath.Equals(path, StringComparison.OrdinalIgnoreCase)))
+            .Take(Math.Max(0, MaximumComposerAttachments - composerAttachments.Count))
+            .ToArray();
+        foreach (var path in paths) AddComposerAttachment(path, IsImageFile(path), false, false);
+
+        if (recognizedPaths.Length == 0) return;
+        var withoutQuotes = StripRedundantAttachmentQuotes(CommandInput.Text, recognizedPaths);
+        if (!string.Equals(withoutQuotes, CommandInput.Text, StringComparison.Ordinal))
+        {
+            CommandInput.Text = withoutQuotes;
+            CommandInput.CaretIndex = CommandInput.Text.Length;
+        }
+        RefreshAttachmentPills();
+    }
+
+    private static IEnumerable<string> DiscoverExistingLocalFiles(string text)
+    {
+        var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var exact = NormalizeLocalFileCandidate(text);
+        if (exact is not null && discovered.Add(exact)) yield return exact;
+        foreach (Match match in LocalFilePathRegex.Matches(text))
+        {
+            var candidate = NormalizeLocalFileCandidate(match.Groups["path"].Value);
+            if (candidate is not null && discovered.Add(candidate)) yield return candidate;
+        }
+    }
+
+    private static string? NormalizeLocalFileCandidate(string value)
+    {
+        var candidate = value.Trim().Trim('"', '\'', '`');
+        if (candidate.Length == 0 || !Path.IsPathFullyQualified(candidate)) return null;
+        try
+        {
+            var fullPath = Path.GetFullPath(candidate);
+            return File.Exists(fullPath) ? fullPath : null;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
+    }
+
+    private static string StripRedundantAttachmentQuotes(string command, IEnumerable<string> paths)
+    {
+        foreach (var path in paths.OrderByDescending(value => value.Length))
+        {
+            command = command.Replace($"\"{path}\"", path, StringComparison.OrdinalIgnoreCase)
+                .Replace($"'{path}'", path, StringComparison.OrdinalIgnoreCase)
+                .Replace($"`{path}`", path, StringComparison.OrdinalIgnoreCase);
+        }
+        return command;
     }
 
     private void PromoteNextQueuedCommand()
@@ -1633,13 +1693,24 @@ public partial class TerminalPane : UserControl
     }
     internal bool AddComposerAttachmentForTest(string path, bool isImage)
         => AddComposerAttachment(path, isImage, false, true);
+    internal bool PastePlainTextAttachmentForTest(string text, string expectedPath)
+    {
+        CommandInput.SimulatePlainTextPasteForTest(text);
+        var fullPath = Path.GetFullPath(expectedPath);
+        return composerAttachments.Any(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase))
+            && CommandInput.Text.Contains(fullPath, StringComparison.OrdinalIgnoreCase)
+            && !CommandInput.Text.Contains($"\"{fullPath}\"", StringComparison.OrdinalIgnoreCase)
+            && Profile.ComposerAttachments.Any(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
+    }
     internal int ComposerAttachmentCountForTest => composerAttachments.Count;
     internal bool AttachmentStripVisibleForTest => AttachmentStrip.Visibility == Visibility.Visible;
     internal bool OpenFirstAttachmentPreviewForTest()
     {
         var attachment = composerAttachments.FirstOrDefault(value => value.IsImage);
         if (attachment is null) return false;
-        OpenAttachmentPreview(attachment);
+        var previewButton = FindVisualChild<Button>(AttachmentPillPanel);
+        if (previewButton is null || previewButton.ToolTip?.ToString()?.StartsWith("Preview ", StringComparison.Ordinal) != true) return false;
+        previewButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, previewButton));
         return AttachmentPreviewOverlay.Visibility == Visibility.Visible && AttachmentPreviewImage.Source is not null;
     }
     internal bool RemoveFirstAttachmentPathForTest()
@@ -1926,7 +1997,7 @@ public partial class TerminalPane : UserControl
 
     private void InsertComposerPath(string path)
     {
-        var insertion = $"\"{path}\"";
+        var insertion = path;
         var caret = CommandInput.CaretIndex;
         if (caret > 0 && !char.IsWhiteSpace(CommandInput.Text[caret - 1])) insertion = " " + insertion;
         if (caret < CommandInput.Text.Length && !char.IsWhiteSpace(CommandInput.Text[caret])) insertion += " ";
@@ -1948,8 +2019,29 @@ public partial class TerminalPane : UserControl
             foreach (var attachment in composerAttachments)
             {
                 var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+                Button? previewButton = null;
                 if (attachment.IsImage && LoadAttachmentBitmap(attachment.LocalPath, 72) is { } thumbnail)
-                    content.Children.Add(new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill, Margin = new Thickness(0, 0, 7, 0) });
+                {
+                    previewButton = new Button
+                    {
+                        Content = new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill },
+                        Width = 30,
+                        Height = 24,
+                        Margin = new Thickness(0, 0, 7, 0),
+                        Padding = new Thickness(0),
+                        Background = Brushes.Transparent,
+                        BorderThickness = new Thickness(0),
+                        Tag = attachment,
+                        ToolTip = $"Preview {attachment.DisplayName}"
+                    };
+                    AutomationProperties.SetName(previewButton, $"Preview {attachment.DisplayName}");
+                    previewButton.Click += (_, eventArgs) =>
+                    {
+                        OpenAttachmentPreview(attachment);
+                        eventArgs.Handled = true;
+                    };
+                    content.Children.Add(previewButton);
+                }
                 content.Children.Add(new TextBlock
                 {
                     Text = attachment.DisplayName,
@@ -1983,12 +2075,14 @@ public partial class TerminalPane : UserControl
                     attachmentDragOccurred = false;
                 };
                 pill.PreviewMouseMove += AttachmentPillMouseMove;
-                pill.MouseLeftButtonUp += (_, eventArgs) =>
+                pill.AddHandler(Mouse.PreviewMouseUpEvent, new MouseButtonEventHandler((_, eventArgs) =>
                 {
-                    if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove) || attachmentDragOccurred) return;
+                    if (eventArgs.ChangedButton != MouseButton.Left || IsWithin(eventArgs.OriginalSource as DependencyObject, remove)
+                        || previewButton is not null && IsWithin(eventArgs.OriginalSource as DependencyObject, previewButton)
+                        || attachmentDragOccurred) return;
                     OpenAttachmentPreview(attachment);
                     eventArgs.Handled = true;
-                };
+                }), true);
                 pill.Drop += AttachmentPillDrop;
                 AttachmentPillPanel.Children.Add(pill);
             }

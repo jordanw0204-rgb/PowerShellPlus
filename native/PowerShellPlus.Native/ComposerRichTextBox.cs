@@ -21,6 +21,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
     private string canonicalText = string.Empty;
     private string tokenSignature = string.Empty;
     private bool rebuilding;
+    internal event Action<string>? PlainTextPasted;
 
     public ComposerRichTextBox()
     {
@@ -29,6 +30,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
             PagePadding = new Thickness(0),
             ColumnWidth = double.PositiveInfinity
         };
+        DataObject.AddPastingHandler(this, HandleDataObjectPasting);
         UpdateLineLimit();
     }
 
@@ -105,6 +107,12 @@ internal sealed class ComposerRichTextBox : RichTextBox
         return expanded && RenderedTokenLabelsForTest.FirstOrDefault() == token.Label;
     }
 
+    internal void SimulatePlainTextPasteForTest(string text)
+    {
+        ReplaceCanonicalSelection(text);
+        PlainTextPasted?.Invoke(text);
+    }
+
     public void Clear() => Text = string.Empty;
 
     public new void SelectAll() => Selection.Select(Document.ContentStart, Document.ContentEnd);
@@ -125,10 +133,20 @@ internal sealed class ComposerRichTextBox : RichTextBox
             else if (e.Key == Key.V && ClipboardContainsPlainTextOnly() && TryGetClipboardText(out var text))
             {
                 ReplaceCanonicalSelection(text);
+                PlainTextPasted?.Invoke(text);
                 e.Handled = true;
             }
         }
         base.OnPreviewKeyDown(e);
+    }
+
+    private void HandleDataObjectPasting(object sender, DataObjectPastingEventArgs e)
+    {
+        if (e.SourceDataObject.GetDataPresent(DataFormats.FileDrop, true)
+            || e.SourceDataObject.GetDataPresent(DataFormats.Bitmap, true)
+            || e.SourceDataObject.GetData(DataFormats.UnicodeText, true) is not string text
+            || string.IsNullOrWhiteSpace(text)) return;
+        Dispatcher.BeginInvoke(() => PlainTextPasted?.Invoke(text), System.Windows.Threading.DispatcherPriority.Background);
     }
 
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)

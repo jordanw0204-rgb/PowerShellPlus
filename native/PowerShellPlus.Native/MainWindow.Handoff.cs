@@ -481,10 +481,17 @@ public partial class MainWindow
             descendantStart.ArgumentList.Add($"$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d','/c','ping -n 20 127.0.0.1 > nul' -PassThru; $child.Id | Set-Content -LiteralPath '{childMarker.Replace("'", "''")}'; Wait-Process -Id $child.Id");
             descendantFixture = Process.Start(descendantStart);
             var childDeadline = DateTime.UtcNow.AddSeconds(5);
-            while (!File.Exists(childMarker) && DateTime.UtcNow < childDeadline) await Task.Delay(50);
-            var childProcessId = File.Exists(childMarker) && int.TryParse(File.ReadAllText(childMarker).Trim(), out var parsedChildProcessId)
-                ? parsedChildProcessId
-                : 0;
+            var childProcessId = 0;
+            while (childProcessId == 0 && DateTime.UtcNow < childDeadline)
+            {
+                try
+                {
+                    if (File.Exists(childMarker) && int.TryParse(File.ReadAllText(childMarker).Trim(), out var parsedChildProcessId))
+                        childProcessId = parsedChildProcessId;
+                }
+                catch (IOException) { }
+                if (childProcessId == 0) await Task.Delay(50);
+            }
             var detectsLiveChildProcess = descendantFixture is not null && childProcessId > 0
                 && ProcessTreeInspector.FindDescendantProcesses(descendantFixture.Id).Any(value => value.ProcessId == childProcessId);
             if (descendantFixture is { HasExited: false }) descendantFixture.Kill(true);
