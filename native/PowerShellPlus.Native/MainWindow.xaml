@@ -14,14 +14,6 @@
           <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
           <TextBlock Grid.Column="1" Text="PowerShellPlus" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center"/>
         </Grid>
-        <Border x:Name="TerminalToolbar" HorizontalAlignment="Center" VerticalAlignment="Center" Background="#181825" BorderBrush="#313244" BorderThickness="1" CornerRadius="7" Padding="3" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-          <StackPanel Orientation="Horizontal">
-            <Button Content="&#x25A6;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="GridLayoutClick" ToolTip="Grid layout"/>
-            <Button Content="&#x25A5;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="ColumnsLayoutClick" ToolTip="Column layout"/>
-            <Button Content="&#x2630;" Width="34" Height="30" Padding="0" Margin="0,0,3,0" Click="RowsLayoutClick" ToolTip="Row layout"/>
-            <Button Content="&#x25A3;" Width="34" Height="30" Padding="0" Click="FocusLayoutClick" ToolTip="Focus selected terminal"/>
-          </StackPanel>
-        </Border>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
           <Button x:Name="TitleBarLanRemoteButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenLanRemoteClick" ToolTip="Open LAN / Global Remote Access">
             <Grid Width="21" Height="21">
@@ -68,7 +60,7 @@
       <Border x:Name="WorkspaceSidebar" Grid.Column="1" Background="{StaticResource Surface}" BorderBrush="#313244" BorderThickness="0,0,1,0">
         <Grid Margin="14,18,14,12">
           <Grid x:Name="SessionsPanel">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="3,0,3,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewWorkspaceSessionClick" ToolTip="New session"/></Grid>
             <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged">
               <ListBox.ItemTemplate>
@@ -87,7 +79,38 @@
               </ListBox.ItemTemplate>
             </ListBox>
             <Grid Grid.Row="2" Margin="3,0,3,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ACTIVE SESSION" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/><TextBlock Text="Terminals" FontSize="15" FontWeight="SemiBold" Margin="0,2,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="17" Width="30" Height="30" Padding="0" Click="NewSessionClick" ToolTip="New terminal in this session"/></Grid>
-            <ListBox x:Name="SessionList" Grid.Row="3" SelectionChanged="SessionSelectionChanged">
+            <Border x:Name="LayoutControls" Grid.Row="3" Margin="0,0,0,10" Padding="7,6,7,7" Background="#181825" BorderBrush="#313244" BorderThickness="1" CornerRadius="8">
+              <Border.Resources>
+                <Style x:Key="SessionLayoutButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                  <Setter Property="Height" Value="48"/><Setter Property="Margin" Value="2"/><Setter Property="Padding" Value="3"/>
+                  <Setter Property="Background" Value="#1E1E2E"/><Setter Property="BorderBrush" Value="#313244"/><Setter Property="BorderThickness" Value="1"/>
+                  <Setter Property="ToolTipService.InitialShowDelay" Value="350"/><Setter Property="ToolTipService.BetweenShowDelay" Value="120"/><Setter Property="ToolTipService.ShowDuration" Value="30000"/>
+                  <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#292940"/><Setter Property="BorderBrush" Value="#585B70"/></Trigger>
+                    <Trigger Property="Tag" Value="Active"><Setter Property="Background" Value="#263653"/><Setter Property="BorderBrush" Value="#89B4FA"/></Trigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Resources>
+              <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid Margin="2,0,2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="SESSION LAYOUT" Foreground="{StaticResource Muted}" FontSize="8" FontWeight="Bold" VerticalAlignment="Center"/><TextBlock x:Name="ActiveLayoutText" Grid.Column="1" Text="Grid" Foreground="#89B4FA" FontSize="8" FontWeight="SemiBold" VerticalAlignment="Center"/></Grid>
+                <UniformGrid Grid.Row="1" Columns="4">
+                  <Button x:Name="GridLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="GridLayoutClick" AutomationProperties.Name="Grid terminal layout">
+                    <StackPanel><TextBlock Text="&#x25A6;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Grid" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                  </Button>
+                  <Button x:Name="ColumnsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="ColumnsLayoutClick" AutomationProperties.Name="Columns terminal layout">
+                    <StackPanel><TextBlock Text="&#x25A5;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Cols" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                  </Button>
+                  <Button x:Name="RowsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="RowsLayoutClick" AutomationProperties.Name="Rows terminal layout">
+                    <StackPanel><TextBlock Text="&#x25A4;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Rows" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                  </Button>
+                  <Button x:Name="FocusLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="FocusLayoutClick" AutomationProperties.Name="Focus terminal layout">
+                    <StackPanel><TextBlock Text="&#x25A3;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Focus" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                  </Button>
+                </UniformGrid>
+              </Grid>
+            </Border>
+            <ListBox x:Name="SessionList" Grid.Row="4" SelectionChanged="SessionSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
                   <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening"
@@ -240,6 +263,12 @@
           </DockPanel>
         </Border>
         <Grid x:Name="TerminalHost" Grid.Row="1" Background="#11111B"/>
+        <Grid x:Name="LayoutTransitionOverlay" Grid.Row="1" Panel.ZIndex="12" Background="#F211111B" Visibility="Collapsed" IsHitTestVisible="False" Opacity="1">
+          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock x:Name="LayoutTransitionTitle" Text="GRID LAYOUT" Foreground="#B4BEFE" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+            <Canvas x:Name="LayoutTransitionCanvas" Width="240" Height="138"/>
+          </StackPanel>
+        </Grid>
       </Grid>
       <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#E6242438" BorderBrush="#585B70" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
     </Grid>
