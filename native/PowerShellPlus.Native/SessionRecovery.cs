@@ -213,6 +213,7 @@ public static class SessionRecoveryStore
         {
             var path = Path.Combine(DirectoryPath, SafeSessionId(sessionId) + ".txt");
             if (File.Exists(path)) File.Delete(path);
+            PowerShellStartupScriptStore.Delete(sessionId);
         }
         catch { }
     }

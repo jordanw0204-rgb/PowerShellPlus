@@ -1918,8 +1918,8 @@ public partial class TerminalPane : UserControl
             if (resumeSsh) script += "; " + sshResumeCommand;
             else if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
             if (script.Length == 0) return command;
-            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-            return $"{command} -NoExit -EncodedCommand {encoded}";
+            var scriptPath = PowerShellStartupScriptStore.Save(profile.Id, script);
+            return $"{command} -NoExit -ExecutionPolicy Bypass -File \"{scriptPath}\"";
         }
         if (resumeCodex && Path.GetFileNameWithoutExtension(command.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty).Equals("codex", StringComparison.OrdinalIgnoreCase))
             return $"codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
@@ -1945,6 +1945,8 @@ public partial class TerminalPane : UserControl
 
     public static string DecodePowerShellStartupScript(string commandLine)
     {
+        var storedScript = PowerShellStartupScriptStore.ReadFromCommandLine(commandLine);
+        if (storedScript.Length > 0) return storedScript;
         const string marker = "-EncodedCommand ";
         var index = commandLine.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
         if (index < 0) return string.Empty;
