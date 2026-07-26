@@ -7,6 +7,7 @@ namespace PowerShellPlus.Native;
 public partial class MainWindow
 {
     private sealed record SourceProcessIdentity(int ProcessId, DateTime StartedUtc);
+    private sealed record LiveCodexHandoff(SessionRecoveryEntry? Recovery, bool StartFresh);
     private readonly HashSet<string> activeSessionHandoffs = new(StringComparer.Ordinal);
 
     private async void DetachSessionToWindowsTerminal(SessionProfile profile, TerminalPane pane)
@@ -24,9 +25,16 @@ public partial class MainWindow
             var sshLaunch = SshLaunchStore.Load(profile.Id);
             var sshActive = sshProcess.IsActive && sshLaunch?.IsActive == true
                 && sshLaunch.ShellProcessId == rootProcessId;
-            var recovery = sshActive
-                ? await ResolveExactLiveSshRecoveryAsync(profile, pane, sshLaunch!)
-                : codexProcess.IsActive ? await ResolveExactLiveCodexRecoveryAsync(profile, pane, codexProcess) : null;
+            var startFreshCodex = false;
+            SessionRecoveryEntry? recovery;
+            if (sshActive) recovery = await ResolveExactLiveSshRecoveryAsync(profile, pane, sshLaunch!);
+            else if (codexProcess.IsActive)
+            {
+                var codexHandoff = await ResolveLiveCodexHandoffAsync(profile, pane, codexProcess);
+                recovery = codexHandoff.Recovery;
+                startFreshCodex = codexHandoff.StartFresh;
+            }
+            else recovery = null;
 
             var descendants = rootProcessId is int root
                 ? ProcessTreeInspector.FindDescendantProcesses(root)
@@ -43,7 +51,7 @@ public partial class MainWindow
             }
 
             plan = WindowsTerminalHandoff.CreatePlan(profile, terminalProfile.ProfileName, terminalProfile.CommandLine,
-                pane.GetOutput(), recovery, codexProcess.IsActive);
+                pane.GetOutput(), recovery, codexProcess.IsActive, startFreshCodex: startFreshCodex);
             var confirmation = BuildHandoffConfirmation(plan, descendants);
             if (!PowerShellPlusDialog.Confirm(this, confirmation, "Move session to Windows Terminal?",
                     PowerShellPlusDialogKind.Warning, "Move session", "Keep it here", defaultToPrimary: false))
@@ -100,7 +108,9 @@ public partial class MainWindow
             UpdateStatus(plan.SshActive
                 ? $"{profile.Name} moved to Windows Terminal · restored {plan.RemoteSessionDescription}"
                 : plan.CodexActive
-                    ? $"{profile.Name} moved to Windows Terminal · resumed Codex {ShortId(plan.CodexSessionId!)}"
+                    ? plan.StartFreshCodex
+                        ? $"{profile.Name} moved to Windows Terminal · reopened fresh Codex"
+                        : $"{profile.Name} moved to Windows Terminal · resumed Codex {ShortId(plan.CodexSessionId!)}"
                     : $"{profile.Name} moved to Windows Terminal");
         }
         catch (Exception exception)
@@ -132,10 +142,18 @@ public partial class MainWindow
         if (plan.CodexActive)
         {
             builder.AppendLine();
-            builder.AppendLine($"Codex thread: {plan.CodexSessionId}");
-            builder.AppendLine($"Model: {plan.CodexModel ?? "saved thread default"}");
-            builder.AppendLine($"Permissions: {plan.PermissionDescription}");
-            builder.AppendLine("The exact Codex conversation will continue with codex resume after the original process stops.");
+            if (plan.StartFreshCodex)
+            {
+                builder.AppendLine("Codex thread: not created yet (there is no saved conversation to resume)");
+                builder.AppendLine("Codex will reopen in the same folder using the current Codex defaults after the original process stops.");
+            }
+            else
+            {
+                builder.AppendLine($"Codex thread: {plan.CodexSessionId}");
+                builder.AppendLine($"Model: {plan.CodexModel ?? "saved thread default"}");
+                builder.AppendLine($"Permissions: {plan.PermissionDescription}");
+                builder.AppendLine("The exact Codex conversation will continue with codex resume after the original process stops.");
+            }
         }
         if (plan.SshActive)
         {
@@ -160,17 +178,35 @@ public partial class MainWindow
 
     private static string ShortId(string value) => value.Length <= 12 ? value : value[..8] + "…";
 
-    private static async Task<SessionRecoveryEntry> ResolveExactLiveCodexRecoveryAsync(
+    private static async Task<LiveCodexHandoff> ResolveLiveCodexHandoffAsync(
         SessionProfile profile, TerminalPane pane, CodexProcessState codexProcess)
     {
+        var activeThreadIds = await Task.Run(() => CodexActivityStore.FindActiveThreadIds(codexProcess.ProcessId, codexProcess.StartedUtc));
         var liveMatch = await Task.Run(() => CodexActivityStore.FindActiveCliSession(codexProcess.ProcessId, codexProcess.StartedUtc));
         var launch = CodexLaunchStore.Load(profile.Id);
         var rootShellProcessId = pane.GetRootProcessId();
         var launchIsBoundToThisShell = launch?.IsActive == true && launch.ShellProcessId == rootShellProcessId
-            && CodexSessionLocator.IsSafeCodexId(launch.SessionId);
+            && CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+            && (string.Equals(launch.ExplicitSessionId, launch.SessionId, StringComparison.OrdinalIgnoreCase)
+                || activeThreadIds.Contains(launch.SessionId!, StringComparer.OrdinalIgnoreCase));
         var exactSessionId = liveMatch?.SessionId ?? (launchIsBoundToThisShell ? launch!.SessionId : null);
         if (!CodexSessionLocator.IsSafeCodexId(exactSessionId))
+        {
+            var unpersistedThread = activeThreadIds.Count == 1
+                && CodexSessionLocator.FindSessionById(activeThreadIds[0], requireTopLevelCli: true) is null;
+            if (unpersistedThread)
+            {
+                return new LiveCodexHandoff(new SessionRecoveryEntry
+                {
+                    SessionId = profile.Id,
+                    WorkingDirectory = launch is not null && launch.ShellProcessId == rootShellProcessId && !string.IsNullOrWhiteSpace(launch.WorkingDirectory)
+                        ? launch.WorkingDirectory : profile.WorkingDirectory,
+                    CodexWasActive = true,
+                    CapturedUtc = DateTime.UtcNow
+                }, true);
+            }
             throw new InvalidOperationException("Codex is running, but its live process could not be bound to one exact top-level thread. Nothing was closed.");
+        }
         var verifiedSession = await Task.Run(() => CodexSessionLocator.FindSessionById(exactSessionId, requireTopLevelCli: true));
         if (verifiedSession is null)
             throw new InvalidOperationException("The captured Codex thread does not have a verified top-level CLI transcript. Nothing was closed.");
@@ -181,7 +217,7 @@ public partial class MainWindow
         var approvalsReviewer = latestPermissions?.ApprovalsReviewer ?? liveMatch?.ApprovalsReviewer ?? launch?.ApprovalsReviewer;
         if (!CodexSessionLocator.IsSafeCodexPermissionState(permissionProfile, sandboxMode, approvalPolicy, approvalsReviewer))
             throw new InvalidOperationException("Codex is running, but its exact permission level could not be verified. Nothing was closed.");
-        return new SessionRecoveryEntry
+        return new LiveCodexHandoff(new SessionRecoveryEntry
         {
             SessionId = profile.Id,
             WorkingDirectory = verifiedSession.WorkingDirectory,
@@ -193,7 +229,7 @@ public partial class MainWindow
             CodexPermissionProfile = permissionProfile,
             CodexApprovalsReviewer = approvalsReviewer,
             CapturedUtc = DateTime.UtcNow
-        };
+        }, false);
     }
 
     private static async Task EnsureCodexStateStillMatchesAsync(
@@ -203,8 +239,9 @@ public partial class MainWindow
         var currentCodexProcess = pane.GetCodexProcessState();
         if (!currentCodexProcess.IsActive)
             throw new InvalidOperationException("Codex exited during verification. The handoff was canceled so the source shell remains available.");
-        var currentRecovery = await ResolveExactLiveCodexRecoveryAsync(profile, pane, currentCodexProcess);
-        if (!WindowsTerminalHandoff.MatchesCodexState(plan, currentRecovery))
+        var current = await ResolveLiveCodexHandoffAsync(profile, pane, currentCodexProcess);
+        if (plan.StartFreshCodex != current.StartFresh
+            || !current.StartFresh && (current.Recovery is null || !WindowsTerminalHandoff.MatchesCodexState(plan, current.Recovery)))
             throw new InvalidOperationException("The active Codex thread, model, or permission level changed during verification. Review the updated handoff and try again.");
     }
 
@@ -364,6 +401,7 @@ public partial class MainWindow
         WindowsTerminalHandoffPlan? plan = null;
         WindowsTerminalHandoffPlan? canceledPlan = null;
         WindowsTerminalHandoffPlan? sshPlan = null;
+        WindowsTerminalHandoffPlan? freshCodexPlan = null;
         Process? descendantFixture = null;
         try
         {
@@ -400,6 +438,13 @@ public partial class MainWindow
             var payloadIsDataOnly = payload.RootElement.GetProperty("CodexArguments").GetArrayLength() == arguments.Length
                 && File.ReadAllText(plan.BootstrapPath).Contains("$payload.CodexArguments", StringComparison.Ordinal)
                 && !File.ReadAllText(plan.BootstrapPath).Contains(sessionId, StringComparison.Ordinal);
+            freshCodexPlan = WindowsTerminalHandoff.CreatePlan(profile, terminalProfile.ProfileName, terminalProfile.CommandLine,
+                "fresh Codex transcript", new SessionRecoveryEntry { SessionId = profile.Id, WorkingDirectory = fixtureRoot, CodexWasActive = true },
+                true, true, fixtureRoot, true);
+            using var freshPayload = JsonDocument.Parse(File.ReadAllText(freshCodexPlan.PayloadPath));
+            var freshCodexHandoffSupported = freshCodexPlan.CodexActive && freshCodexPlan.StartFreshCodex
+                && freshCodexPlan.CodexSessionId is null && freshCodexPlan.CodexArguments.Count == 0
+                && freshPayload.RootElement.GetProperty("StartCodex").GetBoolean();
 
             var launched = await WindowsTerminalHandoff.LaunchAndWaitForStartAsync(plan, false, TimeSpan.FromSeconds(8));
             await Task.Delay(180);
@@ -501,9 +546,9 @@ public partial class MainWindow
                 && payloadIsDataOnly && waitsBeforeSourceRelease && releasePrepared && releaseCommitted && bootstrapCompleted
                 && bootstrapForwardsArguments && sshPlanPreservesVerifiedRecovery && sshLaunched.Success && sshReleasePrepared
                 && sshReleaseCommitted && sshBootstrapCompleted && sshBootstrapForwardsArguments
-                && unsafePermissionBlocked && canceledHandoffNeverReleased && detectsLiveChildProcess;
+                && freshCodexHandoffSupported && unsafePermissionBlocked && canceledHandoffNeverReleased && detectsLiveChildProcess;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Windows Terminal handoff used a verified two-phase release and preserved exact local and SSH agent resume state.\nExactResumeArguments={exactResumeArguments}\nRevalidationDetectsChanges={revalidationDetectsChanges}\nTerminalCommandIsStructured={terminalCommandIsStructured}\nTranscriptIsSafeAndPersisted={transcriptIsSafeAndPersisted}\nQueuePersisted={queuePersisted}\nPayloadIsDataOnly={payloadIsDataOnly}\nExternalPowerShellVerified={launched.Success}\nWaitsBeforeSourceRelease={waitsBeforeSourceRelease}\nReleasePrepared={releasePrepared}\nReleaseCommitted={releaseCommitted}\nBootstrapCompleted={bootstrapCompleted}\nBootstrapForwardsArguments={bootstrapForwardsArguments}\nSshPlanPreservesVerifiedRecovery={sshPlanPreservesVerifiedRecovery}\nSshExternalPowerShellVerified={sshLaunched.Success}\nSshReleasePrepared={sshReleasePrepared}\nSshReleaseCommitted={sshReleaseCommitted}\nSshBootstrapCompleted={sshBootstrapCompleted}\nSshBootstrapForwardsArguments={sshBootstrapForwardsArguments}\nUnsafePermissionBlocked={unsafePermissionBlocked}\nCanceledHandoffNeverReleased={canceledHandoffNeverReleased}\nDetectsLiveChildProcess={detectsLiveChildProcess}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Windows Terminal handoff used a verified two-phase release and preserved exact local and SSH agent resume state.\nExactResumeArguments={exactResumeArguments}\nRevalidationDetectsChanges={revalidationDetectsChanges}\nTerminalCommandIsStructured={terminalCommandIsStructured}\nTranscriptIsSafeAndPersisted={transcriptIsSafeAndPersisted}\nQueuePersisted={queuePersisted}\nPayloadIsDataOnly={payloadIsDataOnly}\nFreshCodexHandoffSupported={freshCodexHandoffSupported}\nExternalPowerShellVerified={launched.Success}\nWaitsBeforeSourceRelease={waitsBeforeSourceRelease}\nReleasePrepared={releasePrepared}\nReleaseCommitted={releaseCommitted}\nBootstrapCompleted={bootstrapCompleted}\nBootstrapForwardsArguments={bootstrapForwardsArguments}\nSshPlanPreservesVerifiedRecovery={sshPlanPreservesVerifiedRecovery}\nSshExternalPowerShellVerified={sshLaunched.Success}\nSshReleasePrepared={sshReleasePrepared}\nSshReleaseCommitted={sshReleaseCommitted}\nSshBootstrapCompleted={sshBootstrapCompleted}\nSshBootstrapForwardsArguments={sshBootstrapForwardsArguments}\nUnsafePermissionBlocked={unsafePermissionBlocked}\nCanceledHandoffNeverReleased={canceledHandoffNeverReleased}\nDetectsLiveChildProcess={detectsLiveChildProcess}");
             return success;
         }
         finally
@@ -513,6 +558,7 @@ public partial class MainWindow
             if (plan is not null) WindowsTerminalHandoff.Discard(plan);
             if (canceledPlan is not null) WindowsTerminalHandoff.Discard(canceledPlan);
             if (sshPlan is not null) WindowsTerminalHandoff.Discard(sshPlan);
+            if (freshCodexPlan is not null) WindowsTerminalHandoff.Discard(freshCodexPlan);
             try { Directory.Delete(fixtureRoot, true); } catch { }
         }
     }

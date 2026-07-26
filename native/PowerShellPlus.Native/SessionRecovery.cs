@@ -604,7 +604,13 @@ public static class CodexSessionLocator
             {
                 model = payload.TryGetProperty("model", out var turnModel) ? turnModel.GetString() : null;
                 approvalPolicy = payload.TryGetProperty("approval_policy", out var turnApproval) ? turnApproval.GetString() : null;
+                approvalsReviewer = payload.TryGetProperty("approvals_reviewer", out var turnReviewer) ? turnReviewer.GetString() : null;
                 if (payload.TryGetProperty("sandbox_policy", out var sandboxPolicy)) sandboxMode = ReadSandboxMode(sandboxPolicy);
+                if (payload.TryGetProperty("permission_profile", out var turnProfile))
+                {
+                    permissionProfile = ReadTurnPermissionProfile(turnProfile);
+                    sandboxMode ??= ReadTurnPermissionProfileSandboxMode(turnProfile);
+                }
             }
             else if (payload.TryGetProperty("type", out var payloadType) && payloadType.GetString() == "thread_settings_applied"
                 && payload.TryGetProperty("thread_settings", out var settings))
@@ -660,6 +666,33 @@ public static class CodexSessionLocator
         if (activeProfile.ValueKind != JsonValueKind.Object || !activeProfile.TryGetProperty("id", out var id)) return null;
         var value = id.GetString();
         return IsSafeCodexPermissionProfile(value) ? value : null;
+    }
+
+    private static string? ReadTurnPermissionProfile(JsonElement permissionProfile)
+    {
+        if (permissionProfile.ValueKind == JsonValueKind.String)
+        {
+            var value = permissionProfile.GetString();
+            return IsSafeCodexPermissionProfile(value) ? value : null;
+        }
+        if (permissionProfile.ValueKind != JsonValueKind.Object || !permissionProfile.TryGetProperty("type", out var type)) return null;
+        var profileType = type.GetString();
+        return IsSafeCodexPermissionProfile(profileType) ? profileType : null;
+    }
+
+    private static string? ReadTurnPermissionProfileSandboxMode(JsonElement permissionProfile)
+    {
+        if (permissionProfile.ValueKind != JsonValueKind.Object || !permissionProfile.TryGetProperty("type", out var type)) return null;
+        return type.GetString() switch
+        {
+            "disabled" => "danger-full-access",
+            "managed" when permissionProfile.TryGetProperty("file_system", out var fileSystem)
+                && fileSystem.ValueKind == JsonValueKind.Object
+                && fileSystem.TryGetProperty("type", out var fileSystemType)
+                && fileSystemType.GetString() == "unrestricted" => "danger-full-access",
+            "managed" => "workspace-write",
+            _ => null
+        };
     }
 
     private sealed class ModelFileCursor(string sessionId)
@@ -734,6 +767,12 @@ public static class CodexActivityStore
         }
         return null;
     }
+
+    public static IReadOnlyList<string> FindActiveThreadIds(int? processId, DateTime? processStartedUtc,
+        string? logsDatabasePath = null)
+        => processId is > 0 && processStartedUtc is not null
+            ? ReadActiveThreadIds(processId.Value, processStartedUtc.Value, logsDatabasePath)
+            : [];
 
     public static CodexSessionMatch? FindActiveCliSessionNearLaunch(DateTime launchStartedUtc,
         ISet<string>? excludedSessionIds = null, string? logsDatabasePath = null, string? sessionsRoot = null)

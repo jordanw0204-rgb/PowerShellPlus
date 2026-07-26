@@ -417,17 +417,19 @@ public partial class MainWindow : Window
                     var launch = CodexLaunchStore.Load(capture.SessionId);
                     if (!codex.IsActive && launch?.IsActive == true && launch.ShellProcessId is > 0)
                         codex = ProcessTreeInspector.FindCodexProcess(launch.ShellProcessId.Value);
-                    var codexIsActive = codex.IsActive || launch?.IsActive == true;
-                    var codexMatch = codex.IsActive
+                    var codexIsActive = codex.IsActive;
+                    var exactCodexMatch = codex.IsActive
                         ? CodexActivityStore.FindActiveCliSession(codex.ProcessId, codex.StartedUtc, usedCodexSessionIds)
                         : null;
-                    codexMatch ??= launch?.IsActive == true
-                        ? CodexActivityStore.FindActiveCliSessionNearLaunch(launch.StartedUtc, usedCodexSessionIds)
-                        : null;
-                    codexMatch ??= launch?.IsActive == true && !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
-                        ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
-                        : null;
-                    codexMatch ??= codex.IsActive ? CodexSessionLocator.FindBestSession(codex.StartedUtc, null, usedCodexSessionIds) : null;
+                    var codexMatch = exactCodexMatch;
+                    var activeCodexThreadIds = codex.IsActive
+                        ? CodexActivityStore.FindActiveThreadIds(codex.ProcessId, codex.StartedUtc)
+                        : [];
+                    var launchSessionIsBound = launch?.IsActive == true
+                        && launch.ShellProcessId == (capture.RootProcessId ?? launch.ShellProcessId)
+                        && CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+                        && (string.Equals(launch.ExplicitSessionId, launch.SessionId, StringComparison.OrdinalIgnoreCase)
+                            || activeCodexThreadIds.Contains(launch.SessionId!, StringComparer.OrdinalIgnoreCase));
                     var codexSessionId = codexMatch?.SessionId;
                     var codexDirectory = codexMatch?.WorkingDirectory;
                     var codexModel = codexMatch?.Model;
@@ -435,7 +437,7 @@ public partial class MainWindow : Window
                     var codexApprovalPolicy = codexMatch?.ApprovalPolicy;
                     var codexPermissionProfile = codexMatch?.PermissionProfile;
                     var codexApprovalsReviewer = codexMatch?.ApprovalsReviewer;
-                    if (codexSessionId is null && launch?.IsActive == true && CodexSessionLocator.IsSafeCodexId(launch.SessionId))
+                    if (codexSessionId is null && launchSessionIsBound && launch is not null)
                     {
                         codexSessionId = launch.SessionId;
                         codexDirectory = launch.WorkingDirectory;
@@ -455,7 +457,10 @@ public partial class MainWindow : Window
                         codexPermissionProfile = oldEntry.CodexPermissionProfile;
                         codexApprovalsReviewer = oldEntry.CodexApprovalsReviewer;
                     }
-                    if (codexMatch is not null && launch?.IsActive == true) CodexLaunchStore.Confirm(launch, codexMatch);
+                    // Only a process-ID correlation may become durable launch state. Time/CWD
+                    // fallbacks can collide when two Codex CLIs start in the same directory.
+                    if (exactCodexMatch is not null && launch?.IsActive == true && launch.ShellProcessId == capture.RootProcessId)
+                        CodexLaunchStore.Confirm(launch, exactCodexMatch);
                     if (codexSessionId is not null)
                     {
                         usedCodexSessionIds.Add(codexSessionId);
@@ -585,11 +590,18 @@ public partial class MainWindow : Window
             var launch = CodexLaunchStore.Load(profile.Id);
             if (launch?.IsActive != true) continue;
 
-            var match = !CodexSessionLocator.IsSafeCodexId(launch.SessionId)
-                ? CodexSessionLocator.FindBestSession(launch.StartedUtc, launch.WorkingDirectory, usedCodexSessionIds)
-                : null;
+            var launchProcess = launch.ShellProcessId is > 0
+                ? ProcessTreeInspector.FindCodexProcess(launch.ShellProcessId.Value)
+                : default;
+            if (!launchProcess.IsActive) continue;
+            var match = CodexActivityStore.FindActiveCliSession(launchProcess.ProcessId, launchProcess.StartedUtc, usedCodexSessionIds);
             if (match is not null) CodexLaunchStore.Confirm(launch, match);
-            var sessionId = match?.SessionId ?? launch.SessionId;
+            var activeThreadIds = CodexActivityStore.FindActiveThreadIds(launchProcess.ProcessId, launchProcess.StartedUtc);
+            var explicitSessionIsBound = CodexSessionLocator.IsSafeCodexId(launch.ExplicitSessionId)
+                && string.Equals(launch.ExplicitSessionId, launch.SessionId, StringComparison.OrdinalIgnoreCase);
+            var capturedSessionIsBound = CodexSessionLocator.IsSafeCodexId(launch.SessionId)
+                && activeThreadIds.Contains(launch.SessionId!, StringComparer.OrdinalIgnoreCase);
+            var sessionId = match?.SessionId ?? (explicitSessionIsBound || capturedSessionIsBound ? launch.SessionId : null);
             if (!CodexSessionLocator.IsSafeCodexId(sessionId)) continue;
 
             if (entry is not null && CodexSessionLocator.IsSafeCodexId(entry.CodexSessionId))
@@ -1551,6 +1563,24 @@ public partial class MainWindow : Window
             System.Text.Json.JsonSerializer.Serialize(unsafeModelChange)
         ]);
         File.WriteAllText(Path.Combine(fixtureRoot, "rollout-partially-written.jsonl"), "{not-complete-json");
+        var currentPermissionFixtureId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        var currentPermissionMetadataTime = fixtureStarted.AddDays(-1);
+        var currentPermissionMetadata = new { timestamp = currentPermissionMetadataTime.ToString("O"), type = "session_meta", payload = new { session_id = currentPermissionFixtureId, timestamp = currentPermissionMetadataTime.ToString("O"), cwd = actualCodexDirectory, source = "cli" } };
+        var currentPermissionTurn = new
+        {
+            timestamp = fixtureStarted.AddSeconds(6).ToString("O"),
+            type = "turn_context",
+            payload = new
+            {
+                model = savedModel,
+                approval_policy = "on-request",
+                approvals_reviewer = savedApprovalsReviewer,
+                sandbox_policy = new { type = "workspace-write" },
+                permission_profile = new { type = "managed", file_system = new { type = "restricted" }, network = "restricted" }
+            }
+        };
+        File.WriteAllLines(Path.Combine(fixtureRoot, "rollout-current-permissions.jsonl"),
+            [System.Text.Json.JsonSerializer.Serialize(currentPermissionMetadata), System.Text.Json.JsonSerializer.Serialize(currentPermissionTurn)]);
         var mappedSession = CodexSessionLocator.FindBestSession(fixtureStarted, null, null, fixtureRoot);
         var codexSessionMapped = mappedSession?.SessionId == fixtureId && string.Equals(mappedSession.WorkingDirectory, actualCodexDirectory, StringComparison.OrdinalIgnoreCase);
         var latestModelMapped = mappedSession?.Model == savedModel && CodexSessionLocator.FindLatestModel(fixtureId, fixtureRoot)?.Model == savedModel;
@@ -1561,6 +1591,11 @@ public partial class MainWindow : Window
             && latestPermissions?.SandboxMode == savedSandboxMode && latestPermissions.ApprovalPolicy == savedApprovalPolicy
             && latestPermissions.PermissionProfile == savedPermissionProfile && latestPermissions.ApprovalsReviewer == savedApprovalsReviewer;
         var partialRolloutIgnored = codexSessionMapped && latestModelMapped && latestPermissionsMapped;
+        var currentTurnContextPermissions = CodexSessionLocator.FindLatestPermissions(currentPermissionFixtureId, fixtureRoot);
+        var currentTurnContextPermissionsMapped = currentTurnContextPermissions?.PermissionProfile == "managed"
+            && currentTurnContextPermissions.SandboxMode == "workspace-write"
+            && currentTurnContextPermissions.ApprovalPolicy == "on-request"
+            && currentTurnContextPermissions.ApprovalsReviewer == savedApprovalsReviewer;
         var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
         const int fixtureProcessId = 42420;
@@ -1592,6 +1627,8 @@ public partial class MainWindow : Window
         }
         var inTuiResumeRebound = activeResumedSession?.SessionId == resumedThreadId && activeResumedSession.Model == savedModel
             && activeResumedSession.SandboxMode == savedSandboxMode && activeResumedSession.ApprovalPolicy == savedApprovalPolicy;
+        var activeThreadIdsRemainProcessBound = CodexActivityStore.FindActiveThreadIds(fixtureProcessId, fixtureStarted, logsFixturePath)
+            .SequenceEqual(new[] { subagentThreadId, resumedThreadId, launcherThreadId });
         var liveRolloutSharedRead = inTuiResumeRebound;
         var launchTimeFallbackRebound = false;
         Process? fallbackProbe = null;
@@ -1938,11 +1975,11 @@ public partial class MainWindow : Window
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
         var success = workspaceTestIsolated && composerDraftSurvivesStore && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
             && sshWrapperInstalled && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
-            && codexSessionMapped && latestModelMapped && latestPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
+            && codexSessionMapped && latestModelMapped && latestPermissionsMapped && currentTurnContextPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && activeThreadIdsRemainProcessBound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
             && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
             && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe && fileBridgeIsBoundedAndSafe;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}\nFileBridgeIsBoundedAndSafe={fileBridgeIsBoundedAndSafe}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nCurrentTurnContextPermissionsMapped={currentTurnContextPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nActiveThreadIdsRemainProcessBound={activeThreadIdsRemainProcessBound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}\nFileBridgeIsBoundedAndSafe={fileBridgeIsBoundedAndSafe}");
         File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}");
         return success;
     }

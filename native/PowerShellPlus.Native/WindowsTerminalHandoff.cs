@@ -29,7 +29,8 @@ public sealed class WindowsTerminalHandoffPlan
     public string? PermissionDescription { get; init; }
     public string? SshDestination { get; init; }
     public string? RemoteSessionDescription { get; init; }
-    public bool CodexActive => CodexSessionId is not null;
+    public bool StartFreshCodex { get; init; }
+    public bool CodexActive => CodexSessionId is not null || StartFreshCodex;
     public bool SshActive => SshArguments.Count > 0;
     internal bool SmokeTest { get; init; }
 }
@@ -50,6 +51,7 @@ internal sealed class WindowsTerminalHandoffPayload
     public string CompletedPath { get; set; } = string.Empty;
     public string[] CodexArguments { get; set; } = [];
     public string[] SshArguments { get; set; } = [];
+    public bool StartCodex { get; set; }
     public bool SmokeTest { get; set; }
 }
 
@@ -69,7 +71,8 @@ public static class WindowsTerminalHandoff
         SessionRecoveryEntry? recovery,
         bool codexActive,
         bool smokeTest = false,
-        string? directoryOverride = null)
+        string? directoryOverride = null,
+        bool startFreshCodex = false)
     {
         var wt = ResolveExecutable("wt.exe")
             ?? throw new InvalidOperationException("Windows Terminal (wt.exe) is not installed or its execution alias is unavailable.");
@@ -84,8 +87,10 @@ public static class WindowsTerminalHandoff
         if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
             workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        var codexArguments = codexActive && !sshActive ? BuildCodexArguments(recovery) : [];
-        var permissionDescription = codexActive && !sshActive ? DescribePermissions(recovery!) : null;
+        if (startFreshCodex && (!codexActive || sshActive))
+            throw new InvalidOperationException("A fresh Codex handoff requires a live local Codex process.");
+        var codexArguments = codexActive && !sshActive && !startFreshCodex ? BuildCodexArguments(recovery) : [];
+        var permissionDescription = codexActive && !sshActive && !startFreshCodex ? DescribePermissions(recovery!) : null;
         var transferId = $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{SessionRecoveryStore.SafeSessionId(profile.Id)}-{Guid.NewGuid():N}";
         var root = directoryOverride ?? DirectoryPath;
         var directory = Path.Combine(root, transferId);
@@ -117,6 +122,7 @@ public static class WindowsTerminalHandoff
             PermissionDescription = permissionDescription,
             SshDestination = sshResume?.Destination,
             RemoteSessionDescription = sshResume?.Description,
+            StartFreshCodex = startFreshCodex,
             SmokeTest = smokeTest
         };
 
@@ -135,6 +141,7 @@ public static class WindowsTerminalHandoff
             CompletedPath = plan.CompletedPath,
             CodexArguments = plan.CodexArguments.ToArray(),
             SshArguments = plan.SshArguments.ToArray(),
+            StartCodex = plan.CodexActive,
             SmokeTest = smokeTest
         };
         File.WriteAllText(plan.PayloadPath, JsonSerializer.Serialize(payload, JsonOptions), new UTF8Encoding(false));
@@ -432,9 +439,14 @@ try {
     } elseif ($sshArguments.Count -gt 0) {
         Write-Host ('PowerShellPlus reconnecting ' + $payload.SessionName + ' through SSH.') -ForegroundColor Cyan
         & ssh @sshArguments
-    } elseif ($codexArguments.Count -gt 0) {
-        Write-Host ('PowerShellPlus resumed session "' + $payload.SessionName + '". Transcript: ' + $payload.TranscriptPath) -ForegroundColor DarkGray
-        & codex @codexArguments
+    } elseif ($payload.StartCodex) {
+        if ($codexArguments.Count -gt 0) {
+            Write-Host ('PowerShellPlus resumed session "' + $payload.SessionName + '". Transcript: ' + $payload.TranscriptPath) -ForegroundColor DarkGray
+            & codex @codexArguments
+        } else {
+            Write-Host ('PowerShellPlus reopened fresh Codex for "' + $payload.SessionName + '". No saved conversation existed yet.') -ForegroundColor DarkGray
+            & codex
+        }
     } else {
         Write-Host ('PowerShellPlus moved session "' + $payload.SessionName + '" into this terminal.') -ForegroundColor Green
         Write-Host ('Saved transcript: ' + $payload.TranscriptPath) -ForegroundColor DarkGray
