@@ -1778,7 +1778,14 @@ public partial class TerminalPane : UserControl
         previewButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, previewButton));
         var openedAboveNativeSurface = AttachmentPreviewOverlay.Visibility == Visibility.Visible
             && AttachmentPreviewImage.Source is not null
-            && Terminal.Visibility == Visibility.Hidden;
+            && Terminal.Visibility == Visibility.Hidden
+            && AttachmentPreviewCard.HorizontalAlignment == HorizontalAlignment.Stretch
+            && AttachmentPreviewCard.VerticalAlignment == VerticalAlignment.Stretch
+            && AttachmentPreviewViewport.ClipToBounds
+            && AttachmentPreviewImage.Stretch == Stretch.Uniform
+            && AttachmentPreviewImage.StretchDirection == StretchDirection.DownOnly
+            && AttachmentPreviewMedia.Stretch == Stretch.Uniform
+            && AttachmentPreviewMedia.StretchDirection == StretchDirection.DownOnly;
         CloseAttachmentPreview();
         return openedAboveNativeSurface
             && AttachmentPreviewOverlay.Visibility == Visibility.Collapsed
