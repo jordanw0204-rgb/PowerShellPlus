@@ -1336,6 +1336,10 @@ public partial class TerminalPane : UserControl
         return Math.Abs(nativeScrollbar.Value - target) < .5;
     }
     public bool RecoveryOverlayVisibleForTest => RecoveryOverlay.Visibility == Visibility.Visible;
+    public bool RecoverySurfaceOwnsViewportForTest => RecoveryOverlay.Visibility == Visibility.Visible
+        && TerminalSurfaceGrid.Visibility != Visibility.Visible;
+    public bool TerminalSurfaceOwnsViewportForTest => RecoveryOverlay.Visibility != Visibility.Visible
+        && TerminalSurfaceGrid.Visibility == Visibility.Visible;
 
     public bool FocusCommandInputForTest() => CommandInput.Focus();
     public bool CommandBarExpandedForTest => Profile.CommandBarExpanded && CommandBarContainer.Visibility == Visibility.Visible;
@@ -2396,7 +2400,23 @@ public partial class TerminalPane : UserControl
         ConfigureRecoveryView(true);
     }
 
-    public void HidePreviousOutputForTest() => RecoveryOverlay.Visibility = Visibility.Collapsed;
+    public void SetPreviousOutputHiddenByDefaultForTest(string output)
+    {
+        previousOutput = output;
+        ConfigureRecoveryView();
+    }
+
+    public void HidePreviousOutputForTest() => SetRecoverySurfaceVisible(false);
+
+    private void SetRecoverySurfaceVisible(bool visible)
+    {
+        // EasyTerminalControl contains an HWND. WPF overlays cannot reliably
+        // cover an HWND in the same airspace: focus or composition changes can
+        // make either surface flash through. Exactly one viewport owner must be
+        // visible at a time.
+        TerminalSurfaceGrid.Visibility = visible ? Visibility.Hidden : Visibility.Visible;
+        RecoveryOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private void ConfigureRecoveryView(bool show = false)
     {
@@ -2404,7 +2424,11 @@ public partial class TerminalPane : UserControl
         PreviousOutputButton.Visibility = Visibility.Visible;
         RecoveryOutputText.Text = previousOutput;
         RecoveryTimestampText.Text = startupRecovery?.CapturedUtc.ToLocalTime().ToString("Recovered MMM d, yyyy 'at' h:mm tt") ?? "Recovered after restart";
-        if (show || startupRecovery?.CodexWasActive != true) RecoveryOverlay.Visibility = Visibility.Visible;
+        // Recovered output remains one click away in the pane header, but a live
+        // terminal always owns the viewport after startup. Auto-opening this
+        // WPF surface over an HWND is both surprising and vulnerable to native
+        // airspace flashes when focus changes.
+        SetRecoverySurfaceVisible(show);
     }
 
     private void ActivatePane(object sender, MouseButtonEventArgs e)
@@ -2954,8 +2978,8 @@ public partial class TerminalPane : UserControl
     private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
     private void ToggleCommandBarClick(object sender, RoutedEventArgs e) { SetCommandBarExpanded(!Profile.CommandBarExpanded, true, true); e.Handled = true; }
-    private void PreviousOutputClick(object sender, RoutedEventArgs e) { ConfigureRecoveryView(true); RecoveryOverlay.Visibility = Visibility.Visible; }
-    private void CloseRecoveryClick(object sender, RoutedEventArgs e) { RecoveryOverlay.Visibility = Visibility.Collapsed; Terminal.Focus(); }
+    private void PreviousOutputClick(object sender, RoutedEventArgs e) => ConfigureRecoveryView(true);
+    private void CloseRecoveryClick(object sender, RoutedEventArgs e) { SetRecoverySurfaceVisible(false); Terminal.Focus(); }
     private void ClearClick(object sender, RoutedEventArgs e) { Terminal.ConPTYTerm?.ClearUITerminal(); Terminal.Focus(); }
     private void StopClick(object sender, RoutedEventArgs e) => Stop();
     private async void RestartClick(object sender, RoutedEventArgs e) => await RestartAsync();

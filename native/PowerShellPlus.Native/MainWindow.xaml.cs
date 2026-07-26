@@ -2678,13 +2678,19 @@ public partial class MainWindow : Window
             activationTarget.UpdateLayout();
             var terminalScrollbarHasRealRange = scrollbackAccepted && activationTarget.TerminalScrollbarHasRangeForTest;
             var terminalScrollbarMovesNativeViewport = activationTarget.ExerciseTerminalScrollbarForTest();
+            activationTarget.SetPreviousOutputHiddenByDefaultForTest("RECOVERY_DEFAULT_HIDDEN_REGRESSION");
+            var recoverySurfaceDefaultsHidden = activationTarget.TerminalSurfaceOwnsViewportForTest;
             activationTarget.SetPreviousOutputForTest("RECOVERY_SURFACE_CLICK_REGRESSION");
+            var recoverySurfaceExcludesNativeTerminal = activationTarget.RecoverySurfaceOwnsViewportForTest;
             activationTarget.HidePreviousOutputForTest();
+            var terminalSurfaceRestoredExclusively = activationTarget.TerminalSurfaceOwnsViewportForTest;
             var terminalClickAccepted = activationTarget.SimulateTerminalSurfaceClickForTest();
             var composerClickAccepted = activationTarget.FocusCommandInputForTest();
             await Dispatcher.Yield(DispatcherPriority.Input);
             var terminalClicksKeepRecoveryHidden = terminalClickAccepted && composerClickAccepted
                 && !activationTarget.RecoveryOverlayVisibleForTest;
+            var recoverySurfaceOwnershipStable = recoverySurfaceExcludesNativeTerminal
+                && recoverySurfaceDefaultsHidden && terminalSurfaceRestoredExclusively && terminalClicksKeepRecoveryHidden;
 
             const string renameMarker = "TERMINAL_RENAME_PRESERVES_LIVE_STATE";
             var renameMarkerAccepted = await activationTarget.SendCommandAsync($"Write-Output '{renameMarker}'");
@@ -2970,7 +2976,7 @@ public partial class MainWindow : Window
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
                 && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal;
             var success = inputReady && outputReady && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
-                && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalClicksKeepRecoveryHidden
+                && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
@@ -2998,7 +3004,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
-            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}");
+            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
             if (!terminalScrollbarBridgesStable)
                 foreach (var pane in panes.Values) File.AppendAllText(reportPath, $"\nTerminalScrollbarBridge[{pane.Profile.Name}]={pane.TerminalScrollbarBridgeDiagnosticForTest}");
             if (!success)
