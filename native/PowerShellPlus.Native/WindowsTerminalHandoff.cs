@@ -306,23 +306,10 @@ public static class WindowsTerminalHandoff
             arguments.Add("--model");
             arguments.Add(recovery.CodexModel!);
         }
-        if (CodexSessionLocator.IsSafeCodexPermissionProfile(recovery.CodexPermissionProfile))
-        {
-            arguments.Add("--config");
-            arguments.Add($"default_permissions=\"{recovery.CodexPermissionProfile}\"");
-        }
-        else
-        {
-            arguments.Add("--sandbox");
-            arguments.Add(recovery.CodexSandboxMode!);
-        }
-        if (CodexSessionLocator.IsSafeCodexApprovalsReviewer(recovery.CodexApprovalsReviewer))
-        {
-            arguments.Add("--config");
-            arguments.Add($"approvals_reviewer=\"{recovery.CodexApprovalsReviewer}\"");
-        }
-        arguments.Add("--ask-for-approval");
-        arguments.Add(recovery.CodexApprovalPolicy!);
+        if (!CodexResumeArguments.TryBuild(recovery.CodexPermissionProfile, recovery.CodexSandboxMode,
+            recovery.CodexApprovalPolicy, recovery.CodexApprovalsReviewer, out var permissionArguments))
+            throw new InvalidOperationException("The active Codex permission level could not be translated to supported CLI controls. The source session was left running.");
+        arguments.AddRange(permissionArguments);
         return arguments;
     }
 

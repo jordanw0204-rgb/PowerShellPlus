@@ -1395,23 +1395,23 @@ public partial class MainWindow : Window
         var codexScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy }));
         var profilePermissionScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = savedModel, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy, CodexPermissionProfile = savedPermissionProfile, CodexApprovalsReviewer = savedApprovalsReviewer }));
         var pickerScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true }));
-        var unsafeModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = "gpt'; Write-Output unsafe; #" }));
-        var unsafePermissionsScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexSandboxMode = "danger-full-access'; Write-Output unsafe; #", CodexApprovalPolicy = savedApprovalPolicy }));
+        var unsafeModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexModel = "gpt'; Write-Output unsafe; #", CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy }));
         var normalDoesNotResumeCodex = !normalScript.Contains("codex resume", StringComparison.OrdinalIgnoreCase);
         var codexResumesExactSession = codexScript.Contains("codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.OrdinalIgnoreCase);
         var codexResumesSavedModel = codexScript.Contains($"--model '{savedModel}'", StringComparison.Ordinal);
         var codexResumesSavedPermissions = codexScript.Contains($"--sandbox '{savedSandboxMode}' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal);
         var profilePermissionResumeStart = profilePermissionScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
         var profilePermissionResumeCommand = profilePermissionResumeStart >= 0 ? profilePermissionScript[profilePermissionResumeStart..] : profilePermissionScript;
-        var codexResumesSavedPermissionProfile = profilePermissionResumeCommand.Contains($"--config 'default_permissions=\"{savedPermissionProfile}\"' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
-            && !profilePermissionResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase);
+        var codexResumesSavedPermissionProfile = profilePermissionResumeCommand.Contains($"--sandbox '{savedSandboxMode}' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
+            && !profilePermissionResumeCommand.Contains("default_permissions", StringComparison.OrdinalIgnoreCase);
         var unsafeModelRejected = !unsafeModelScript.Contains("codex resume '11111111-2222-3333-4444-555555555555' --model", StringComparison.OrdinalIgnoreCase)
             && !unsafeModelScript.Contains("Write-Output unsafe", StringComparison.Ordinal);
-        var unsafeResumeStart = unsafePermissionsScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
-        var unsafeResumeCommand = unsafeResumeStart >= 0 ? unsafePermissionsScript[unsafeResumeStart..] : unsafePermissionsScript;
-        var unsafePermissionsRejected = !unsafeResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase)
-            && !unsafeResumeCommand.Contains("--ask-for-approval", StringComparison.OrdinalIgnoreCase)
-            && !unsafeResumeCommand.Contains("Write-Output unsafe", StringComparison.Ordinal);
+        var unsafePermissionsRejected = false;
+        try
+        {
+            _ = TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = "11111111-2222-3333-4444-555555555555", CodexSandboxMode = "danger-full-access'; Write-Output unsafe; #", CodexApprovalPolicy = savedApprovalPolicy });
+        }
+        catch (InvalidOperationException) { unsafePermissionsRejected = true; }
         var ambiguousCodexUsesPicker = pickerScript.Contains("codex resume --all", StringComparison.OrdinalIgnoreCase) && !pickerScript.Contains("--last", StringComparison.OrdinalIgnoreCase);
         var powershellWrapperInstalled = normalScript.Contains("function global:codex", StringComparison.OrdinalIgnoreCase)
             && normalScript.Contains(profile.Id, StringComparison.Ordinal);
@@ -1596,7 +1596,7 @@ public partial class MainWindow : Window
             && currentTurnContextPermissions.SandboxMode == "workspace-write"
             && currentTurnContextPermissions.ApprovalPolicy == "on-request"
             && currentTurnContextPermissions.ApprovalsReviewer == savedApprovalsReviewer;
-        var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory }))
+        var changedDirectoryRestored = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry { CodexWasActive = true, CodexSessionId = fixtureId, WorkingDirectory = actualCodexDirectory, CodexSandboxMode = savedSandboxMode, CodexApprovalPolicy = savedApprovalPolicy }))
             .Contains($"Set-Location -LiteralPath '{actualCodexDirectory.Replace("'", "''")}'", StringComparison.OrdinalIgnoreCase);
         const int fixtureProcessId = 42420;
         const string launcherThreadId = "11111111-aaaa-bbbb-cccc-111111111111";
@@ -1905,8 +1905,8 @@ public partial class MainWindow : Window
         var importedResumeScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, importedRecovery));
         var importedResumeStart = importedResumeScript.LastIndexOf("; & codex resume", StringComparison.OrdinalIgnoreCase);
         var importedResumeCommand = importedResumeStart >= 0 ? importedResumeScript[importedResumeStart..] : importedResumeScript;
-        var importResumeCommandIsExact = importedResumeCommand.Contains($"codex resume '{fixtureId}' --model '{savedModel}' --config 'default_permissions=\"{savedPermissionProfile}\"' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
-            && !importedResumeCommand.Contains("--sandbox", StringComparison.OrdinalIgnoreCase);
+        var importResumeCommandIsExact = importedResumeCommand.Contains($"codex resume '{fixtureId}' --model '{savedModel}' --sandbox '{savedSandboxMode}' --config 'approvals_reviewer=\"{savedApprovalsReviewer}\"' --ask-for-approval '{savedApprovalPolicy}'", StringComparison.Ordinal)
+            && !importedResumeCommand.Contains("default_permissions", StringComparison.OrdinalIgnoreCase);
         var secondCandidate = importedCandidate with { SessionId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", FileModifiedUtc = fixtureStarted.AddSeconds(1) };
         var nestedCodexDirectory = Path.Combine(actualCodexDirectory, "src", "feature");
         var descendantImport = WindowsTerminalImportPlanner.Create(new WindowsTerminalWindowCapture(IntPtr.Zero, "Windows Terminal", [
@@ -1973,14 +1973,15 @@ public partial class MainWindow : Window
         var restored = IsVisible;
         var rootAfter = pane.GetRootProcessId();
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
+        var terminalHoverDetailsWork = TerminalHoverDetailsBuilder.WorksForTest();
         var success = workspaceTestIsolated && composerDraftSurvivesStore && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
             && sshWrapperInstalled && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
             && codexSessionMapped && latestModelMapped && latestPermissionsMapped && currentTurnContextPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && activeThreadIdsRemainProcessBound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
             && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
-            && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe && fileBridgeIsBoundedAndSafe;
+            && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe && fileBridgeIsBoundedAndSafe && terminalHoverDetailsWork;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
         File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nCurrentTurnContextPermissionsMapped={currentTurnContextPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nActiveThreadIdsRemainProcessBound={activeThreadIdsRemainProcessBound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}\nFileBridgeIsBoundedAndSafe={fileBridgeIsBoundedAndSafe}");
-        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}");
+        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}\nTerminalHoverDetailsWork={terminalHoverDetailsWork}");
         return success;
     }
 
@@ -2414,6 +2415,65 @@ public partial class MainWindow : Window
         if (SessionList.SelectedItem is not SessionProfile value) return;
         SelectPane(value.Id, false);
         selectedEditableValue = value;
+    }
+    private void TerminalCardToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SessionProfile profile, ToolTip: ToolTip toolTip }
+            || !panes.TryGetValue(profile.Id, out var pane)) return;
+        var rootProcessId = pane.GetRootProcessId();
+        var sshProcess = rootProcessId is int pid ? ProcessTreeInspector.FindSshProcess(pid) : default;
+        var sshLaunch = SshLaunchStore.Load(profile.Id);
+        loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery);
+        string[]? sshArguments = null;
+        if (sshProcess.IsActive)
+        {
+            sshArguments = sshLaunch?.IsActive == true && sshLaunch.ShellProcessId == rootProcessId
+                ? sshLaunch.ConnectionArguments
+                : recovery?.SshWasActive == true ? recovery.SshConnectionArguments : null;
+        }
+        var codexLaunch = CodexLaunchStore.Load(profile.Id);
+        if (codexLaunch?.IsActive != true || codexLaunch.ShellProcessId != rootProcessId) codexLaunch = null;
+        var details = TerminalHoverDetailsBuilder.Build(profile, rootProcessId, pane.DetectedAgentKind,
+            pane.AgentActivityStateForTest, pane.GetCodexProcessState().IsActive, sshProcess.IsActive,
+            sshArguments, recovery, codexLaunch);
+        toolTip.Content = CreateTerminalDetailsContent(details);
+    }
+    private static FrameworkElement CreateTerminalDetailsContent(TerminalHoverDetails details)
+    {
+        var panel = new StackPanel { Width = 360 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = details.Title,
+            FontSize = 14,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(205, 214, 244)),
+            Margin = new Thickness(0, 1, 0, 8)
+        });
+        foreach (var row in details.Rows)
+        {
+            var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(94) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.Children.Add(new TextBlock
+            {
+                Text = row.Label,
+                Foreground = new SolidColorBrush(Color.FromRgb(137, 180, 250)),
+                FontSize = 10,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Top
+            });
+            var value = new TextBlock
+            {
+                Text = row.Value,
+                Foreground = new SolidColorBrush(Color.FromRgb(186, 194, 222)),
+                FontSize = 10,
+                TextWrapping = TextWrapping.Wrap
+            };
+            Grid.SetColumn(value, 1);
+            grid.Children.Add(value);
+            panel.Children.Add(grid);
+        }
+        return panel;
     }
     private void NewSessionClick(object sender, RoutedEventArgs e) => OpenSessionEditor(null);
     private void WorkspaceSessionSelectionChanged(object sender, SelectionChangedEventArgs e)

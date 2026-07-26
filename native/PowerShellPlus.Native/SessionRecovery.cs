@@ -371,7 +371,7 @@ public static class CodexSessionLocator
 
     public static bool IsSafeCodexPermissionState(string? permissionProfile, string? sandboxMode, string? approvalPolicy, string? approvalsReviewer = null)
         => IsSafeCodexApprovalPolicy(approvalPolicy)
-            && (IsSafeCodexPermissionProfile(permissionProfile) || IsSafeCodexSandboxMode(sandboxMode))
+            && IsSafeCodexSandboxMode(CodexResumeArguments.ResolveSandboxMode(permissionProfile, sandboxMode))
             && (approvalsReviewer is null || IsSafeCodexApprovalsReviewer(approvalsReviewer));
 
     public static CodexSessionModel? FindLatestModel(string? sessionId, string? sessionsRoot = null)

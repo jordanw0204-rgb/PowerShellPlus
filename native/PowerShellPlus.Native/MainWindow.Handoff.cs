@@ -410,7 +410,7 @@ public partial class MainWindow
             var arguments = plan.CodexArguments.ToArray();
             var exactResumeArguments = arguments.SequenceEqual(new[]
             {
-                "resume", sessionId, "--model", "gpt-5.6-sol", "--config", "default_permissions=\":danger-full-access\"",
+                "resume", sessionId, "--model", "gpt-5.6-sol", "--sandbox", "danger-full-access",
                 "--config", "approvals_reviewer=\"user\"", "--ask-for-approval", "never"
             });
             var revalidationDetectsChanges = WindowsTerminalHandoff.MatchesCodexState(plan, recovery)

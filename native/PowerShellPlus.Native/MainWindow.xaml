@@ -90,7 +90,10 @@
             <ListBox x:Name="SessionList" Grid.Row="3" SelectionChanged="SessionSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
-                  <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening">
+                  <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening"
+                        ToolTipOpening="TerminalCardToolTipOpening" ToolTipService.InitialShowDelay="400"
+                        ToolTipService.ShowDuration="60000" ToolTipService.Placement="Right">
+                    <Grid.ToolTip><ToolTip><TextBlock Text="Loading live terminal details…"/></ToolTip></Grid.ToolTip>
                     <Grid.ContextMenu>
                       <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>

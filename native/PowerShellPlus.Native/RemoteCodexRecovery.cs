@@ -120,6 +120,14 @@ try:
                 profile = payload.get('permission_profile')
                 if isinstance(profile, str):
                     permission = profile
+                elif isinstance(profile, dict):
+                    permission = profile.get('type') or permission
+                    if not sandbox:
+                        if permission == 'disabled':
+                            sandbox = 'danger-full-access'
+                        elif permission == 'managed':
+                            file_system = profile.get('file_system') or {}
+                            sandbox = 'danger-full-access' if file_system.get('type') == 'unrestricted' else 'workspace-write'
                 reviewer = payload.get('approvals_reviewer') or reviewer
             except Exception:
                 pass
@@ -230,16 +238,10 @@ print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps(result, separators=(',',
         {
             var command = $"cd -- {QuotePosix(recovery.RemoteCodexWorkingDirectory!)} && exec codex resume {QuotePosix(recovery.RemoteCodexSessionId!)}";
             if (CodexSessionLocator.IsSafeCodexModel(recovery.RemoteCodexModel)) command += $" --model {QuotePosix(recovery.RemoteCodexModel!)}";
-            if (CodexSessionLocator.IsSafeCodexPermissionState(recovery.RemoteCodexPermissionProfile, recovery.RemoteCodexSandboxMode, recovery.RemoteCodexApprovalPolicy, recovery.RemoteCodexApprovalsReviewer))
-            {
-                if (CodexSessionLocator.IsSafeCodexPermissionProfile(recovery.RemoteCodexPermissionProfile))
-                    command += $" --config {QuotePosix($"default_permissions=\"{recovery.RemoteCodexPermissionProfile}\"")}";
-                else if (CodexSessionLocator.IsSafeCodexSandboxMode(recovery.RemoteCodexSandboxMode))
-                    command += $" --sandbox {QuotePosix(recovery.RemoteCodexSandboxMode!)}";
-                if (CodexSessionLocator.IsSafeCodexApprovalsReviewer(recovery.RemoteCodexApprovalsReviewer))
-                    command += $" --config {QuotePosix($"approvals_reviewer=\"{recovery.RemoteCodexApprovalsReviewer}\"")}";
-                command += $" --ask-for-approval {QuotePosix(recovery.RemoteCodexApprovalPolicy!)}";
-            }
+            if (!CodexResumeArguments.TryBuild(recovery.RemoteCodexPermissionProfile, recovery.RemoteCodexSandboxMode,
+                recovery.RemoteCodexApprovalPolicy, recovery.RemoteCodexApprovalsReviewer, out var permissionArguments))
+                throw new InvalidOperationException("The saved remote Codex permission level cannot be translated to supported CLI controls.");
+            command += string.Concat(permissionArguments.Select(value => " " + QuotePosix(value)));
             return prefix + $"exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(command)}";
         }
         return prefix + "exec \"${SHELL:-/bin/sh}\" -l";

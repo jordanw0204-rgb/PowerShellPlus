@@ -1904,15 +1904,11 @@ public partial class TerminalPane : UserControl
         var escaped = validDirectory ? startupDirectory.Replace("'", "''") : string.Empty;
         var resumeArgument = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId) ? $" '{recovery!.CodexSessionId}'" : " --all";
         var modelArgument = resumeCodex && CodexSessionLocator.IsSafeCodexModel(recovery?.CodexModel) ? $" --model '{recovery!.CodexModel}'" : string.Empty;
-        var reviewerArgument = resumeCodex && CodexSessionLocator.IsSafeCodexApprovalsReviewer(recovery?.CodexApprovalsReviewer)
-            ? $" --config 'approvals_reviewer=\"{recovery!.CodexApprovalsReviewer}\"'"
+        var hasExactCodexSession = resumeCodex && CodexSessionLocator.IsSafeCodexId(recovery?.CodexSessionId);
+        var permissionsArgument = hasExactCodexSession
+            ? CodexResumeArguments.BuildPowerShell(recovery?.CodexPermissionProfile, recovery?.CodexSandboxMode,
+                recovery?.CodexApprovalPolicy, recovery?.CodexApprovalsReviewer)
             : string.Empty;
-        var permissionsArgument = resumeCodex && CodexSessionLocator.IsSafeCodexPermissionProfile(recovery?.CodexPermissionProfile)
-            && CodexSessionLocator.IsSafeCodexApprovalPolicy(recovery?.CodexApprovalPolicy)
-                ? $" --config 'default_permissions=\"{recovery!.CodexPermissionProfile}\"'{reviewerArgument} --ask-for-approval '{recovery.CodexApprovalPolicy}'"
-                : resumeCodex && CodexSessionLocator.IsSafeCodexPermissions(recovery?.CodexSandboxMode, recovery?.CodexApprovalPolicy)
-                    ? $" --sandbox '{recovery!.CodexSandboxMode}'{reviewerArgument} --ask-for-approval '{recovery.CodexApprovalPolicy}'"
-                    : string.Empty;
         if (command.Contains("powershell", StringComparison.OrdinalIgnoreCase) || command.Contains("pwsh", StringComparison.OrdinalIgnoreCase))
         {
             if (skipPowerShellProfile && !command.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) command += " -NoProfile";
