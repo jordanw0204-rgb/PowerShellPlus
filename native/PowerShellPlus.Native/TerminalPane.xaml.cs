@@ -165,6 +165,7 @@ public partial class TerminalPane : UserControl
     private Point? attachmentDragStart;
     private string? attachmentDragId;
     private bool attachmentDragOccurred;
+    private Visibility terminalVisibilityBeforeAttachmentPreview = Visibility.Visible;
     private bool startupProfileFallbackAttempted;
     private int attachmentPillRefreshCount;
 
@@ -1775,7 +1776,13 @@ public partial class TerminalPane : UserControl
         var previewButton = FindVisualChild<Button>(AttachmentPillPanel);
         if (previewButton is null || previewButton.ToolTip?.ToString()?.StartsWith("Preview ", StringComparison.Ordinal) != true) return false;
         previewButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, previewButton));
-        return AttachmentPreviewOverlay.Visibility == Visibility.Visible && AttachmentPreviewImage.Source is not null;
+        var openedAboveNativeSurface = AttachmentPreviewOverlay.Visibility == Visibility.Visible
+            && AttachmentPreviewImage.Source is not null
+            && Terminal.Visibility == Visibility.Hidden;
+        CloseAttachmentPreview();
+        return openedAboveNativeSurface
+            && AttachmentPreviewOverlay.Visibility == Visibility.Collapsed
+            && Terminal.Visibility == Visibility.Visible;
     }
     internal bool RemoveFirstAttachmentPathForTest()
     {
@@ -2291,6 +2298,11 @@ public partial class TerminalPane : UserControl
                 ShowGenericAttachmentPreview(attachment.LocalPath);
                 break;
         }
+        // EasyTerminalControl owns a native child HWND. Native child windows always render
+        // above WPF siblings, regardless of Panel.ZIndex, so the preview would otherwise be
+        // open but invisible behind the terminal surface (the WPF/Win32 airspace rule).
+        terminalVisibilityBeforeAttachmentPreview = Terminal.Visibility;
+        Terminal.Visibility = Visibility.Hidden;
         AttachmentPreviewOverlay.Visibility = Visibility.Visible;
     }
 
@@ -2383,6 +2395,7 @@ public partial class TerminalPane : UserControl
     private void PauseAttachmentPreviewClick(object sender, RoutedEventArgs e) { AttachmentPreviewMedia.Pause(); AttachmentPreviewMediaStatus.Text = "Paused"; }
     private void CloseAttachmentPreview()
     {
+        var wasOpen = AttachmentPreviewOverlay.Visibility == Visibility.Visible;
         AttachmentPreviewOverlay.Visibility = Visibility.Collapsed;
         AttachmentPreviewImage.Source = null;
         AttachmentPreviewImage.Visibility = Visibility.Collapsed;
@@ -2392,6 +2405,7 @@ public partial class TerminalPane : UserControl
         AttachmentPreviewText.Clear();
         AttachmentPreviewText.Visibility = Visibility.Collapsed;
         AttachmentPreviewGeneric.Visibility = Visibility.Collapsed;
+        if (wasOpen) Terminal.Visibility = terminalVisibilityBeforeAttachmentPreview;
     }
     private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
