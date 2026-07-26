@@ -151,16 +151,32 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        var pointer = GetPositionFromPoint(e.GetPosition(this), true);
+        // Do not snap blank-space clicks to the nearest inline. With snapping enabled,
+        // clicking anywhere after a collapsed attachment could resolve back to its
+        // Hyperlink and toggle it instead of placing the caret in the editor.
+        var pointer = GetPositionFromPoint(e.GetPosition(this), false);
         var parent = pointer?.Parent as DependencyObject;
         while (parent is not null && parent is not Hyperlink) parent = parent is FrameworkContentElement element ? element.Parent : null;
         if (parent is Hyperlink { Tag: ComposerTokenDescriptor token } hyperlink)
         {
             ToggleToken(token, CanonicalOffsetFor(hyperlink.ElementStart));
+            Focus();
+            Keyboard.Focus(this);
             e.Handled = true;
             return;
         }
         base.OnPreviewMouseLeftButtonDown(e);
+    }
+
+    internal bool BlankSpaceDoesNotToggleAttachmentForTest()
+    {
+        if (tokens.Count == 0 || ActualWidth <= 0 || ActualHeight <= 0) return false;
+        var before = RenderedTokenLabelsForTest.ToArray();
+        var pointer = GetPositionFromPoint(new Point(Math.Max(0, ActualWidth - 2), Math.Max(1, ActualHeight / 2)), false);
+        var parent = pointer?.Parent as DependencyObject;
+        while (parent is not null && parent is not Hyperlink) parent = parent is FrameworkContentElement element ? element.Parent : null;
+        return parent is not Hyperlink { Tag: ComposerTokenDescriptor }
+            && before.SequenceEqual(RenderedTokenLabelsForTest);
     }
 
     private void SetCanonicalText(string value)

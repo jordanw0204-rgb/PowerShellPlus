@@ -1791,6 +1791,7 @@ public partial class TerminalPane : UserControl
         && CommandInput.RenderedTokenLabelsForTest.SequenceEqual(composerAttachments.Select(value => value.DisplayName))
         && composerAttachments.All(value => CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
         && CommandInput.ToggleFirstTokenForTest();
+    internal bool ComposerBlankSpacePreservesTokensForTest => CommandInput.BlankSpaceDoesNotToggleAttachmentForTest();
     internal bool ComposerScrollbarThemedForTest => CommandInput.UsesThemedScrollbarForTest && CommandInput.MaxLines == 8;
     internal bool ReorderFirstTwoAttachmentsForTest()
     {
@@ -2101,31 +2102,19 @@ public partial class TerminalPane : UserControl
             AttachmentPillPanel.Children.Clear();
             foreach (var attachment in composerAttachments)
             {
-                var content = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                Button? previewButton = null;
+                var previewContent = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
                 if (attachment.IsImage && LoadAttachmentBitmap(attachment.LocalPath, 72) is { } thumbnail)
                 {
-                    previewButton = new Button
+                    previewContent.Children.Add(new Image
                     {
-                        Content = new Image { Source = thumbnail, Width = 28, Height = 22, Stretch = Stretch.UniformToFill },
-                        Width = 30,
-                        Height = 24,
+                        Source = thumbnail,
+                        Width = 28,
+                        Height = 22,
+                        Stretch = Stretch.UniformToFill,
                         Margin = new Thickness(0, 0, 7, 0),
-                        Padding = new Thickness(0),
-                        Background = Brushes.Transparent,
-                        BorderThickness = new Thickness(0),
-                        Tag = attachment,
-                        ToolTip = $"Preview {attachment.DisplayName}"
-                    };
-                    AutomationProperties.SetName(previewButton, $"Preview {attachment.DisplayName}");
-                    previewButton.Click += (_, eventArgs) =>
-                    {
-                        OpenAttachmentPreview(attachment);
-                        eventArgs.Handled = true;
-                    };
-                    content.Children.Add(previewButton);
+                    });
                 }
-                content.Children.Add(new TextBlock
+                previewContent.Children.Add(new TextBlock
                 {
                     Text = attachment.DisplayName,
                     FontSize = 10,
@@ -2133,15 +2122,34 @@ public partial class TerminalPane : UserControl
                     VerticalAlignment = VerticalAlignment.Center,
                     Foreground = new SolidColorBrush(AttachmentLabelColor(GetAttachmentPreviewKind(attachment.LocalPath)))
                 });
+                var previewButton = new Button
+                {
+                    Content = previewContent,
+                    Tag = attachment,
+                    Padding = new Thickness(6, 3, 6, 3),
+                    Background = Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    VerticalContentAlignment = VerticalAlignment.Center,
+                    Cursor = Cursors.Hand,
+                    ToolTip = $"Preview {attachment.DisplayName} · drag to reorder · {attachment.LocalPath}"
+                };
+                AutomationProperties.SetName(previewButton, $"Preview {attachment.DisplayName}");
                 var remove = new Button { Content = "×", Width = 20, Height = 20, Padding = new Thickness(0), Margin = new Thickness(7, 0, 0, 0), Tag = attachment };
                 remove.Click += RemoveAttachmentClick;
+                var content = new Grid();
+                content.ColumnDefinitions.Add(new ColumnDefinition());
+                content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                Grid.SetColumn(previewButton, 0);
+                Grid.SetColumn(remove, 1);
+                content.Children.Add(previewButton);
                 content.Children.Add(remove);
                 var pill = new Border
                 {
                     Child = content,
                     Tag = attachment,
                     AllowDrop = true,
-                    Padding = new Thickness(6, 3, 5, 3),
+                    Padding = new Thickness(0),
                     Margin = new Thickness(0, 0, 5, 0),
                     Background = new SolidColorBrush(Color.FromRgb(36, 36, 56)),
                     BorderBrush = new SolidColorBrush(Color.FromRgb(88, 91, 112)),
@@ -2158,14 +2166,14 @@ public partial class TerminalPane : UserControl
                     attachmentDragOccurred = false;
                 };
                 pill.PreviewMouseMove += AttachmentPillMouseMove;
-                pill.AddHandler(Mouse.PreviewMouseUpEvent, new MouseButtonEventHandler((_, eventArgs) =>
+                previewButton.Click += (_, eventArgs) =>
                 {
-                    if (eventArgs.ChangedButton != MouseButton.Left || IsWithin(eventArgs.OriginalSource as DependencyObject, remove)
-                        || previewButton is not null && IsWithin(eventArgs.OriginalSource as DependencyObject, previewButton)
-                        || attachmentDragOccurred) return;
-                    OpenAttachmentPreview(attachment);
+                    if (!attachmentDragOccurred) OpenAttachmentPreview(attachment);
+                    attachmentDragStart = null;
+                    attachmentDragId = null;
+                    attachmentDragOccurred = false;
                     eventArgs.Handled = true;
-                }), true);
+                };
                 pill.Drop += AttachmentPillDrop;
                 AttachmentPillPanel.Children.Add(pill);
             }
