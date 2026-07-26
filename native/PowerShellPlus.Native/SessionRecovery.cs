@@ -45,7 +45,7 @@ public sealed record CodexSessionMatch(string SessionId, string WorkingDirectory
     string? Model = null, string? SandboxMode = null, string? ApprovalPolicy = null, string? PermissionProfile = null, string? ApprovalsReviewer = null);
 public sealed record CodexSessionModel(string Model, DateTime UpdatedUtc);
 public sealed record CodexSessionPermissions(string? SandboxMode, string ApprovalPolicy, DateTime UpdatedUtc, string? PermissionProfile = null, string? ApprovalsReviewer = null);
-internal enum CodexTurnActivityState { Unknown, Working, Waiting }
+internal enum CodexTurnActivityState { Unknown, Idle, Working, Waiting }
 internal readonly record struct CodexTurnActivity(CodexTurnActivityState State, DateTime UpdatedUtc);
 
 public sealed class CodexLaunchMarker
@@ -444,7 +444,7 @@ public static class CodexSessionLocator
             ]);
             if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
             File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:28.703Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n");
-            return FindActivity(sessionId, root).State == CodexTurnActivityState.Waiting;
+            return FindActivity(sessionId, root).State == CodexTurnActivityState.Idle;
         }
         catch { return false; }
         finally
@@ -563,7 +563,7 @@ public static class CodexSessionLocator
             }
             else if (payloadType is "task_complete" or "turn_aborted" or "shutdown_complete")
             {
-                cursor.State = CodexTurnActivityState.Waiting;
+                cursor.State = CodexTurnActivityState.Idle;
                 cursor.WaitingForUser = false;
                 cursor.UpdatedUtc = timestamp;
             }

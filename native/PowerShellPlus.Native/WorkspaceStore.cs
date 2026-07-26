@@ -25,6 +25,7 @@ public static class WorkspaceStore
                 loaded.LayoutSizes ??= [];
                 foreach (var session in loaded.Sessions)
                 {
+                    session.AccentColor = WorkspaceAccentPalette.Normalize(session.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
                     session.TerminalFontSize = NormalizeFontSize(session.TerminalFontSize, 6, 36);
                     session.CommandFontSize = NormalizeFontSize(session.CommandFontSize, 8, 28);
                     session.CommandDraft ??= string.Empty;
@@ -78,9 +79,10 @@ public static class WorkspaceStore
         var assigned = new HashSet<string>(StringComparer.Ordinal);
         foreach (var session in state.TerminalSessions)
         {
+            session.AccentColor = WorkspaceAccentPalette.Normalize(session.AccentColor, WorkspaceAccentPalette.DefaultSession);
             session.TerminalIds ??= [];
             session.LayoutSizes ??= [];
-            session.Layout = session.Layout is "Grid" or "Rows" or "Columns" or "Focus" ? session.Layout : "Grid";
+            session.Layout = session.Layout is "Grid" or "Rows" or "Columns" or "Focus" or "Tabs" ? session.Layout : "Grid";
             session.TerminalIds = session.TerminalIds
                 .Where(value => validTerminalIds.Contains(value) && assigned.Add(value))
                 .ToList();

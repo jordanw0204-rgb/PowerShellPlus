@@ -7,9 +7,10 @@
   <Border x:Name="PaneBorder" Background="#11111B" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4" PreviewMouseLeftButtonDown="ActivatePane">
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Border Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1">
+      <Border x:Name="PaneHeader" Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1">
         <Grid Margin="10,0,5,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Border x:Name="PaneAccentBar" Grid.ColumnSpan="3" Width="3" CornerRadius="2" HorizontalAlignment="Left" Margin="-10,5,0,5"/>
           <Grid x:Name="AgentStatusIcon" Width="17" Height="17" Margin="0,0,8,0" VerticalAlignment="Center" ToolTip="Terminal is starting" AutomationProperties.Name="Terminal is starting">
             <Grid.RenderTransform><ScaleTransform x:Name="AgentStatusScale" ScaleX="1" ScaleY="1" CenterX="8.5" CenterY="8.5"/></Grid.RenderTransform>
             <Line x:Name="AgentAntenna" X1="8.5" Y1="1" X2="8.5" Y2="4" Stroke="#89B4FA" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>

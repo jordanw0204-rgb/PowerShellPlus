@@ -41,6 +41,9 @@ public partial class MainWindow : Window
     private TerminalSession? activeWorkspaceSession;
     private string? activeLayoutSizeKey;
     private bool workspaceSessionSelectionSync;
+    private bool terminalTabSelectionSync;
+    private Point? terminalOrderDragStart;
+    private string? terminalOrderDragId;
     private TerminalSession? workspaceSessionHoverCandidate;
     private TerminalSession? workspaceSessionHoverOrigin;
     private bool workspaceSessionHoverPreviewActive;
@@ -66,6 +69,9 @@ public partial class MainWindow : Window
         WorkspaceSessionList.ItemsSource = state.TerminalSessions;
         WorkspaceSessionTabs.ItemsSource = state.TerminalSessions;
         SessionList.ItemsSource = activeSessionTerminals;
+        TerminalTabList.ItemsSource = activeSessionTerminals;
+        SessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
+        WorkspaceSessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
         workspaceSessionHoverTimer.Tick += WorkspaceSessionHoverTimerTick;
         SnippetList.ItemsSource = state.Snippets;
         AutomationList.ItemsSource = state.Automations;
@@ -714,7 +720,10 @@ public partial class MainWindow : Window
         if (activeWorkspaceSession is not null) activeWorkspaceSession.ActiveTerminalId = sessionId;
         foreach (var value in panes.Values) value.SetActive(value == pane);
         SessionList.SelectedItem = pane.Profile;
-        if (activeWorkspaceSession?.Layout == "Focus") ApplyLayout();
+        terminalTabSelectionSync = true;
+        TerminalTabList.SelectedItem = pane.Profile;
+        terminalTabSelectionSync = false;
+        if (activeWorkspaceSession?.Layout is "Focus" or "Tabs") ApplyLayout();
         if (focus) pane.Focus();
         ScheduleSave();
     }
@@ -756,6 +765,9 @@ public partial class MainWindow : Window
         }
         foreach (var value in panes.Values) value.SetActive(value == activePane);
         SessionList.SelectedItem = activePane?.Profile;
+        terminalTabSelectionSync = true;
+        TerminalTabList.SelectedItem = activePane?.Profile;
+        terminalTabSelectionSync = false;
         ApplyLayout(commit);
         UpdateLayoutControls();
         if (focus) activePane?.Focus();
@@ -791,10 +803,11 @@ public partial class MainWindow : Window
         var workspaceSession = activeWorkspaceSession;
         var ordered = workspaceSession?.TerminalIds.Where(value => panes.ContainsKey(value)).Select(value => panes[value]).ToList() ?? [];
         activeLayoutSizeKey = null;
+        TerminalTabBar.Visibility = workspaceSession?.Layout == "Tabs" ? Visibility.Visible : Visibility.Collapsed;
         if (ordered.Count == 0) { UpdateCounts(); return; }
         foreach (var pane in ordered) pane.Visibility = Visibility.Visible;
 
-        if (workspaceSession?.Layout == "Focus")
+        if (workspaceSession?.Layout is "Focus" or "Tabs")
         {
             TerminalHost.RowDefinitions.Add(new RowDefinition()); TerminalHost.ColumnDefinitions.Add(new ColumnDefinition());
             foreach (var pane in ordered) if (pane != activePane) pane.Visibility = Visibility.Collapsed;
@@ -898,7 +911,8 @@ public partial class MainWindow : Window
         (GridLayoutButton, "Grid"),
         (ColumnsLayoutButton, "Columns"),
         (RowsLayoutButton, "Rows"),
-        (FocusLayoutButton, "Focus")
+        (FocusLayoutButton, "Focus"),
+        (TabsLayoutButton, "Tabs")
     ];
 
     private void UpdateLayoutControls()
@@ -922,6 +936,7 @@ public partial class MainWindow : Window
             "Columns" => "Side by side",
             "Rows" => "Stacked terminals",
             "Focus" => "Selected terminal only",
+            "Tabs" => "One terminal with reorderable tabs",
             _ => "Balanced terminal grid"
         };
         var content = new StackPanel();
@@ -948,6 +963,7 @@ public partial class MainWindow : Window
     {
         terminalCount = Math.Clamp(terminalCount, 1, 4);
         if (layout == "Focus") return [new Rect(0, 0, width, height)];
+        if (layout == "Tabs") return [new Rect(0, 18, width, Math.Max(1, height - 18))];
         int columns;
         int rows;
         if (layout == "Rows") { columns = 1; rows = terminalCount; }
@@ -964,6 +980,25 @@ public partial class MainWindow : Window
     private static void PopulateLayoutPreview(Canvas canvas, string layout, int terminalCount, bool transition)
     {
         canvas.Children.Clear();
+        if (layout == "Tabs")
+        {
+            var tabWidth = Math.Min(42, (canvas.Width - 8) / 3);
+            for (var tabIndex = 0; tabIndex < 3; tabIndex++)
+            {
+                var tab = new Border
+                {
+                    Width = tabWidth,
+                    Height = 13,
+                    CornerRadius = new CornerRadius(4, 4, 0, 0),
+                    Background = new SolidColorBrush(tabIndex == 0 ? Color.FromRgb(38, 54, 83) : Color.FromRgb(30, 30, 46)),
+                    BorderBrush = new SolidColorBrush(tabIndex == 0 ? Color.FromRgb(137, 180, 250) : Color.FromRgb(69, 71, 90)),
+                    BorderThickness = new Thickness(1)
+                };
+                Canvas.SetLeft(tab, tabIndex * (tabWidth + 4));
+                Canvas.SetTop(tab, 2);
+                canvas.Children.Add(tab);
+            }
+        }
         foreach (var (rect, index) in BuildLayoutPreviewRects(layout, terminalCount, canvas.Width, canvas.Height).Select((rect, index) => (rect, index)))
         {
             var pane = new Border
@@ -1054,10 +1089,12 @@ public partial class MainWindow : Window
         var rows = BuildLayoutPreviewRects("Rows", 3, 100, 80);
         var columns = BuildLayoutPreviewRects("Columns", 3, 100, 80);
         var focus = BuildLayoutPreviewRects("Focus", 4, 100, 80);
+        var tabs = BuildLayoutPreviewRects("Tabs", 4, 100, 80);
         return grid.Count == 4 && grid.Select(rect => rect.X).Distinct().Count() == 2 && grid.Select(rect => rect.Y).Distinct().Count() == 2
             && rows.Count == 3 && rows.All(rect => rect.X == 0) && rows.Zip(rows.Skip(1)).All(pair => pair.First.Y < pair.Second.Y)
             && columns.Count == 3 && columns.All(rect => rect.Y == 0) && columns.Zip(columns.Skip(1)).All(pair => pair.First.X < pair.Second.X)
-            && focus.Count == 1 && focus[0] == new Rect(0, 0, 100, 80);
+            && focus.Count == 1 && focus[0] == new Rect(0, 0, 100, 80)
+            && tabs.Count == 1 && tabs[0].Y == 18 && tabs[0].Height == 62;
     }
 
     private void OpenSessionEditor(SessionProfile? profile)
@@ -1065,6 +1102,7 @@ public partial class MainWindow : Window
         editorMode = EditorMode.Terminal; editingValue = profile;
         EditorTitle.Text = profile is null ? "New native terminal" : "Edit terminal";
         SessionNameEdit.Text = profile?.Name ?? terminalProfile.ProfileName;
+        SessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Normalize(profile?.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
@@ -1117,11 +1155,12 @@ public partial class MainWindow : Window
         TerminalHost.Visibility = Visibility.Visible;
     }
 
-    private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart)
+    private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart, string? accentColor = null)
     {
         var restartRequired = !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
             || !PathsEqual(profile.WorkingDirectory, workingDirectory);
         profile.Name = name;
+        profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         profile.CommandLine = commandLine;
         profile.WorkingDirectory = workingDirectory;
         profile.AutoStart = autoStart;
@@ -1133,6 +1172,7 @@ public partial class MainWindow : Window
         }
         else pane.RefreshProfileDisplay(profile);
         SessionList.Items.Refresh();
+        TerminalTabList.Items.Refresh();
         return restartRequired;
     }
 
@@ -1157,11 +1197,12 @@ public partial class MainWindow : Window
             if (string.IsNullOrWhiteSpace(SessionNameEdit.Text) || string.IsNullOrWhiteSpace(SessionCommandEdit.Text) || !Directory.Exists(SessionDirectoryEdit.Text)) { UpdateStatus("Session fields are incomplete"); return; }
             if (editingValue is SessionProfile existing)
             {
-                await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true);
+                await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true,
+                    SessionAccentEdit.SelectedValue?.ToString());
             }
             else
             {
-                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true };
+                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = WorkspaceAccentPalette.Normalize(SessionAccentEdit.SelectedValue?.ToString(), WorkspaceAccentPalette.DefaultTerminal), CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true };
                 AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
             }
         }
@@ -1169,6 +1210,7 @@ public partial class MainWindow : Window
         {
             if (editingValue is not TerminalSession session || string.IsNullOrWhiteSpace(WorkspaceSessionNameEdit.Text)) return;
             session.Name = WorkspaceSessionNameEdit.Text.Trim();
+            session.AccentColor = WorkspaceAccentPalette.Normalize(WorkspaceSessionAccentEdit.SelectedValue?.ToString(), WorkspaceAccentPalette.DefaultSession);
             RefreshWorkspaceSessionViews();
         }
         else if (editorMode == EditorMode.Snippet)
@@ -1253,6 +1295,7 @@ public partial class MainWindow : Window
         WorkspaceSessionList.Items.Refresh();
         WorkspaceSessionTabs.Items.Refresh();
         SessionList.Items.Refresh();
+        TerminalTabList.Items.Refresh();
         UpdateCounts();
     }
 
@@ -1301,6 +1344,20 @@ public partial class MainWindow : Window
     private void SaveNow() { try { WorkspaceStore.Save(state); } catch (Exception exception) { UpdateStatus(exception.Message); } }
     private void UpdateStatus(string text) { StatusText.Text = text; UpdateCounts(); }
     private void UpdateCounts() => CountText.Text = $"{state.TerminalSessions.Count} session{(state.TerminalSessions.Count == 1 ? string.Empty : "s")} · {panes.Count} native terminal{(panes.Count == 1 ? string.Empty : "s")} · {terminalProfile.SchemeName}";
+
+    private async void SettingsScrollerLoaded(object sender, RoutedEventArgs e)
+    {
+        await Dispatcher.Yield(DispatcherPriority.Loaded);
+        ApplyThemedSettingsScrollbar();
+    }
+
+    private void ApplyThemedSettingsScrollbar()
+    {
+        if (FindVisualDescendant<ScrollBar>(SettingsScroller) is not { } scrollbar) return;
+        scrollbar.Style = (Style)FindResource("ThemedScrollBar");
+        scrollbar.Width = 11;
+        scrollbar.MinWidth = 11;
+    }
 
     public async Task<bool> RunUiSnapshotAsync(string outputDirectory)
     {
@@ -1361,6 +1418,14 @@ public partial class MainWindow : Window
         if (openTerminalRight > minimizeLeft + 1)
             throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
         Render(root, "ui-main.png");
+        var snapshotLayout = activeWorkspaceSession?.Layout ?? "Grid";
+        SetLayout("Tabs");
+        await Settle();
+        if (TerminalTabBar.Visibility != Visibility.Visible || TerminalHost.Children.OfType<TerminalPane>().Count() != 1)
+            throw new InvalidOperationException("Tabs layout did not present one active terminal beneath its terminal tab strip.");
+        Render(root, "ui-tabs-layout.png");
+        SetLayout(snapshotLayout);
+        await Settle();
         WindowsTerminalHoverChanged(IntPtr.Zero, true, true);
         await Settle();
         Render(root, "ui-windows-terminal-drop.png");
@@ -2231,6 +2296,14 @@ public partial class MainWindow : Window
             var layoutPreviewGeometryWorks = LayoutPreviewGeometryWorksForTest();
             var layoutTransitionContractReady = LayoutTransitionOverlay.IsHitTestVisible == false
                 && LayoutTransitionCanvas.Width == 240 && LayoutTransitionCanvas.Height == 138;
+            ShowSection(SettingsPanel);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            root.UpdateLayout();
+            ApplyThemedSettingsScrollbar();
+            var settingsScrollBar = FindVisualDescendant<ScrollBar>(SettingsScroller);
+            var settingsScrollbarThemed = settingsScrollBar is not null
+                && ReferenceEquals(settingsScrollBar.Style, FindResource("ThemedScrollBar"));
+            ShowSection(SessionsPanel);
             Width = Math.Max(MinWidth, ActualWidth - 260);
             await Dispatcher.Yield(DispatcherPriority.Background);
             root.UpdateLayout();
@@ -2238,7 +2311,7 @@ public partial class MainWindow : Window
                 && layoutButtons.All(button => button.ActualWidth >= 40);
             Width = originalWindowWidth;
             await Dispatcher.Yield(DispatcherPriority.Background);
-            var scrollbarsHidden = panes.Values.All(pane => pane.IsNativeScrollbarHidden());
+            var terminalScrollbarsThemed = panes.Values.All(pane => pane.IsNativeScrollbarThemed());
             var activationTarget = panes[added[0].Id];
             SelectPane(panes.Values.First().Profile.Id, false);
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
@@ -2314,8 +2387,12 @@ public partial class MainWindow : Window
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Waiting);
             var agentWaitingStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Waiting
                 && activationTarget.AgentStatusTextForTest.Contains("Codex · waiting for you", StringComparison.Ordinal);
+            activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Idle);
+            var agentIdleStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Idle
+                && activationTarget.AgentStatusTextForTest.Contains("Codex · idle", StringComparison.Ordinal);
             var inputEchoDoesNotActivateAgent = TerminalPane.ActivityTrackerRejectsInputEchoForTest();
             var codexTurnEventsDriveAgent = CodexSessionLocator.ActivityRecordsClassifyForTest();
+            var agentActivityClassificationExact = TerminalPane.AgentActivityClassificationForTest();
             var cursorTransformConfigured = activationTarget.ForceCursorStyleForTest("\u001b[3 q") == "\u001b[5 q";
             var windowIconLoaded = Icon is not null;
             var executableIconEmbedded = false;
@@ -2444,6 +2521,38 @@ public partial class MainWindow : Window
             SetLayout("Columns"); var columns = TerminalHost.Children.OfType<TerminalPane>().Count() == expectedPanes && TerminalHost.Children.OfType<GridSplitter>().Any();
             SelectPane(state.Sessions[0].Id, false); SetLayout("Focus"); var focus = TerminalHost.Children.OfType<TerminalPane>().Count() == 1;
             SetLayout("Grid"); var grid = TerminalHost.Children.OfType<TerminalPane>().Count() == expectedPanes && TerminalHost.Children.OfType<GridSplitter>().Any();
+            SetLayout("Tabs");
+            var tabs = TerminalTabBar.Visibility == Visibility.Visible && TerminalTabList.Items.Count == expectedPanes
+                && TerminalHost.Children.OfType<TerminalPane>().Count() == 1;
+            var originalTerminalOrder = activeWorkspaceSession!.TerminalIds.ToArray();
+            var tabReorderSource = state.Sessions.First(value => value.Id == originalTerminalOrder[1]);
+            var tabReorderTarget = state.Sessions.First(value => value.Id == originalTerminalOrder[0]);
+            MoveTerminalToDropPosition(tabReorderSource, tabReorderTarget, false);
+            var terminalReorderSynchronizes = activeWorkspaceSession.TerminalIds[0] == tabReorderSource.Id
+                && activeSessionTerminals[0].Id == tabReorderSource.Id && ReferenceEquals(TerminalTabList.Items[0], tabReorderSource);
+            activeWorkspaceSession.TerminalIds = originalTerminalOrder.ToList();
+            RefreshActiveTerminalList();
+            SelectPane(tabReorderTarget.Id, false);
+            var originalTerminalAccent = tabReorderTarget.AccentColor;
+            var originalSessionAccent = activeWorkspaceSession.AccentColor;
+            tabReorderTarget.AccentColor = "#CBA6F7";
+            activeWorkspaceSession.AccentColor = "#FAB387";
+            panes[tabReorderTarget.Id].RefreshProfileDisplay(tabReorderTarget);
+            RefreshWorkspaceSessionViews();
+            var accentColorsApply = panes[tabReorderTarget.Id].AccentAppliedForTest
+                && WorkspaceAccentPalette.Normalize(tabReorderTarget.AccentColor, WorkspaceAccentPalette.DefaultTerminal) == "#CBA6F7"
+                && WorkspaceAccentPalette.Normalize(activeWorkspaceSession.AccentColor, WorkspaceAccentPalette.DefaultSession) == "#FAB387";
+            WorkspaceStore.Save(state);
+            var persistedAccentWorkspace = WorkspaceStore.Load(terminalProfile);
+            accentColorsApply = accentColorsApply
+                && persistedAccentWorkspace.Sessions.First(value => value.Id == tabReorderTarget.Id).AccentColor == "#CBA6F7"
+                && persistedAccentWorkspace.TerminalSessions.First(value => value.Id == activeWorkspaceSession.Id).AccentColor == "#FAB387"
+                && persistedAccentWorkspace.TerminalSessions.First(value => value.Id == activeWorkspaceSession.Id).Layout == "Tabs";
+            tabReorderTarget.AccentColor = originalTerminalAccent;
+            activeWorkspaceSession.AccentColor = originalSessionAccent;
+            panes[tabReorderTarget.Id].RefreshProfileDisplay(tabReorderTarget);
+            RefreshWorkspaceSessionViews();
+            SetLayout("Grid");
 
             var primaryWorkspaceSession = activeWorkspaceSession!;
             var movedTerminal = added[^1];
@@ -2546,7 +2655,7 @@ public partial class MainWindow : Window
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes;
-            var success = inputReady && outputReady && scrollbarsHidden && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
+            var success = inputReady && outputReady && terminalScrollbarsThemed && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
@@ -2556,14 +2665,15 @@ public partial class MainWindow : Window
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && rows && columns && focus && grid && tabs && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
-                && agentWorkingStateVisible && agentWaitingStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent
+                && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && scheduleLogic && countdownLogic && automationHoverContainerStable && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nScrollbarsHidden={scrollbarsHidden}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
@@ -2770,6 +2880,7 @@ public partial class MainWindow : Window
         editingValue = value;
         EditorTitle.Text = "Rename session";
         WorkspaceSessionNameEdit.Text = value.Name;
+        WorkspaceSessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Normalize(value.AccentColor, WorkspaceAccentPalette.DefaultSession);
         ShowEditor(WorkspaceSessionEditor);
         WorkspaceSessionNameEdit.Focus();
         WorkspaceSessionNameEdit.SelectAll();
@@ -2816,6 +2927,80 @@ public partial class MainWindow : Window
         activeWorkspaceSession.TerminalIds.RemoveAt(current);
         activeWorkspaceSession.TerminalIds.Insert(target, value.Id);
         RefreshActiveTerminalList(); ApplyLayout(); SessionList.SelectedItem = value; ScheduleSave(); UpdateStatus($"Moved {value.Name}");
+    }
+
+    private void TerminalTabSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (terminalTabSelectionSync || TerminalTabList.SelectedItem is not SessionProfile value) return;
+        SelectPane(value.Id, false);
+        selectedEditableValue = value;
+    }
+
+    private void TerminalOrderDragStart(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ListBox list || e.ChangedButton != MouseButton.Left) return;
+        terminalOrderDragStart = e.GetPosition(list);
+        terminalOrderDragId = (ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem)?.DataContext is SessionProfile profile
+            ? profile.Id
+            : null;
+    }
+
+    private void TerminalOrderDragEnd(object sender, MouseButtonEventArgs e)
+    {
+        terminalOrderDragStart = null;
+        terminalOrderDragId = null;
+    }
+
+    private void TerminalOrderDragMove(object sender, MouseEventArgs e)
+    {
+        if (sender is not ListBox list || terminalOrderDragStart is not Point start || terminalOrderDragId is not { } terminalId
+            || e.LeftButton != MouseButtonState.Pressed) return;
+        var current = e.GetPosition(list);
+        if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        var data = new DataObject("PowerShellPlus.TerminalOrder", terminalId);
+        DragDrop.DoDragDrop(list, data, DragDropEffects.Move);
+        terminalOrderDragStart = null;
+        terminalOrderDragId = null;
+    }
+
+    private void TerminalOrderDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent("PowerShellPlus.TerminalOrder") ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void TerminalOrderDrop(object sender, DragEventArgs e)
+    {
+        if (sender is not ListBox list || e.Data.GetData("PowerShellPlus.TerminalOrder") is not string sourceId
+            || activeWorkspaceSession is null || state.Sessions.FirstOrDefault(value => value.Id == sourceId) is not { } source) return;
+        var container = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem;
+        var target = container?.DataContext as SessionProfile;
+        var position = container is null ? default : e.GetPosition(container);
+        var after = container is not null && (ReferenceEquals(list, TerminalTabList)
+            ? position.X >= container.ActualWidth / 2
+            : position.Y >= container.ActualHeight / 2);
+        MoveTerminalToDropPosition(source, target, after);
+        e.Handled = true;
+    }
+
+    private void MoveTerminalToDropPosition(SessionProfile source, SessionProfile? target, bool after)
+    {
+        if (activeWorkspaceSession is null) return;
+        var ids = activeWorkspaceSession.TerminalIds;
+        var current = ids.IndexOf(source.Id);
+        if (current < 0) return;
+        var insertion = target is null ? ids.Count : ids.IndexOf(target.Id) + (after ? 1 : 0);
+        if (insertion < 0) return;
+        ids.RemoveAt(current);
+        if (current < insertion) insertion--;
+        insertion = Math.Clamp(insertion, 0, ids.Count);
+        ids.Insert(insertion, source.Id);
+        RefreshActiveTerminalList();
+        ApplyLayout();
+        SelectPane(source.Id, false);
+        ScheduleSave();
+        UpdateStatus($"Reordered {source.Name}");
     }
     private static T? ItemFromSender<T>(object sender) where T : class => (sender as FrameworkElement)?.DataContext as T;
     private void SelectCard(object? value)
@@ -2933,6 +3118,7 @@ public partial class MainWindow : Window
     private void ColumnsLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Columns");
     private void RowsLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Rows");
     private void FocusLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Focus");
+    private void TabsLayoutClick(object sender, RoutedEventArgs e) => SetLayout("Tabs");
     private void CancelEditorClick(object sender, RoutedEventArgs e) => HideEditor();
     private void AutomationTypeChanged(object sender, SelectionChangedEventArgs e) => UpdateAutomationScheduleEditor();
     private async void AutomationDateCalendarOpened(object? sender, RoutedEventArgs e)

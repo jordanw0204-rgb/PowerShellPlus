@@ -40,18 +40,18 @@
         <DockPanel Margin="0,6">
           <StackPanel DockPanel.Dock="Top">
             <Button x:Name="SessionsRail" Style="{StaticResource RailButton}" Tag="Active" Click="SessionsSectionClick" ToolTip="Manage terminal sessions">
-              <StackPanel><TextBlock Text="▣" Style="{StaticResource RailIcon}"/><TextBlock Text="Sessions" Style="{StaticResource RailLabel}"/></StackPanel>
+              <StackPanel><Viewbox Width="23" Height="23"><Grid Width="24" Height="24"><Path Style="{StaticResource RailVectorIcon}" Data="M4,4.5 H20 V19.5 H4 Z M7,9 L10,12 L7,15 M12,15 H16"/></Grid></Viewbox><TextBlock Text="Sessions" Style="{StaticResource RailLabel}"/></StackPanel>
             </Button>
             <Button x:Name="CommandsRail" Style="{StaticResource RailButton}" Click="CommandsSectionClick" ToolTip="Command library">
-              <StackPanel><TextBlock Text="⌘" Style="{StaticResource RailIcon}"/><TextBlock Text="Commands" Style="{StaticResource RailLabel}"/></StackPanel>
+              <StackPanel><Viewbox Width="23" Height="23"><Grid Width="24" Height="24"><Path Style="{StaticResource RailVectorIcon}" Data="M8,5 L4,9 L8,13 M16,5 L20,9 L16,13 M5,18 H19"/></Grid></Viewbox><TextBlock Text="Commands" Style="{StaticResource RailLabel}"/></StackPanel>
             </Button>
             <Button x:Name="AutomationRail" Style="{StaticResource RailButton}" Click="AutomationSectionClick" ToolTip="Scheduled automations">
-              <StackPanel><TextBlock Text="↻" Style="{StaticResource RailIcon}"/><TextBlock Text="Automate" Style="{StaticResource RailLabel}"/></StackPanel>
+              <StackPanel><Viewbox Width="23" Height="23"><Grid Width="24" Height="24"><Path Style="{StaticResource RailVectorIcon}" Data="M19,8 A7,7 0 1 0 19,16 M19,4 V9 H14 M13,8 L9.5,12 H12 L10.5,16"/></Grid></Viewbox><TextBlock Text="Automate" Style="{StaticResource RailLabel}"/></StackPanel>
             </Button>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" VerticalAlignment="Bottom">
             <Button x:Name="SettingsRail" Style="{StaticResource RailButton}" Click="SettingsSectionClick" ToolTip="Workspace settings">
-              <StackPanel><TextBlock Text="⚙" Style="{StaticResource RailIcon}"/><TextBlock Text="Settings" Style="{StaticResource RailLabel}"/></StackPanel>
+              <StackPanel><Viewbox Width="23" Height="23"><Grid Width="24" Height="24"><Path Style="{StaticResource RailVectorIcon}" Data="M4,7 H10 M14,7 H20 M4,12 H6 M10,12 H20 M4,17 H13 M17,17 H20 M10,4 V10 M6,9 V15 M13,14 V20"/></Grid></Viewbox><TextBlock Text="Settings" Style="{StaticResource RailLabel}"/></StackPanel>
             </Button>
           </StackPanel>
         </DockPanel>
@@ -65,6 +65,7 @@
             <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
+                  <Border BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="7" Padding="5,2">
                   <Grid x:Name="WorkspaceSessionCard" MinHeight="46" ContextMenuOpening="CardContextMenuOpening" MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
                     <Grid.ContextMenu>
                       <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
@@ -72,9 +73,11 @@
                         <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove session" Click="WorkspaceSessionRemoveClick"/>
                       </ContextMenu>
                     </Grid.ContextMenu>
-                    <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
+                    <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=WorkspaceSessionCard}" Click="OpenCardMenuClick"/>
                   </Grid>
+                  </Border>
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
@@ -94,7 +97,7 @@
               <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <Grid Margin="2,0,2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="SESSION LAYOUT" Foreground="{StaticResource Muted}" FontSize="8" FontWeight="Bold" VerticalAlignment="Center"/><TextBlock x:Name="ActiveLayoutText" Grid.Column="1" Text="Grid" Foreground="#89B4FA" FontSize="8" FontWeight="SemiBold" VerticalAlignment="Center"/></Grid>
-                <UniformGrid Grid.Row="1" Columns="4">
+                <UniformGrid Grid.Row="1" Columns="5">
                   <Button x:Name="GridLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="GridLayoutClick" AutomationProperties.Name="Grid terminal layout">
                     <StackPanel><TextBlock Text="&#x25A6;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Grid" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
@@ -107,12 +110,18 @@
                   <Button x:Name="FocusLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="FocusLayoutClick" AutomationProperties.Name="Focus terminal layout">
                     <StackPanel><TextBlock Text="&#x25A3;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Focus" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
+                  <Button x:Name="TabsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="TabsLayoutClick" AutomationProperties.Name="Tabs terminal layout">
+                    <StackPanel><TextBlock Text="&#x229F;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Tabs" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                  </Button>
                 </UniformGrid>
               </Grid>
             </Border>
-            <ListBox x:Name="SessionList" Grid.Row="4" SelectionChanged="SessionSelectionChanged">
+            <ListBox x:Name="SessionList" Grid.Row="4" SelectionChanged="SessionSelectionChanged" AllowDrop="True"
+                     PreviewMouseLeftButtonDown="TerminalOrderDragStart" PreviewMouseLeftButtonUp="TerminalOrderDragEnd"
+                     PreviewMouseMove="TerminalOrderDragMove" DragOver="TerminalOrderDragOver" Drop="TerminalOrderDrop">
               <ListBox.ItemTemplate>
                 <DataTemplate>
+                  <Border BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="7" Padding="5,2">
                   <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening"
                         ToolTipOpening="TerminalCardToolTipOpening" ToolTipService.InitialShowDelay="400"
                         ToolTipService.ShowDuration="60000" ToolTipService.Placement="Right">
@@ -128,9 +137,11 @@
                         <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
                       </ContextMenu>
                     </Grid.ContextMenu>
-                    <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
+                    <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionCard}" Click="OpenCardMenuClick"/>
                   </Grid>
+                  </Border>
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
@@ -195,7 +206,7 @@
               <TextBlock Text="Settings" FontSize="19" FontWeight="SemiBold" Margin="0,3,0,0"/>
               <TextBlock Text="Blank appearance fields inherit your Windows Terminal profile." Foreground="{StaticResource Muted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap"/>
             </StackPanel>
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ScrollViewer x:Name="SettingsScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Loaded="SettingsScrollerLoaded">
               <StackPanel Margin="3,0">
                 <TextBlock Text="TERMINAL APPEARANCE" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,4,0,8"/>
                 <TextBlock Text="Font family" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
@@ -258,16 +269,36 @@
             <ListBox x:Name="WorkspaceSessionTabs" SelectionChanged="WorkspaceSessionSelectionChanged" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled">
               <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="1,0,3,0"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style></ListBox.ItemContainerStyle>
               <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
-              <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold" Margin="10,4"/></DataTemplate></ListBox.ItemTemplate>
+              <ListBox.ItemTemplate><DataTemplate><Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="0,0,0,2" CornerRadius="5" Padding="10,4"><TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold"/></Border></DataTemplate></ListBox.ItemTemplate>
             </ListBox>
           </DockPanel>
         </Border>
-        <Grid x:Name="TerminalHost" Grid.Row="1" Background="#11111B"/>
-        <Grid x:Name="LayoutTransitionOverlay" Grid.Row="1" Panel.ZIndex="12" Background="#F211111B" Visibility="Collapsed" IsHitTestVisible="False" Opacity="1">
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-            <TextBlock x:Name="LayoutTransitionTitle" Text="GRID LAYOUT" Foreground="#B4BEFE" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,12"/>
-            <Canvas x:Name="LayoutTransitionCanvas" Width="240" Height="138"/>
-          </StackPanel>
+        <Grid x:Name="TerminalArea" Grid.Row="1">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+          <Border x:Name="TerminalTabBar" Grid.Row="0" Visibility="Collapsed" Background="#151520" BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="6,4,6,0">
+            <ListBox x:Name="TerminalTabList" SelectionChanged="TerminalTabSelectionChanged"
+                     AllowDrop="True" Background="Transparent" BorderThickness="0"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                     PreviewMouseLeftButtonDown="TerminalOrderDragStart" PreviewMouseLeftButtonUp="TerminalOrderDragEnd"
+                     PreviewMouseMove="TerminalOrderDragMove" DragOver="TerminalOrderDragOver" Drop="TerminalOrderDrop">
+              <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="2,0"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style></ListBox.ItemContainerStyle>
+              <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="1,1,1,0" CornerRadius="7,7,0,0" Padding="12,7,14,7">
+                    <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{Binding AccentBrush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"/></StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
+          <Grid x:Name="TerminalHost" Grid.Row="1" Background="#11111B"/>
+          <Grid x:Name="LayoutTransitionOverlay" Grid.RowSpan="2" Panel.ZIndex="12" Background="#F211111B" Visibility="Collapsed" IsHitTestVisible="False" Opacity="1">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+              <TextBlock x:Name="LayoutTransitionTitle" Text="GRID LAYOUT" Foreground="#B4BEFE" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+              <Canvas x:Name="LayoutTransitionCanvas" Width="240" Height="138"/>
+            </StackPanel>
+          </Grid>
         </Grid>
       </Grid>
       <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#E6242438" BorderBrush="#585B70" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
@@ -293,8 +324,20 @@
         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,18"/>
           <Grid Grid.Row="1">
-            <StackPanel x:Name="SessionEditor"><TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/><TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/><TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid><CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/></StackPanel>
-            <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed"><TextBlock Text="Session name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/><TextBlock Text="A Session remembers its own terminals, selected terminal, layout, and divider sizes." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/></StackPanel>
+            <StackPanel x:Name="SessionEditor">
+              <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/>
+              <TextBlock Text="Terminal color" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/>
+              <ComboBox x:Name="SessionAccentEdit" SelectedValuePath="Value"><ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Ellipse Width="11" Height="11" Fill="{Binding Brush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate></ComboBox>
+              <TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
+              <TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
+              <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/>
+            </StackPanel>
+            <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed">
+              <TextBlock Text="Session name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/>
+              <TextBlock Text="Session color" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/>
+              <ComboBox x:Name="WorkspaceSessionAccentEdit" SelectedValuePath="Value"><ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Ellipse Width="11" Height="11" Fill="{Binding Brush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate></ComboBox>
+              <TextBlock Text="A Session remembers its own terminals, selected terminal, layout, divider sizes, and color." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+            </StackPanel>
             <StackPanel x:Name="SnippetEditor" Visibility="Collapsed">
               <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/>
               <TextBlock Text="Category" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/>

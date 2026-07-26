@@ -150,6 +150,15 @@
       <Setter Property="HorizontalAlignment" Value="Center"/>
       <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
     </Style>
+    <Style x:Key="RailVectorIcon" TargetType="Path">
+      <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+      <Setter Property="StrokeThickness" Value="1.65"/>
+      <Setter Property="StrokeStartLineCap" Value="Round"/>
+      <Setter Property="StrokeEndLineCap" Value="Round"/>
+      <Setter Property="StrokeLineJoin" Value="Round"/>
+      <Setter Property="Fill" Value="Transparent"/>
+      <Setter Property="Stretch" Value="Uniform"/>
+    </Style>
     <Style x:Key="RailLabel" TargetType="TextBlock">
       <Setter Property="FontSize" Value="11"/>
       <Setter Property="Margin" Value="0,4,0,0"/>
@@ -174,6 +183,54 @@
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="ThemedScrollPageButton" TargetType="RepeatButton">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <ControlTemplate x:Key="ThemedVerticalScrollBarTemplate" TargetType="ScrollBar">
+      <Grid Width="11" Background="#181825">
+        <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True"
+               Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+               Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+               ViewportSize="{TemplateBinding ViewportSize}">
+          <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource ThemedScrollPageButton}"/></Track.DecreaseRepeatButton>
+          <Track.Thumb>
+            <Thumb Margin="2" MinHeight="24">
+              <Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="ThumbBody" Background="#585B70" CornerRadius="4"/><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbBody" Property="Background" Value="#89B4FA"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbBody" Property="Background" Value="#B4BEFE"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template>
+            </Thumb>
+          </Track.Thumb>
+          <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource ThemedScrollPageButton}"/></Track.IncreaseRepeatButton>
+        </Track>
+      </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="ThemedHorizontalScrollBarTemplate" TargetType="ScrollBar">
+      <Grid Height="11" Background="#181825">
+        <Track x:Name="PART_Track" Orientation="Horizontal"
+               Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+               Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+               ViewportSize="{TemplateBinding ViewportSize}">
+          <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageLeftCommand" Style="{StaticResource ThemedScrollPageButton}"/></Track.DecreaseRepeatButton>
+          <Track.Thumb>
+            <Thumb Margin="2" MinWidth="24">
+              <Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="ThumbBody" Background="#585B70" CornerRadius="4"/><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbBody" Property="Background" Value="#89B4FA"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbBody" Property="Background" Value="#B4BEFE"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template>
+            </Thumb>
+          </Track.Thumb>
+          <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageRightCommand" Style="{StaticResource ThemedScrollPageButton}"/></Track.IncreaseRepeatButton>
+        </Track>
+      </Grid>
+    </ControlTemplate>
+    <Style x:Key="ThemedScrollBar" TargetType="ScrollBar">
+      <Setter Property="Background" Value="#181825"/>
+      <Setter Property="Foreground" Value="#585B70"/>
+      <Setter Property="Width" Value="11"/>
+      <Setter Property="Template" Value="{StaticResource ThemedVerticalScrollBarTemplate}"/>
+      <Style.Triggers>
+        <Trigger Property="Orientation" Value="Horizontal"><Setter Property="Width" Value="Auto"/><Setter Property="Height" Value="11"/><Setter Property="Template" Value="{StaticResource ThemedHorizontalScrollBarTemplate}"/></Trigger>
+      </Style.Triggers>
+    </Style>
+    <Style TargetType="ScrollBar" BasedOn="{StaticResource ThemedScrollBar}"/>
     <Style x:Key="ToggleSwitch" TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource Text}"/>
       <Setter Property="FontSize" Value="12"/>

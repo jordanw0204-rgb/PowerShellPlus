@@ -191,6 +191,7 @@ public partial class TerminalPane : UserControl
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
+        ApplyAccent();
         ConfigureComposerFileDrop();
         RestoreComposerAttachments();
         Profile.CommandDraft = StripRedundantAttachmentQuotes(Profile.CommandDraft, composerAttachments.Select(value => value.LocalPath));
@@ -224,7 +225,7 @@ public partial class TerminalPane : UserControl
             AttachTerminalOutputFilter();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
             RefreshRemoteDimensions();
-            HideNativeScrollbar();
+            ConfigureNativeScrollbar();
             StateText.Text = $"  {appearance.ProfileName} · native renderer";
             await Task.Delay(1400);
             if (Terminal.ConPTYTerm?.TermProcIsStarted != true)
@@ -258,8 +259,20 @@ public partial class TerminalPane : UserControl
 
     public void SetActive(bool active)
     {
-        PaneBorder.BorderBrush = new SolidColorBrush(active ? Color.FromRgb(137, 180, 250) : Color.FromRgb(49, 50, 68));
+        PaneBorder.BorderBrush = active ? WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal) : new SolidColorBrush(Color.FromRgb(49, 50, 68));
         PaneBorder.BorderThickness = active ? new Thickness(1.5) : new Thickness(1);
+    }
+
+    private void ApplyAccent()
+    {
+        var accent = WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+        PaneAccentBar.Background = accent;
+        if (PaneBorder.BorderThickness.Left > 1) PaneBorder.BorderBrush = accent;
+        AgentHead.BorderBrush = accent;
+        AgentAntenna.Stroke = accent;
+        AgentAntennaTip.Fill = accent;
+        AgentLeftEye.Fill = accent;
+        AgentRightEye.Fill = accent;
     }
 
     public bool HasTerminalSurfaceActivationHook => terminalContainer is not null && terminalMessageRouterInstalled && terminalWindowSubclassInstalled;
@@ -293,16 +306,17 @@ public partial class TerminalPane : UserControl
             {
                 await Terminal.RestartTerm();
                 AttachTerminalOutputFilter();
+                ConfigureNativeScrollbar();
                 restarted = true;
             }
         }
         catch (ArgumentException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); ConfigureNativeScrollbar(); restarted = true; } catch { return false; }
         }
         catch (InvalidOperationException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); ConfigureNativeScrollbar(); restarted = true; } catch { return false; }
         }
         if (restarted) await Task.Delay(900);
         var deadline = DateTime.UtcNow.AddSeconds(8);
@@ -848,6 +862,8 @@ public partial class TerminalPane : UserControl
         Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
+        ConfigureNativeScrollbar();
         agentActivityState = AgentActivityState.Starting;
         RefreshAgentStatus(true);
         Terminal.Focus();
@@ -892,6 +908,8 @@ public partial class TerminalPane : UserControl
             Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
             await Terminal.RestartTerm();
             AttachTerminalOutputFilter();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
+            ConfigureNativeScrollbar();
             await Task.Delay(600);
             RefreshRemoteDimensions();
             StateText.Text = "  Safe shell · native renderer";
@@ -1170,6 +1188,7 @@ public partial class TerminalPane : UserControl
         Profile = profile;
         startupRecovery = null;
         TitleText.Text = profile.Name;
+        ApplyAccent();
         Terminal.StartupCommandLine = BuildCommandLine(profile, null);
     }
 
@@ -1177,12 +1196,15 @@ public partial class TerminalPane : UserControl
     {
         Profile = profile;
         TitleText.Text = profile.Name;
+        ApplyAccent();
     }
 
-    public bool IsNativeScrollbarHidden()
+    public bool IsNativeScrollbarThemed()
     {
         var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
-        return scrollbar is null || scrollbar.Visibility != Visibility.Visible || scrollbar.ActualWidth == 0;
+        return scrollbar is not null && scrollbar.Visibility == Visibility.Visible
+            && scrollbar.Style == TryFindResource("ThemedScrollBar") as Style
+            && scrollbar.Width == 11;
     }
 
     public bool FocusCommandInputForTest() => CommandInput.Focus();
@@ -1277,12 +1299,14 @@ public partial class TerminalPane : UserControl
     }
     public void RefreshCommandRoutingAppearance() => UpdateSendButtonVisual(IsSendToAllActive(Keyboard.Modifiers), true);
 
-    private void HideNativeScrollbar()
+    private void ConfigureNativeScrollbar()
     {
         var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
         if (scrollbar is null) return;
-        scrollbar.Visibility = Visibility.Collapsed;
-        scrollbar.Width = 0;
+        if (TryFindResource("ThemedScrollBar") is Style style) scrollbar.Style = style;
+        scrollbar.Visibility = Visibility.Visible;
+        scrollbar.Width = 11;
+        scrollbar.MinWidth = 11;
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
@@ -1485,14 +1509,26 @@ public partial class TerminalPane : UserControl
         var codexActivity = detectedAgentKind == AgentKind.Codex
             ? CodexSessionLocator.FindActivity(activeCodexSessionId)
             : default;
-        var next = !terminalRunning
-            ? AgentActivityState.Stopped
-            : detectedAgentKind == AgentKind.Codex && codexActivity.State != CodexTurnActivityState.Unknown
-                ? codexActivity.State == CodexTurnActivityState.Working ? AgentActivityState.Working : AgentActivityState.Waiting
-                : recentTerminalOutput
-                    ? AgentActivityState.Working
-                    : detectedAgentKind == AgentKind.Terminal ? AgentActivityState.Idle : AgentActivityState.Waiting;
+        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, recentTerminalOutput, codexActivity.State);
         SetAgentStatus(detectedAgentKind, next);
+    }
+
+    private static AgentActivityState ClassifyAgentActivity(AgentKind kind, bool terminalRunning, bool recentTerminalOutput, CodexTurnActivityState codexState)
+    {
+        if (!terminalRunning) return AgentActivityState.Stopped;
+        if (kind == AgentKind.Codex)
+        {
+            return codexState switch
+            {
+                CodexTurnActivityState.Working => AgentActivityState.Working,
+                CodexTurnActivityState.Waiting => AgentActivityState.Waiting,
+                _ => AgentActivityState.Idle
+            };
+        }
+        // Hermes does not currently expose a local structured turn-event API.
+        // Its streaming output is authoritative while data is arriving; once
+        // output settles, both Hermes and an ordinary shell are genuinely idle.
+        return recentTerminalOutput ? AgentActivityState.Working : AgentActivityState.Idle;
     }
 
     private void SetAgentStatus(AgentKind kind, AgentActivityState state)
@@ -1561,6 +1597,7 @@ public partial class TerminalPane : UserControl
 
     internal AgentActivityState AgentActivityStateForTest => agentActivityState;
     internal string AgentStatusTextForTest => StateText.Text;
+    internal bool AccentAppliedForTest => ReferenceEquals(PaneAccentBar.Background, WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal));
     internal void SetAgentStatusForTest(AgentKind kind, AgentActivityState state) => SetAgentStatus(kind, state);
     internal static bool ActivityTrackerRejectsInputEchoForTest()
     {
@@ -1572,6 +1609,14 @@ public partial class TerminalPane : UserControl
             && tracker.RecordOutput("background process output", now.AddMilliseconds(700))
             && tracker.HasRecentOutput(now.AddMilliseconds(800), TimeSpan.FromSeconds(2));
     }
+    internal static bool AgentActivityClassificationForTest()
+        => ClassifyAgentActivity(AgentKind.Codex, true, true, CodexTurnActivityState.Idle) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Codex, true, false, CodexTurnActivityState.Working) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Codex, true, false, CodexTurnActivityState.Waiting) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Hermes, true, true, CodexTurnActivityState.Unknown) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Hermes, true, false, CodexTurnActivityState.Unknown) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, true, false, CodexTurnActivityState.Unknown) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, false, true, CodexTurnActivityState.Unknown) == AgentActivityState.Stopped;
     internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
         && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
         && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom

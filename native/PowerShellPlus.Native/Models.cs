@@ -2,8 +2,52 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
+using System.Windows.Media;
 
 namespace PowerShellPlus.Native;
+
+public sealed record AccentChoice(string Name, string Value, Brush Brush);
+
+public static class WorkspaceAccentPalette
+{
+    public const string DefaultTerminal = "#89B4FA";
+    public const string DefaultSession = "#B4BEFE";
+    public static IReadOnlyList<AccentChoice> Choices { get; } =
+    [
+        Choice("Sky", "#89B4FA"), Choice("Lavender", "#B4BEFE"), Choice("Teal", "#94E2D5"),
+        Choice("Green", "#A6E3A1"), Choice("Yellow", "#F9E2AF"), Choice("Peach", "#FAB387"),
+        Choice("Pink", "#F5C2E7"), Choice("Mauve", "#CBA6F7"), Choice("Red", "#F38BA8")
+    ];
+
+    private static readonly Dictionary<string, Brush> OpaqueBrushes = Choices.ToDictionary(value => value.Value, value => value.Brush, StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, Brush> TintBrushes = Choices.ToDictionary(value => value.Value, value => CreateBrush(value.Value, 38), StringComparer.OrdinalIgnoreCase);
+
+    public static string Normalize(string? value, string fallback)
+        => Choices.Any(choice => string.Equals(choice.Value, value, StringComparison.OrdinalIgnoreCase)) ? value!.ToUpperInvariant() : fallback;
+
+    public static Brush BrushFor(string? value, string fallback)
+    {
+        var normalized = Normalize(value, fallback);
+        return OpaqueBrushes.TryGetValue(normalized, out var brush) ? brush : OpaqueBrushes[fallback];
+    }
+
+    public static Brush TintFor(string? value, string fallback)
+    {
+        var normalized = Normalize(value, fallback);
+        return TintBrushes.TryGetValue(normalized, out var brush) ? brush : TintBrushes[fallback];
+    }
+
+    private static AccentChoice Choice(string name, string value) => new(name, value, CreateBrush(value, 255));
+
+    private static Brush CreateBrush(string value, byte alpha)
+    {
+        var color = (Color)ColorConverter.ConvertFromString(value)!;
+        color.A = alpha;
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+}
 
 public sealed class WorkspaceState
 {
@@ -31,11 +75,14 @@ public sealed class TerminalSession
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Session";
+    public string AccentColor { get; set; } = WorkspaceAccentPalette.DefaultSession;
     public string Layout { get; set; } = "Grid";
     public List<string> TerminalIds { get; set; } = [];
     public string? ActiveTerminalId { get; set; }
     public Dictionary<string, PaneLayoutSizing> LayoutSizes { get; set; } = [];
     [JsonIgnore] public string Subtitle => $"{TerminalIds.Count} terminal{(TerminalIds.Count == 1 ? string.Empty : "s")}";
+    [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultSession);
+    [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultSession);
 }
 
 public sealed class PaneLayoutSizing
@@ -65,6 +112,7 @@ public sealed class SessionProfile
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "PowerShell";
+    public string AccentColor { get; set; } = WorkspaceAccentPalette.DefaultTerminal;
     public string CommandLine { get; set; } = "powershell.exe";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
@@ -75,6 +123,8 @@ public sealed class SessionProfile
     public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];
     [JsonIgnore] public string Subtitle => WorkingDirectory;
+    [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+    [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
 }
 
 public sealed class ComposerAttachmentState
