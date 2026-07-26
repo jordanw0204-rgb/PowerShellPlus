@@ -2031,10 +2031,12 @@ public partial class TerminalPane : UserControl
         try
         {
             var keyDown = new MSG { hwnd = handle, message = WmKeyDown, wParam = new IntPtr(VkV) };
-            var keyDownHandled = ComponentDispatcher.RaiseThreadMessage(ref keyDown);
+            var keyDownHandled = false;
+            TerminalThreadPreprocessMessage(ref keyDown, ref keyDownHandled);
             var keyUp = new MSG { hwnd = handle, message = WmKeyUp, wParam = new IntPtr(VkV) };
-            var keyUpHandled = ComponentDispatcher.RaiseThreadMessage(ref keyUp);
-            return keyDownHandled && keyUpHandled
+            var keyUpHandled = false;
+            TerminalThreadPreprocessMessage(ref keyUp, ref keyUpHandled);
+            return terminalThreadMessageHookInstalled && keyDownHandled && keyUpHandled
                 && Volatile.Read(ref terminalThreadMessageInterceptCount) == beforeIntercept + 1
                 && Volatile.Read(ref terminalInternalMessageForwardCount) == beforeForward;
         }
