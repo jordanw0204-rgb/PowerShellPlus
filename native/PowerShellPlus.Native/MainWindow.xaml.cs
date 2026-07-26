@@ -1418,6 +1418,21 @@ public partial class MainWindow : Window
         if (openTerminalRight > minimizeLeft + 1)
             throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
         Render(root, "ui-main.png");
+        if (activePane is { } historySnapshotPane)
+        {
+            var originalHistory = historySnapshotPane.Profile.CommandHistory.ToArray();
+            var originalDraft = historySnapshotPane.CommandInputTextForTest;
+            historySnapshotPane.SetCommandHistoryForTest([
+                "Deploy the validated release and verify every health endpoint.",
+                "git status --short --branch\npnpm test"
+            ]);
+            historySnapshotPane.ShowCommandHistoryForTest();
+            await Settle();
+            Render(root, "ui-command-history.png");
+            historySnapshotPane.HideCommandHistoryForTest();
+            historySnapshotPane.SetCommandHistoryForTest(originalHistory);
+            historySnapshotPane.SetCommandInputForTest(originalDraft);
+        }
         var snapshotLayout = activeWorkspaceSession?.Layout ?? "Grid";
         SetLayout("Tabs");
         await Settle();
@@ -2304,6 +2319,23 @@ public partial class MainWindow : Window
             var settingsScrollbarThemed = settingsScrollBar is not null
                 && ReferenceEquals(settingsScrollBar.Style, FindResource("ThemedScrollBar"));
             ShowSection(SessionsPanel);
+            WorkspaceSessionList.UpdateLayout();
+            SessionList.UpdateLayout();
+            var workspaceCardContainer = WorkspaceSessionList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
+            var terminalCardContainer = SessionList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
+            var workspaceCardSurface = workspaceCardContainer is null ? null : FindVisualDescendant<Border>(workspaceCardContainer);
+            var terminalCardSurface = terminalCardContainer is null ? null : FindVisualDescendant<Border>(terminalCardContainer);
+            var sidebarCardsUseSingleFrame = workspaceCardContainer is not null && terminalCardContainer is not null
+                && VisualTreeHelper.GetChildrenCount(workspaceCardContainer) == 1 && VisualTreeHelper.GetChild(workspaceCardContainer, 0) is ContentPresenter
+                && VisualTreeHelper.GetChildrenCount(terminalCardContainer) == 1 && VisualTreeHelper.GetChild(terminalCardContainer, 0) is ContentPresenter;
+            var workspaceCardMenuReliable = workspaceCardSurface?.ContextMenu is { } workspaceCardMenu
+                && workspaceCardMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
+                && OpenCardContextMenu(workspaceCardSurface, System.Windows.Controls.Primitives.PlacementMode.MousePoint);
+            if (workspaceCardSurface?.ContextMenu is { } openedWorkspaceCardMenu) openedWorkspaceCardMenu.IsOpen = false;
+            var terminalCardMenuReliable = terminalCardSurface?.ContextMenu is { } terminalCardMenu
+                && terminalCardMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit terminal", StringComparison.Ordinal))
+                && OpenCardContextMenu(terminalCardSurface, System.Windows.Controls.Primitives.PlacementMode.MousePoint);
+            if (terminalCardSurface?.ContextMenu is { } openedTerminalCardMenu) openedTerminalCardMenu.IsOpen = false;
             Width = Math.Max(MinWidth, ActualWidth - 260);
             await Dispatcher.Yield(DispatcherPriority.Background);
             root.UpdateLayout();
@@ -2492,6 +2524,22 @@ public partial class MainWindow : Window
                 || !activationTarget.GetOutput().Contains("QUEUE_FIRST", StringComparison.Ordinal) || !activationTarget.GetOutput().Contains("QUEUE_SECOND", StringComparison.Ordinal))) await Task.Delay(120);
             var queueCommandsExecuted = activationTarget.GetOutput().Contains("QUEUE_NOW", StringComparison.Ordinal)
                 && activationTarget.GetOutput().Contains("QUEUE_FIRST", StringComparison.Ordinal) && activationTarget.GetOutput().Contains("QUEUE_SECOND", StringComparison.Ordinal);
+            var commandHistoryRecordsSentCommands = activationTarget.CommandHistoryCountForTest >= 3
+                && activationTarget.Profile.CommandHistory.TakeLast(3).SequenceEqual([
+                    "Write-Output 'QUEUE_NOW'", "Write-Output 'QUEUE_FIRST'", "Write-Output 'QUEUE_SECOND'"
+                ]);
+            activationTarget.ShowCommandHistoryForTest();
+            var commandHistoryPanelAdapts = activationTarget.CommandHistoryPanelVisibleForTest
+                && activationTarget.CommandHistoryVisibleItemCountForTest == activationTarget.CommandHistoryCountForTest;
+            var commandHistoryButtonIsFrameless = activationTarget.CommandHistoryButtonIsFramelessForTest;
+            activationTarget.RestoreLatestCommandHistoryForTest();
+            var commandHistoryRestoresInput = activationTarget.CommandInputTextForTest == "Write-Output 'QUEUE_SECOND'"
+                && !activationTarget.CommandHistoryPanelVisibleForTest;
+            WorkspaceStore.Save(state);
+            var commandHistoryPersists = WorkspaceStore.Load(terminalProfile).Sessions
+                .First(value => value.Id == activationTarget.Profile.Id).CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory);
+            var commandHistoryIsPerTerminal = panes[added[1].Id].Profile.CommandHistory.Count == 0;
+            activationTarget.SetCommandInputForTest(string.Empty);
 
             state.Settings.SendToAllModifierEnabled = true;
             state.Settings.SendToAllModifier = "Shift";
@@ -2524,6 +2572,20 @@ public partial class MainWindow : Window
             SetLayout("Tabs");
             var tabs = TerminalTabBar.Visibility == Visibility.Visible && TerminalTabList.Items.Count == expectedPanes
                 && TerminalHost.Children.OfType<TerminalPane>().Count() == 1;
+            WorkspaceSessionTabs.UpdateLayout();
+            TerminalTabList.UpdateLayout();
+            var workspaceTabContainer = WorkspaceSessionTabs.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
+            var terminalTabContainer = TerminalTabList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
+            var workspaceTabSurface = workspaceTabContainer is null ? null : FindContextMenuSurface(workspaceTabContainer);
+            var terminalTabSurface = terminalTabContainer is null ? null : FindContextMenuSurface(terminalTabContainer);
+            var tabContextMenusWork = workspaceTabSurface?.ContextMenu is { } workspaceTabMenu
+                && workspaceTabMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
+                && terminalTabSurface?.ContextMenu is { } terminalTabMenu
+                && terminalTabMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit terminal", StringComparison.Ordinal))
+                && OpenCardContextMenu(workspaceTabSurface, System.Windows.Controls.Primitives.PlacementMode.MousePoint)
+                && OpenCardContextMenu(terminalTabSurface, System.Windows.Controls.Primitives.PlacementMode.MousePoint);
+            if (workspaceTabSurface?.ContextMenu is { } openedWorkspaceTabMenu) openedWorkspaceTabMenu.IsOpen = false;
+            if (terminalTabSurface?.ContextMenu is { } openedTerminalTabMenu) openedTerminalTabMenu.IsOpen = false;
             var originalTerminalOrder = activeWorkspaceSession!.TerminalIds.ToArray();
             var tabReorderSource = state.Sessions.First(value => value.Id == originalTerminalOrder[1]);
             var tabReorderTarget = state.Sessions.First(value => value.Id == originalTerminalOrder[0]);
@@ -2654,9 +2716,11 @@ public partial class MainWindow : Window
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
-                && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes;
+                && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
+                && commandHistoryRecordsSentCommands && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
+                && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal;
             var success = inputReady && outputReady && terminalScrollbarsThemed && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
-                && sidebarCollapses && sidebarExpands && sidebarStatePersists
+                && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTypingAvoidsPillRebuild
@@ -2665,7 +2729,7 @@ public partial class MainWindow : Window
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && tabs && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && rows && columns && focus && grid && tabs && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && scheduleLogic && countdownLogic && automationHoverContainerStable && terminalRenamePreservesLiveState
@@ -2674,6 +2738,8 @@ public partial class MainWindow : Window
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
@@ -3021,6 +3087,22 @@ public partial class MainWindow : Window
     {
         if (sender is FrameworkElement card) SelectCard(card.DataContext);
     }
+    private void CardRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement surface || !OpenCardContextMenu(surface, System.Windows.Controls.Primitives.PlacementMode.MousePoint)) return;
+        e.Handled = true;
+    }
+    private bool OpenCardContextMenu(FrameworkElement surface, System.Windows.Controls.Primitives.PlacementMode placement)
+    {
+        if (surface.ContextMenu is not { } menu) return false;
+        SelectCard(surface.DataContext);
+        menu.PlacementTarget = surface;
+        menu.Placement = placement;
+        menu.HorizontalOffset = 0;
+        menu.VerticalOffset = 0;
+        menu.IsOpen = true;
+        return menu.IsOpen;
+    }
     private void OpenCardMenuClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button || button.Tag is not FrameworkElement card || card.ContextMenu is not ContextMenu menu) return;
@@ -3152,6 +3234,16 @@ public partial class MainWindow : Window
             if (child is T match) return match;
             var nested = FindVisualDescendant<T>(child);
             if (nested is not null) return nested;
+        }
+        return null;
+    }
+    private static FrameworkElement? FindContextMenuSurface(DependencyObject root)
+    {
+        if (root is FrameworkElement { ContextMenu: not null } surface) return surface;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var match = FindContextMenuSurface(VisualTreeHelper.GetChild(root, index));
+            if (match is not null) return match;
         }
         return null;
     }

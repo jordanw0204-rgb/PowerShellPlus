@@ -5,6 +5,27 @@
         Title="PowerShellPlus Native" Icon="Assets/PowerShellPlus.ico" Width="1500" Height="920" MinWidth="980" MinHeight="640"
         WindowStyle="None" ResizeMode="CanResize" Background="{StaticResource Bg}" PreviewKeyDown="WindowPreviewKeyDown">
   <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/></shell:WindowChrome.WindowChrome>
+  <Window.Resources>
+    <Style x:Key="AccentCardListItem" TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,3"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem"><ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/></ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <ContextMenu x:Key="WorkspaceSessionContextMenu" x:Shared="False" Style="{StaticResource CardContextMenu}"
+                 DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit session" Click="WorkspaceSessionRenameClick"/>
+      <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove session" Click="WorkspaceSessionRemoveClick"/>
+    </ContextMenu>
+    <ContextMenu x:Key="TerminalContextMenu" x:Shared="False" Style="{StaticResource CardContextMenu}"
+                 DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="&#x270E;" FontSize="14"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="&#x21BB;" FontSize="15"/></MenuItem.Icon></MenuItem>
+      <Separator/>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="&#x2191;" FontSize="14"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="&#x2193;" FontSize="14"/></MenuItem.Icon></MenuItem>
+      <Separator/>
+      <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="&#x00D7;" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
+    </ContextMenu>
+  </Window.Resources>
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition/><RowDefinition Height="24"/></Grid.RowDefinitions>
 
@@ -62,20 +83,16 @@
           <Grid x:Name="SessionsPanel">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="3,0,3,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewWorkspaceSessionClick" ToolTip="New session"/></Grid>
-            <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged">
+            <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged"
+                     ItemContainerStyle="{StaticResource AccentCardListItem}">
               <ListBox.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="7" Padding="5,2">
-                  <Grid x:Name="WorkspaceSessionCard" MinHeight="46" ContextMenuOpening="CardContextMenuOpening" MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
-                    <Grid.ContextMenu>
-                      <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Rename session" Click="WorkspaceSessionRenameClick"/>
-                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove session" Click="WorkspaceSessionRemoveClick"/>
-                      </ContextMenu>
-                    </Grid.ContextMenu>
+                  <Border x:Name="WorkspaceSessionSurface" BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="8" Padding="10,5"
+                          ContextMenu="{StaticResource WorkspaceSessionContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown" MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
+                  <Grid x:Name="WorkspaceSessionCard" MinHeight="46">
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
                     <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
-                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=WorkspaceSessionCard}" Click="OpenCardMenuClick"/>
+                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=WorkspaceSessionSurface}" Click="OpenCardMenuClick"/>
                   </Grid>
                   </Border>
                 </DataTemplate>
@@ -116,30 +133,20 @@
                 </UniformGrid>
               </Grid>
             </Border>
-            <ListBox x:Name="SessionList" Grid.Row="4" SelectionChanged="SessionSelectionChanged" AllowDrop="True"
+            <ListBox x:Name="SessionList" Grid.Row="4" SelectionChanged="SessionSelectionChanged" AllowDrop="True" ItemContainerStyle="{StaticResource AccentCardListItem}"
                      PreviewMouseLeftButtonDown="TerminalOrderDragStart" PreviewMouseLeftButtonUp="TerminalOrderDragEnd"
                      PreviewMouseMove="TerminalOrderDragMove" DragOver="TerminalOrderDragOver" Drop="TerminalOrderDrop">
               <ListBox.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="7" Padding="5,2">
-                  <Grid x:Name="SessionCard" MinHeight="52" ContextMenuOpening="CardContextMenuOpening"
+                  <Border x:Name="SessionSurface" BorderBrush="{Binding AccentBrush}" BorderThickness="1" Background="{Binding AccentTintBrush}" CornerRadius="8" Padding="10,5"
+                          ContextMenu="{StaticResource TerminalContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown">
+                  <Grid x:Name="SessionCard" MinHeight="52"
                         ToolTipOpening="TerminalCardToolTipOpening" ToolTipService.InitialShowDelay="400"
                         ToolTipService.ShowDuration="60000" ToolTipService.Placement="Right">
                     <Grid.ToolTip><ToolTip><TextBlock Text="Loading live terminal details…"/></ToolTip></Grid.ToolTip>
-                    <Grid.ContextMenu>
-                      <ContextMenu Style="{StaticResource CardContextMenu}" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="↻" FontSize="15"/></MenuItem.Icon></MenuItem>
-                        <Separator/>
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier in grid" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="↑" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later in grid" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="↓" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <Separator/>
-                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
-                      </ContextMenu>
-                    </Grid.ContextMenu>
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
                     <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
-                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionCard}" Click="OpenCardMenuClick"/>
+                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionSurface}" Click="OpenCardMenuClick"/>
                   </Grid>
                   </Border>
                 </DataTemplate>
@@ -269,7 +276,8 @@
             <ListBox x:Name="WorkspaceSessionTabs" SelectionChanged="WorkspaceSessionSelectionChanged" BorderThickness="0" Background="Transparent" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled">
               <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="1,0,3,0"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style></ListBox.ItemContainerStyle>
               <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
-              <ListBox.ItemTemplate><DataTemplate><Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="0,0,0,2" CornerRadius="5" Padding="10,4"><TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold"/></Border></DataTemplate></ListBox.ItemTemplate>
+              <ListBox.ItemTemplate><DataTemplate><Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="0,0,0,2" CornerRadius="5" Padding="10,4"
+                    ContextMenu="{StaticResource WorkspaceSessionContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown"><TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold"/></Border></DataTemplate></ListBox.ItemTemplate>
             </ListBox>
           </DockPanel>
         </Border>
@@ -285,7 +293,8 @@
               <ListBox.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ListBox.ItemsPanel>
               <ListBox.ItemTemplate>
                 <DataTemplate>
-                  <Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="1,1,1,0" CornerRadius="7,7,0,0" Padding="12,7,14,7">
+                  <Border Background="{Binding AccentTintBrush}" BorderBrush="{Binding AccentBrush}" BorderThickness="1,1,1,0" CornerRadius="7,7,0,0" Padding="12,7,14,7"
+                          ContextMenu="{StaticResource TerminalContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown">
                     <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{Binding AccentBrush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"/></StackPanel>
                   </Border>
                 </DataTemplate>

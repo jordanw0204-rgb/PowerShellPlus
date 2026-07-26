@@ -122,6 +122,7 @@ public sealed class SessionProfile
     public string CommandDraft { get; set; } = string.Empty;
     public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];
+    public List<string> CommandHistory { get; set; } = [];
     [JsonIgnore] public string Subtitle => WorkingDirectory;
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);

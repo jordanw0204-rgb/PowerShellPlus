@@ -35,6 +35,11 @@ public static class WorkspaceStore
                         .Take(10)
                         .ToList();
                     session.PendingCommands ??= [];
+                    session.CommandHistory ??= [];
+                    session.CommandHistory = session.CommandHistory
+                        .Where(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 32_768)
+                        .TakeLast(100)
+                        .ToList();
                 }
                 loaded.TerminalSessions ??= [];
                 if (loaded.TerminalSessions.Count == 0)

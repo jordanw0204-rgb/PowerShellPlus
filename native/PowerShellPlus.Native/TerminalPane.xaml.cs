@@ -102,6 +102,7 @@ public partial class TerminalPane : UserControl
     private const int VkMenu = 0x12;
     private const int VkV = 0x56;
     private const int MaximumQueuedCommands = 100;
+    private const int MaximumCommandHistory = 100;
     private const int MaximumCommandLength = 32_768;
     private const int MaximumClipboardCharacters = 1_000_000;
     private const int MaximumComposerAttachments = 10;
@@ -188,6 +189,7 @@ public partial class TerminalPane : UserControl
         remoteFontFace = appearance.FontFace;
         remoteFontSize = EffectiveTerminalFontSize(appearance);
         Profile.PendingCommands ??= [];
+        Profile.CommandHistory ??= [];
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
@@ -207,6 +209,7 @@ public partial class TerminalPane : UserControl
         Terminal.Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
         UpdateQueueDisplay();
+        RefreshCommandHistoryList();
         UpdateSendButtonVisual(false);
         AttachTerminalActivationHook();
         TitleText.Text = profile.Name;
@@ -354,6 +357,41 @@ public partial class TerminalPane : UserControl
         CommandInput.Focus();
     }
 
+    private void RecordCommandHistory(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return;
+        if (Profile.CommandHistory.Count == 0 || !string.Equals(Profile.CommandHistory[^1], command, StringComparison.Ordinal))
+            Profile.CommandHistory.Add(command);
+        if (Profile.CommandHistory.Count > MaximumCommandHistory)
+            Profile.CommandHistory.RemoveRange(0, Profile.CommandHistory.Count - MaximumCommandHistory);
+        RefreshCommandHistoryList();
+    }
+
+    private void RefreshCommandHistoryList()
+    {
+        CommandHistoryList.ItemsSource = Profile.CommandHistory.AsEnumerable().Reverse().ToArray();
+        CommandHistoryEmptyText.Visibility = Profile.CommandHistory.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CommandHistoryButton.IsEnabled = true;
+        CommandHistoryButton.Opacity = Profile.CommandHistory.Count > 0 ? 1 : .72;
+    }
+
+    private void SetCommandHistoryVisible(bool visible)
+    {
+        CommandHistoryPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        CommandHistoryIcon.Stroke = new SolidColorBrush(visible ? Color.FromRgb(137, 180, 250) : Color.FromRgb(166, 173, 200));
+        CommandHistoryButton.ToolTip = visible ? "Hide command history" : "Show command history";
+    }
+
+    private void RestoreCommandHistory(string command)
+    {
+        queueSelectionIndex = null;
+        queueNavigationDraft = string.Empty;
+        CommandInput.Text = command;
+        CommandInput.CaretIndex = CommandInput.Text.Length;
+        SetCommandHistoryVisible(false);
+        CommandInput.Focus();
+    }
+
     private async Task<bool> RunCommandInputAsync(bool sendToAll = false)
     {
         if (commandExecutionPending) return false;
@@ -376,6 +414,7 @@ public partial class TerminalPane : UserControl
             var preparedCommand = await PrepareComposerCommandAsync(command, referencedAttachments);
             if (preparedCommand is null) return false;
             if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendCommandAsync(preparedCommand))) return false;
+            RecordCommandHistory(command);
             if (queuedIndex is int index) Profile.PendingCommands.RemoveAt(index);
             RemoveComposerAttachments(referencedAttachments);
             PromoteNextQueuedCommand();
@@ -811,6 +850,7 @@ public partial class TerminalPane : UserControl
 
     private void SetCommandBarExpanded(bool expanded, bool animate, bool persist)
     {
+        if (!expanded) SetCommandHistoryVisible(false);
         Profile.CommandBarExpanded = expanded;
         CommandBarToggle.Content = expanded ? "⌄" : "⌃";
         CommandBarToggle.ToolTip = expanded ? "Hide command bar" : "Show command bar";
@@ -1235,6 +1275,22 @@ public partial class TerminalPane : UserControl
         return string.Equals(CommandInput.Text, expected.Command, StringComparison.Ordinal);
     }
     public void SetCommandInputForTest(string value) { queueSelectionIndex = null; queueNavigationDraft = string.Empty; CommandInput.Text = value; }
+    public int CommandHistoryCountForTest => Profile.CommandHistory.Count;
+    public int CommandHistoryVisibleItemCountForTest => CommandHistoryList.Items.Count;
+    public bool CommandHistoryButtonIsFramelessForTest => CommandHistoryButton.Background == Brushes.Transparent && CommandHistoryButton.BorderThickness == new Thickness(0);
+    public bool CommandHistoryPanelVisibleForTest => CommandHistoryPanel.Visibility == Visibility.Visible;
+    public void AddCommandHistoryForTest(string command) => RecordCommandHistory(command);
+    public void SetCommandHistoryForTest(IEnumerable<string> commands)
+    {
+        Profile.CommandHistory = commands.Where(value => !string.IsNullOrWhiteSpace(value)).TakeLast(MaximumCommandHistory).ToList();
+        RefreshCommandHistoryList();
+    }
+    public void ShowCommandHistoryForTest() => SetCommandHistoryVisible(true);
+    public void HideCommandHistoryForTest() => SetCommandHistoryVisible(false);
+    public void RestoreLatestCommandHistoryForTest()
+    {
+        if (Profile.CommandHistory.Count > 0) RestoreCommandHistory(Profile.CommandHistory[^1]);
+    }
     public void QueueCommandForTest() => QueueCurrentCommand();
     public void ClearQueuedCommandsForTest()
     {
@@ -2183,6 +2239,12 @@ public partial class TerminalPane : UserControl
         return false;
     }
     private void QuickAccessClick(object sender, RoutedEventArgs e) { ShowQuickAccessMenu(); e.Handled = true; }
+    private void CommandHistoryClick(object sender, RoutedEventArgs e) { SetCommandHistoryVisible(CommandHistoryPanel.Visibility != Visibility.Visible); e.Handled = true; }
+    private void CommandHistoryEntryMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is string command) RestoreCommandHistory(command);
+        e.Handled = true;
+    }
     private void QueueCommandClick(object sender, RoutedEventArgs e) { ShowQueueMenu(); e.Handled = true; }
     private async void RunCommandClick(object sender, RoutedEventArgs e) { await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); e.Handled = true; }
     private async void CommandInputPreviewKeyDown(object sender, KeyEventArgs e)
