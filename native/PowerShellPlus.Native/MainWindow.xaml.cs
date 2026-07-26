@@ -1602,6 +1602,20 @@ public partial class MainWindow : Window
         if (openTerminalRight > minimizeLeft + 1)
             throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
         Render(root, "ui-main.png");
+        if (activePane is { } scrollbarSnapshotPane)
+        {
+            const string snapshotTail = "UI_SCROLLBAR_TAIL_READY";
+            if (!await scrollbarSnapshotPane.SendCommandAsync(
+                    "1..160 | ForEach-Object { Write-Output ('UI_SCROLLBAR_LINE_' + $_) }; Write-Output 'UI_SCROLLBAR_TAIL_READY'"))
+                throw new InvalidOperationException("Terminal scrollbar snapshot command was not accepted.");
+            var snapshotDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < snapshotDeadline
+                && !scrollbarSnapshotPane.GetOutput().Contains(snapshotTail, StringComparison.Ordinal)) await Task.Delay(120);
+            await Settle();
+            if (!scrollbarSnapshotPane.TerminalScrollbarHasRangeForTest || !scrollbarSnapshotPane.ExerciseTerminalScrollbarForTest())
+                throw new InvalidOperationException("Terminal scrollbar did not expose or move a real scrollback range.");
+            Render(root, "ui-terminal-scrollbar.png");
+        }
         if (activePane is { } historySnapshotPane)
         {
             var originalHistory = historySnapshotPane.Profile.CommandHistory.ToArray();
@@ -2552,6 +2566,7 @@ public partial class MainWindow : Window
             await Dispatcher.Yield(DispatcherPriority.Background);
             var terminalScrollbarsThemed = panes.Values.All(pane => pane.IsNativeScrollbarThemed());
             var terminalScrollbarsInteractive = panes.Values.All(pane => pane.NativeScrollbarInteractiveForTest);
+            var terminalScrollbarBridgesStable = panes.Values.All(pane => pane.TerminalScrollbarBridgeStableForTest);
             var activationTarget = panes[added[0].Id];
             SelectPane(panes.Values.First().Profile.Id, false);
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
@@ -2652,6 +2667,24 @@ public partial class MainWindow : Window
                 await Task.Delay(180);
                 outputReady = panes.Values.Select((pane, index) => pane.GetOutput().Contains($"NATIVE_PANE_{index + 1}_READY", StringComparison.Ordinal)).All(value => value);
             } while (!outputReady && DateTime.UtcNow < deadline);
+
+            const string scrollbarTailMarker = "TERMINAL_SCROLLBAR_TAIL_READY";
+            var scrollbackAccepted = await activationTarget.SendCommandAsync(
+                "1..180 | ForEach-Object { Write-Output ('SCROLLBACK_LINE_' + $_) }; Write-Output 'TERMINAL_SCROLLBAR_TAIL_READY'");
+            var scrollbarDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < scrollbarDeadline
+                && !activationTarget.GetOutput().Contains(scrollbarTailMarker, StringComparison.Ordinal)) await Task.Delay(120);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            activationTarget.UpdateLayout();
+            var terminalScrollbarHasRealRange = scrollbackAccepted && activationTarget.TerminalScrollbarHasRangeForTest;
+            var terminalScrollbarMovesNativeViewport = activationTarget.ExerciseTerminalScrollbarForTest();
+            activationTarget.SetPreviousOutputForTest("RECOVERY_SURFACE_CLICK_REGRESSION");
+            activationTarget.HidePreviousOutputForTest();
+            var terminalClickAccepted = activationTarget.SimulateTerminalSurfaceClickForTest();
+            var composerClickAccepted = activationTarget.FocusCommandInputForTest();
+            await Dispatcher.Yield(DispatcherPriority.Input);
+            var terminalClicksKeepRecoveryHidden = terminalClickAccepted && composerClickAccepted
+                && !activationTarget.RecoveryOverlayVisibleForTest;
 
             const string renameMarker = "TERMINAL_RENAME_PRESERVES_LIVE_STATE";
             var renameMarkerAccepted = await activationTarget.SendCommandAsync($"Write-Output '{renameMarker}'");
@@ -2936,7 +2969,9 @@ public partial class MainWindow : Window
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
                 && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal;
-            var success = inputReady && outputReady && terminalScrollbarsThemed && terminalScrollbarsInteractive && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
+            var success = inputReady && outputReady && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
+                && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalClicksKeepRecoveryHidden
+                && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
@@ -2963,6 +2998,9 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
+            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}");
+            if (!terminalScrollbarBridgesStable)
+                foreach (var pane in panes.Values) File.AppendAllText(reportPath, $"\nTerminalScrollbarBridge[{pane.Profile.Name}]={pane.TerminalScrollbarBridgeDiagnosticForTest}");
             if (!success)
             {
                 var paneIndex = 0;

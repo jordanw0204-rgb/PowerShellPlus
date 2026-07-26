@@ -42,7 +42,12 @@
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/></Grid.ColumnDefinitions>
         <term:EasyTerminalControl x:Name="Terminal" Grid.Column="0" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" PreviewMouseWheel="TerminalPreviewMouseWheel"/>
         <Border x:Name="TerminalScrollbarGutter" Grid.Column="1" Background="#181825" BorderBrush="#313244" BorderThickness="1,0,0,0">
-          <Grid x:Name="TerminalScrollbarHost" Background="Transparent"/>
+          <Grid x:Name="TerminalScrollbarHost" Background="#181825">
+            <ScrollBar x:Name="TerminalViewportScrollbar" Orientation="Vertical" Style="{StaticResource ThemedScrollBar}"
+                       Width="11" MinWidth="0" MaxWidth="11" HorizontalAlignment="Center" VerticalAlignment="Stretch" Visibility="Visible"
+                       Scroll="TerminalViewportScrollbarScroll" PreviewMouseWheel="TerminalViewportScrollbarMouseWheel"
+                       AutomationProperties.Name="Terminal scrollback"/>
+          </Grid>
         </Border>
       </Grid>
       <Border x:Name="RemoteImagePasteIndicator" Grid.Row="1" Panel.ZIndex="4" Visibility="Collapsed"
@@ -203,7 +208,7 @@
             </StackPanel>
             <Button Grid.Column="1" Content="Continue to new terminal" Padding="10,5" Click="CloseRecoveryClick"/>
           </Grid>
-          <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Cascadia Mono" FontSize="11" Background="#0B0B12" BorderBrush="#45475A" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+          <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" FontSize="11" Background="#0B0B12" BorderBrush="#45475A" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"/>
         </Grid>
       </Border>
     </Grid>

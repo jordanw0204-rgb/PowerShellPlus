@@ -176,6 +176,9 @@ public partial class TerminalPane : UserControl
     private int attachmentPillRefreshCount;
     private bool commandInputFileDropHandlersInstalled;
     private ScrollBar? nativeScrollbar;
+    private bool terminalScrollbarBridgeAttached;
+    private bool terminalScrollbarUpdating;
+    private (double Value, double Maximum, double ViewportSize)? terminalScrollbarState;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -1279,18 +1282,60 @@ public partial class TerminalPane : UserControl
 
     public bool IsNativeScrollbarThemed()
     {
-        var scrollbar = nativeScrollbar;
-        return scrollbar is not null && scrollbar.Visibility == Visibility.Visible
-            && scrollbar.Style == TryFindResource("ThemedScrollBar") as Style
-            && ReferenceEquals(VisualTreeHelper.GetParent(scrollbar), TerminalScrollbarHost)
-            && scrollbar.IsHitTestVisible && TerminalScrollbarGutter.ActualWidth >= 10;
+        return TerminalViewportScrollbar.Visibility == Visibility.Visible
+            && TerminalViewportScrollbar.Orientation == Orientation.Vertical
+            && TerminalViewportScrollbar.Style == TryFindResource("ThemedScrollBar") as Style
+            && ReferenceEquals(VisualTreeHelper.GetParent(TerminalViewportScrollbar), TerminalScrollbarHost)
+            && TerminalViewportScrollbar.IsHitTestVisible && TerminalScrollbarGutter.ActualWidth >= 10
+            && nativeScrollbar is { IsHitTestVisible: false, ActualWidth: 0 }
+            && !ReferenceEquals(VisualTreeHelper.GetParent(nativeScrollbar), TerminalScrollbarHost);
     }
 
-    public bool NativeScrollbarInteractiveForTest => nativeScrollbar is { IsHitTestVisible: true }
-        && ReferenceEquals(VisualTreeHelper.GetParent(nativeScrollbar), TerminalScrollbarHost)
-        && nativeScrollbar.IsVisible && nativeScrollbar.ActualWidth >= 10 && nativeScrollbar.ActualHeight > 0
-        && (!nativeScrollbar.IsEnabled
-            || nativeScrollbar.InputHitTest(new Point(nativeScrollbar.ActualWidth / 2, nativeScrollbar.ActualHeight / 2)) is not null);
+    public bool NativeScrollbarInteractiveForTest => TerminalViewportScrollbar is { IsHitTestVisible: true, IsVisible: true }
+        && TerminalViewportScrollbar.ActualWidth >= 10 && TerminalViewportScrollbar.ActualHeight > 0
+        && (!TerminalViewportScrollbar.IsEnabled
+            || TerminalViewportScrollbar.InputHitTest(new Point(TerminalViewportScrollbar.ActualWidth / 2, TerminalViewportScrollbar.ActualHeight / 2)) is not null);
+    public bool TerminalScrollbarBridgeStableForTest => terminalScrollbarBridgeAttached && terminalContainer is not null
+        && TerminalViewportScrollbar.Orientation == Orientation.Vertical
+        && TerminalViewportScrollbar.ActualWidth <= TerminalScrollbarGutter.ActualWidth
+        && nativeScrollbar is { IsHitTestVisible: false, Opacity: 0 }
+        && nativeScrollbar.Width == 0 && nativeScrollbar.MaxWidth == 0
+        && !ReferenceEquals(VisualTreeHelper.GetParent(nativeScrollbar), TerminalScrollbarHost)
+        && RecoveryOutputText.TextWrapping == TextWrapping.Wrap
+        && RecoveryOutputText.HorizontalScrollBarVisibility == ScrollBarVisibility.Disabled;
+    public string TerminalScrollbarBridgeDiagnosticForTest => string.Join(", ", new[]
+    {
+        $"Attached={terminalScrollbarBridgeAttached}",
+        $"Container={terminalContainer is not null}",
+        $"External={TerminalViewportScrollbar.ActualWidth:F1}x{TerminalViewportScrollbar.ActualHeight:F1}",
+        $"Gutter={TerminalScrollbarGutter.ActualWidth:F1}",
+        $"InternalWidth={nativeScrollbar?.ActualWidth:F1}/{nativeScrollbar?.Width:F1}/{nativeScrollbar?.MaxWidth:F1}",
+        $"InternalHit={nativeScrollbar?.IsHitTestVisible}",
+        $"InternalOpacity={nativeScrollbar?.Opacity:F1}",
+        $"RecoveryWrap={RecoveryOutputText.TextWrapping}",
+        $"RecoveryHorizontal={RecoveryOutputText.HorizontalScrollBarVisibility}"
+    });
+    public bool TerminalScrollbarHasRangeForTest
+    {
+        get
+        {
+            SynchronizeTerminalViewportScrollbar();
+            return TerminalViewportScrollbar.Maximum > 0 && TerminalViewportScrollbar.IsEnabled;
+        }
+    }
+    public bool ExerciseTerminalScrollbarForTest()
+    {
+        SynchronizeTerminalViewportScrollbar();
+        if (nativeScrollbar is null || TerminalViewportScrollbar.Maximum <= 0) return false;
+        var target = Math.Max(TerminalViewportScrollbar.Minimum, TerminalViewportScrollbar.Maximum - 1);
+        TerminalViewportScrollbar.RaiseEvent(new ScrollEventArgs(ScrollEventType.ThumbPosition, target)
+        {
+            RoutedEvent = ScrollBar.ScrollEvent,
+            Source = TerminalViewportScrollbar
+        });
+        return Math.Abs(nativeScrollbar.Value - target) < .5;
+    }
+    public bool RecoveryOverlayVisibleForTest => RecoveryOverlay.Visibility == Visibility.Visible;
 
     public bool FocusCommandInputForTest() => CommandInput.Focus();
     public bool CommandBarExpandedForTest => Profile.CommandBarExpanded && CommandBarContainer.Visibility == Visibility.Visible;
@@ -1408,21 +1453,102 @@ public partial class TerminalPane : UserControl
         var scrollbar = nativeScrollbar ?? FindVisualChild<ScrollBar>(Terminal.Terminal);
         if (scrollbar is null) return;
         nativeScrollbar = scrollbar;
-        if (!ReferenceEquals(VisualTreeHelper.GetParent(scrollbar), TerminalScrollbarHost))
-        {
-            if (VisualTreeHelper.GetParent(scrollbar) is Panel parent) parent.Children.Remove(scrollbar);
-            TerminalScrollbarHost.Children.Clear();
-            TerminalScrollbarHost.Children.Add(scrollbar);
-        }
-        if (TryFindResource("ThemedScrollBar") is Style style) scrollbar.Style = style;
+        // TerminalControl reads the original scrollbar's ActualWidth during every
+        // native resize. Keep that control in its own visual tree and use it only
+        // as the dependency's private state holder. Moving it corrupts the HWND's
+        // render/input geometry and can paint its thumb over terminal content.
         scrollbar.Visibility = Visibility.Visible;
-        scrollbar.Width = double.NaN;
-        scrollbar.MinWidth = 10;
-        scrollbar.HorizontalAlignment = HorizontalAlignment.Stretch;
-        scrollbar.VerticalAlignment = VerticalAlignment.Stretch;
-        scrollbar.IsHitTestVisible = true;
-        scrollbar.Focusable = true;
-        Panel.SetZIndex(scrollbar, 2);
+        scrollbar.Width = 0;
+        scrollbar.MinWidth = 0;
+        scrollbar.MaxWidth = 0;
+        scrollbar.Margin = new Thickness(0);
+        scrollbar.Opacity = 0;
+        scrollbar.IsHitTestVisible = false;
+        scrollbar.Focusable = false;
+        AttachTerminalScrollbarBridge();
+        UpdateTerminalViewportScrollbar((int)Math.Round(scrollbar.Value), (int)Math.Round(scrollbar.ViewportSize),
+            (int)Math.Round(scrollbar.Maximum + scrollbar.ViewportSize));
+    }
+
+    private void AttachTerminalScrollbarBridge()
+    {
+        if (nativeScrollbar is null || terminalScrollbarBridgeAttached) return;
+        nativeScrollbar.ValueChanged += NativeScrollbarStateChanged;
+        nativeScrollbar.IsEnabledChanged += NativeScrollbarEnabledChanged;
+        nativeScrollbar.LayoutUpdated += NativeScrollbarLayoutUpdated;
+        terminalScrollbarBridgeAttached = true;
+    }
+
+    private void NativeScrollbarStateChanged(object sender, RoutedEventArgs e) => SynchronizeTerminalViewportScrollbar();
+    private void NativeScrollbarEnabledChanged(object sender, DependencyPropertyChangedEventArgs e) => SynchronizeTerminalViewportScrollbar();
+    private void NativeScrollbarLayoutUpdated(object? sender, EventArgs e) => SynchronizeTerminalViewportScrollbar();
+
+    private void SynchronizeTerminalViewportScrollbar()
+    {
+        if (nativeScrollbar is null) return;
+        var state = (nativeScrollbar.Value, nativeScrollbar.Maximum, nativeScrollbar.ViewportSize);
+        if (terminalScrollbarState == state) return;
+        terminalScrollbarState = state;
+        UpdateTerminalViewportScrollbar((int)Math.Round(state.Value), (int)Math.Round(state.ViewportSize),
+            (int)Math.Round(state.Maximum + state.ViewportSize));
+    }
+
+    private void UpdateTerminalViewportScrollbar(int viewTop, int viewHeight, int bufferSize)
+    {
+        void Apply()
+        {
+            var viewport = Math.Max(1, viewHeight);
+            var maximum = Math.Max(0, bufferSize - viewport);
+            terminalScrollbarUpdating = true;
+            try
+            {
+                TerminalViewportScrollbar.Minimum = 0;
+                TerminalViewportScrollbar.Maximum = maximum;
+                TerminalViewportScrollbar.ViewportSize = viewport;
+                TerminalViewportScrollbar.SmallChange = 1;
+                TerminalViewportScrollbar.LargeChange = Math.Max(1, viewport - 1);
+                TerminalViewportScrollbar.Value = Math.Clamp(viewTop, 0, maximum);
+                TerminalViewportScrollbar.IsEnabled = maximum > 0;
+                TerminalViewportScrollbar.Opacity = maximum > 0 ? 1 : .5;
+            }
+            finally { terminalScrollbarUpdating = false; }
+        }
+
+        if (Dispatcher.CheckAccess()) Apply();
+        else Dispatcher.BeginInvoke(Apply, System.Windows.Threading.DispatcherPriority.Render);
+    }
+
+    private void TerminalViewportScrollbarScroll(object sender, ScrollEventArgs e)
+    {
+        if (terminalScrollbarUpdating || nativeScrollbar is null) return;
+        ForwardTerminalScroll(e.NewValue, e.ScrollEventType);
+        e.Handled = true;
+    }
+
+    private void TerminalViewportScrollbarMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!TerminalViewportScrollbar.IsEnabled || nativeScrollbar is null) return;
+        var configuredLines = SystemParameters.WheelScrollLines;
+        var lines = configuredLines > 0 ? configuredLines : Math.Max(1, (int)TerminalViewportScrollbar.ViewportSize - 1);
+        var target = Math.Clamp(TerminalViewportScrollbar.Value - Math.Sign(e.Delta) * lines,
+            TerminalViewportScrollbar.Minimum, TerminalViewportScrollbar.Maximum);
+        terminalScrollbarUpdating = true;
+        try { TerminalViewportScrollbar.Value = target; }
+        finally { terminalScrollbarUpdating = false; }
+        ForwardTerminalScroll(target, e.Delta > 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement);
+        e.Handled = true;
+    }
+
+    private void ForwardTerminalScroll(double target, ScrollEventType eventType)
+    {
+        if (nativeScrollbar is null) return;
+        var normalized = Math.Clamp(target, nativeScrollbar.Minimum, nativeScrollbar.Maximum);
+        nativeScrollbar.Value = normalized;
+        nativeScrollbar.RaiseEvent(new ScrollEventArgs(eventType, normalized)
+        {
+            RoutedEvent = ScrollBar.ScrollEvent,
+            Source = nativeScrollbar
+        });
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
