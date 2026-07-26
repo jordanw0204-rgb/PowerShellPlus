@@ -109,7 +109,7 @@
                                      AcceptsReturn="True" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"
                                      HorizontalScrollBarVisibility="Disabled" PreviewKeyDown="CommandInputPreviewKeyDown"
                                      PreviewKeyUp="CommandInputPreviewKeyUp" PreviewMouseWheel="CommandInputPreviewMouseWheel"
-                                     ToolTip="Enter runs · Ctrl+Enter queues · Ctrl+wheel zooms · paste images or files to attach">
+                                     ToolTip="Enter runs · Ctrl+Enter queues · Ctrl+wheel zooms · paste or drop files to attach">
             <local:ComposerRichTextBox.Resources>
               <Style x:Key="ComposerScrollRepeatButton" TargetType="RepeatButton">
                 <Setter Property="Focusable" Value="False"/>
@@ -138,6 +138,13 @@
               </Style>
             </local:ComposerRichTextBox.Resources>
           </local:ComposerRichTextBox>
+          <Border x:Name="ComposerFileDropIndicator" Grid.Row="1" Grid.Column="1" Panel.ZIndex="6" Visibility="Collapsed"
+                  IsHitTestVisible="False" Background="#F21E1E2E" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="6">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+              <TextBlock Text="&#x21E9;" Foreground="#89B4FA" FontSize="14" FontWeight="Bold" Margin="0,0,7,0"/>
+              <TextBlock Text="Drop to attach" Foreground="#CDD6F4" FontSize="10" FontWeight="SemiBold"/>
+            </StackPanel>
+          </Border>
           <Button x:Name="QueueCommandButton" Grid.Row="1" Grid.Column="2" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
             <Grid><TextBlock Text="Queue" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="#89B4FA" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
           </Button>

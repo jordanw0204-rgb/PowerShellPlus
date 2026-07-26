@@ -2072,6 +2072,13 @@ public partial class MainWindow : Window
             var attachmentPillReorderUpdatesCommand = activationTarget.ReorderFirstTwoAttachmentsForTest();
             var composerScrollbarThemed = activationTarget.ComposerScrollbarThemedForTest;
             var perTerminalFontZoomPersists = activationTarget.PerTerminalFontZoomPersistsForTest();
+            var droppedAttachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-drop-fixture.md");
+            File.WriteAllText(droppedAttachmentFixture, "# Dropped attachment fixture");
+            var composerFileDropAddsAttachment = activationTarget.DropComposerFileForTest(droppedAttachmentFixture);
+            var composerFileDropIndicatorsWork = activationTarget.ComposerFileDropIndicatorsWorkForTest();
+            var replacementAttachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-replacement-fixture.zip");
+            File.WriteAllBytes(replacementAttachmentFixture, [0x50, 0x53, 0x50, 0x4C, 0x55, 0x53]);
+            var attachmentPillDropReplacesFile = activationTarget.ReplaceFirstAttachmentFromFileDropForTest(replacementAttachmentFixture);
             var profileStartupWatchdogWorks = TerminalPane.ProfileStartupWatchdogWorksForTest();
             var composerSshPathsRewrite = TerminalPane.RewriteAttachmentPathsForTest(
                 $"inspect {attachmentFixture}", new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -2086,6 +2093,8 @@ public partial class MainWindow : Window
             activationTarget.SetCommandInputForTest(string.Empty);
             try { File.Delete(attachmentFixture); } catch { }
             try { File.Delete(attachmentFixtureTwo); } catch { }
+            try { File.Delete(droppedAttachmentFixture); } catch { }
+            try { File.Delete(replacementAttachmentFixture); } catch { }
             var terminalClickSent = activationTarget.SimulateTerminalSurfaceClickForTest();
             var terminalSurfaceActivatesPane = terminalClickSent && ReferenceEquals(activePane, activationTarget)
                 && ReferenceEquals(SessionList.SelectedItem, activationTarget.Profile);
@@ -2340,6 +2349,7 @@ public partial class MainWindow : Window
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTypingAvoidsPillRebuild
                 && composerTokensMatchCanonicalPaths && composerBlankSpacePreservesTokens && attachmentPillReorderUpdatesCommand && composerScrollbarThemed && perTerminalFontZoomPersists
+                && composerFileDropAddsAttachment && composerFileDropIndicatorsWork && attachmentPillDropReplacesFile
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
@@ -2355,6 +2365,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
+            File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
             if (!success)
             {

@@ -160,6 +160,7 @@ public partial class TerminalPane : UserControl
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
     private readonly List<ComposerAttachment> composerAttachments = [];
+    private readonly Dictionary<Border, Border> attachmentDropIndicators = [];
     private TerminalAppearance currentAppearance;
     private bool synchronizingComposerAttachments;
     private Point? attachmentDragStart;
@@ -168,6 +169,7 @@ public partial class TerminalPane : UserControl
     private Visibility terminalVisibilityBeforeAttachmentPreview = Visibility.Visible;
     private bool startupProfileFallbackAttempted;
     private int attachmentPillRefreshCount;
+    private bool commandInputFileDropHandlersInstalled;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -189,6 +191,7 @@ public partial class TerminalPane : UserControl
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
+        ConfigureComposerFileDrop();
         RestoreComposerAttachments();
         Profile.CommandDraft = StripRedundantAttachmentQuotes(Profile.CommandDraft, composerAttachments.Select(value => value.LocalPath));
         CommandInput.ApplyComposerFontSize(Profile.CommandFontSize ?? 11);
@@ -455,6 +458,93 @@ public partial class TerminalPane : UserControl
         if (detached.Length > 0) RemoveComposerAttachments(detached);
         else if (composerAttachments.Count > 1 && SynchronizeComposerAttachmentOrder()) RefreshAttachmentPills();
         else commandStateChanged();
+    }
+
+    private void ConfigureComposerFileDrop()
+    {
+        CommandInput.AllowDrop = true;
+        CommandInput.AddHandler(DragDrop.DragEnterEvent, new DragEventHandler(CommandInputFileDragOver), true);
+        CommandInput.AddHandler(DragDrop.DragOverEvent, new DragEventHandler(CommandInputFileDragOver), true);
+        CommandInput.AddHandler(DragDrop.DragLeaveEvent, new DragEventHandler(CommandInputFileDragLeave), true);
+        CommandInput.AddHandler(DragDrop.DropEvent, new DragEventHandler(CommandInputFileDrop), true);
+        commandInputFileDropHandlersInstalled = true;
+    }
+
+    private void CommandInputFileDragOver(object sender, DragEventArgs e)
+    {
+        if (!HasShellFileDrop(e.Data)) return;
+        var accepted = GetDroppedComposerFiles(e.Data).Count > 0;
+        ComposerFileDropIndicator.Visibility = accepted ? Visibility.Visible : Visibility.Collapsed;
+        e.Effects = accepted ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void CommandInputFileDragLeave(object sender, DragEventArgs e)
+    {
+        if (!HasShellFileDrop(e.Data)) return;
+        ComposerFileDropIndicator.Visibility = Visibility.Collapsed;
+        e.Handled = true;
+    }
+
+    private void CommandInputFileDrop(object sender, DragEventArgs e)
+    {
+        if (!HasShellFileDrop(e.Data)) return;
+        ComposerFileDropIndicator.Visibility = Visibility.Collapsed;
+        var files = GetDroppedComposerFiles(e.Data);
+        if (files.Count == 0)
+        {
+            ShowRemoteImageStatus("File cannot be attached", "Drop a non-empty local file smaller than 100 MB.", false, true);
+            e.Effects = DragDropEffects.None;
+        }
+        else
+        {
+            AttachDroppedComposerFiles(files);
+            e.Effects = DragDropEffects.Copy;
+        }
+        e.Handled = true;
+    }
+
+    private void AttachDroppedComposerFiles(IEnumerable<string> paths)
+    {
+        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Take(Math.Max(0, MaximumComposerAttachments - composerAttachments.Count)))
+            AddComposerAttachment(path, IsImageFile(path), false, true);
+        CommandInput.Focus();
+    }
+
+    private static bool HasShellFileDrop(IDataObject data)
+    {
+        try { return data.GetDataPresent(DataFormats.FileDrop, true); }
+        catch { return false; }
+    }
+
+    private static IReadOnlyList<string> GetDroppedComposerFiles(IDataObject data)
+    {
+        try
+        {
+            if (!data.GetDataPresent(DataFormats.FileDrop, true)
+                || data.GetData(DataFormats.FileDrop, true) is not string[] paths) return [];
+            var files = new List<string>();
+            foreach (var path in paths)
+            {
+                if (TryNormalizeComposerFile(path, out var fullPath)
+                    && !files.Contains(fullPath, StringComparer.OrdinalIgnoreCase)) files.Add(fullPath);
+            }
+            return files;
+        }
+        catch { return []; }
+    }
+
+    private static bool TryNormalizeComposerFile(string path, out string fullPath)
+    {
+        fullPath = string.Empty;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+            var file = new FileInfo(fullPath);
+            return file.Exists && file.Length is > 0 and <= RemoteClipboardFileBridge.MaximumFileBytes;
+        }
+        catch { return false; }
     }
 
     private void PromotePastedLocalFiles(string pastedText)
@@ -1749,6 +1839,48 @@ public partial class TerminalPane : UserControl
     }
     internal bool AddComposerAttachmentForTest(string path, bool isImage)
         => AddComposerAttachment(path, isImage, false, true);
+    internal bool DropComposerFileForTest(string path)
+    {
+        var data = new DataObject();
+        data.SetData(DataFormats.FileDrop, new[] { path });
+        var files = GetDroppedComposerFiles(data);
+        var before = composerAttachments.Count;
+        AttachDroppedComposerFiles(files);
+        var fullPath = Path.GetFullPath(path);
+        return HasShellFileDrop(data) && files.Count == 1 && composerAttachments.Count == before + 1
+            && composerAttachments.Any(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase))
+            && CommandInput.Text.Contains(fullPath, StringComparison.OrdinalIgnoreCase)
+            && Profile.ComposerAttachments.Any(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
+    }
+    internal bool ReplaceFirstAttachmentFromFileDropForTest(string path)
+    {
+        var target = composerAttachments.FirstOrDefault();
+        if (target is null) return false;
+        var count = composerAttachments.Count;
+        var fullPath = Path.GetFullPath(path);
+        if (!ReplaceComposerAttachment(target, fullPath)) return false;
+        var replacement = composerAttachments.FirstOrDefault(value => value.Id == target.Id);
+        return replacement is not null && composerAttachments.Count == count
+            && replacement.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)
+            && replacement.DisplayName.StartsWith(AttachmentLabelStem(GetAttachmentPreviewKind(fullPath)), StringComparison.Ordinal)
+            && !CommandInput.Text.Contains(target.LocalPath, StringComparison.OrdinalIgnoreCase)
+            && CommandInput.Text.Contains(fullPath, StringComparison.OrdinalIgnoreCase)
+            && Profile.CommandDraft == CommandInput.Text
+            && Profile.ComposerAttachments.Any(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
+    }
+    internal bool ComposerFileDropIndicatorsWorkForTest()
+    {
+        if (!commandInputFileDropHandlersInstalled || !CommandInput.AllowDrop || ComposerFileDropIndicator.IsHitTestVisible
+            || ComposerFileDropIndicator.Visibility != Visibility.Collapsed
+            || attachmentDropIndicators.Count != composerAttachments.Count) return false;
+        var pill = attachmentDropIndicators.Keys.FirstOrDefault();
+        if (pill is null) return false;
+        SetAttachmentPillDropIndicator(pill, true);
+        var shown = attachmentDropIndicators[pill].Visibility == Visibility.Visible
+            && !attachmentDropIndicators[pill].IsHitTestVisible;
+        SetAttachmentPillDropIndicator(pill, false);
+        return shown && attachmentDropIndicators[pill].Visibility == Visibility.Collapsed;
+    }
     internal bool PastePlainTextAttachmentForTest(string text, string expectedPath)
     {
         CommandInput.SimulatePlainTextPasteForTest(text);
@@ -2067,12 +2199,10 @@ public partial class TerminalPane : UserControl
             ShowRemoteImageStatus("Attachment limit reached", $"A command can include up to {MaximumComposerAttachments} files.", false, true);
             return true;
         }
-        var fullPath = Path.GetFullPath(path);
-        var file = new FileInfo(fullPath);
-        if (!file.Exists || file.Length is <= 0 or > RemoteClipboardFileBridge.MaximumFileBytes)
+        if (!TryNormalizeComposerFile(path, out var fullPath))
         {
             ShowRemoteImageStatus("Attachment rejected", "Files must exist locally and be between 1 byte and 100 MB.", false, true);
-            if (isTemporary) try { File.Delete(fullPath); } catch { }
+            if (isTemporary) try { File.Delete(path); } catch { }
             return true;
         }
         var attachment = composerAttachments.FirstOrDefault(value => value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase));
@@ -2112,6 +2242,7 @@ public partial class TerminalPane : UserControl
             CommandInput.SetAttachmentTokens(composerAttachments.Select(value => new ComposerTokenDescriptor(
                 value.Id, value.LocalPath, value.DisplayName, GetAttachmentPreviewKind(value.LocalPath))));
             AttachmentPillPanel.Children.Clear();
+            attachmentDropIndicators.Clear();
             foreach (var attachment in composerAttachments)
             {
                 var previewContent = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
@@ -2156,6 +2287,29 @@ public partial class TerminalPane : UserControl
                 Grid.SetColumn(remove, 1);
                 content.Children.Add(previewButton);
                 content.Children.Add(remove);
+                var replacementIndicator = new Border
+                {
+                    Visibility = Visibility.Collapsed,
+                    IsHitTestVisible = false,
+                    Background = new SolidColorBrush(Color.FromArgb(244, 30, 30, 46)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(137, 180, 250)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(7),
+                    Child = new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Children =
+                        {
+                            new TextBlock { Text = "↻", Foreground = new SolidColorBrush(Color.FromRgb(137, 180, 250)), FontSize = 12, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 5, 0) },
+                            new TextBlock { Text = "Drop to replace", Foreground = new SolidColorBrush(Color.FromRgb(205, 214, 244)), FontSize = 9, FontWeight = FontWeights.SemiBold }
+                        }
+                    }
+                };
+                Grid.SetColumnSpan(replacementIndicator, 2);
+                Panel.SetZIndex(replacementIndicator, 4);
+                content.Children.Add(replacementIndicator);
                 var pill = new Border
                 {
                     Child = content,
@@ -2170,6 +2324,7 @@ public partial class TerminalPane : UserControl
                     Cursor = Cursors.Hand,
                     ToolTip = $"Open preview · drag to reorder · {attachment.LocalPath}"
                 };
+                attachmentDropIndicators[pill] = replacementIndicator;
                 pill.PreviewMouseLeftButtonDown += (_, eventArgs) =>
                 {
                     if (IsWithin(eventArgs.OriginalSource as DependencyObject, remove)) return;
@@ -2186,7 +2341,10 @@ public partial class TerminalPane : UserControl
                     attachmentDragOccurred = false;
                     eventArgs.Handled = true;
                 };
-                pill.Drop += AttachmentPillDrop;
+                pill.DragEnter += (_, eventArgs) => AttachmentPillFileDragOver(pill, eventArgs);
+                pill.DragOver += (_, eventArgs) => AttachmentPillFileDragOver(pill, eventArgs);
+                pill.DragLeave += (_, eventArgs) => AttachmentPillFileDragLeave(pill, eventArgs);
+                pill.Drop += (_, eventArgs) => AttachmentPillDrop(pill, eventArgs);
                 AttachmentPillPanel.Children.Add(pill);
             }
             AttachmentStrip.Visibility = composerAttachments.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -2248,16 +2406,100 @@ public partial class TerminalPane : UserControl
         attachmentDragId = null;
     }
 
-    private void AttachmentPillDrop(object sender, DragEventArgs e)
+    private void AttachmentPillFileDragOver(Border pill, DragEventArgs e)
     {
-        if (sender is not Border { Tag: ComposerAttachment target }
-            || e.Data.GetData("PowerShellPlus.ComposerAttachment") is not string sourceId
+        if (HasShellFileDrop(e.Data))
+        {
+            var accepted = GetDroppedComposerFiles(e.Data).Count > 0;
+            SetAttachmentPillDropIndicator(pill, accepted);
+            e.Effects = accepted ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        SetAttachmentPillDropIndicator(pill, false);
+        if (e.Data.GetDataPresent("PowerShellPlus.ComposerAttachment"))
+        {
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+        }
+    }
+
+    private void AttachmentPillFileDragLeave(Border pill, DragEventArgs e)
+    {
+        SetAttachmentPillDropIndicator(pill, false);
+        if (HasShellFileDrop(e.Data)) e.Handled = true;
+    }
+
+    private void SetAttachmentPillDropIndicator(Border pill, bool visible)
+    {
+        if (attachmentDropIndicators.TryGetValue(pill, out var indicator))
+            indicator.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void AttachmentPillDrop(Border pill, DragEventArgs e)
+    {
+        SetAttachmentPillDropIndicator(pill, false);
+        if (pill.Tag is not ComposerAttachment target) return;
+        if (HasShellFileDrop(e.Data))
+        {
+            var files = GetDroppedComposerFiles(e.Data);
+            var replaced = files.Count > 0 && ReplaceComposerAttachment(target, files[0]);
+            if (files.Count == 0)
+                ShowRemoteImageStatus("File cannot replace attachment", "Drop a non-empty local file smaller than 100 MB.", false, true);
+            e.Effects = replaced ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        if (e.Data.GetData("PowerShellPlus.ComposerAttachment") is not string sourceId
             || sourceId == target.Id) return;
         var source = composerAttachments.FirstOrDefault(value => value.Id == sourceId);
         if (source is null) return;
         CommandInput.Text = SwapAttachmentPaths(CommandInput.Text, source.LocalPath, target.LocalPath);
         CommandInput.CaretIndex = CommandInput.Text.Length;
         e.Handled = true;
+    }
+
+    private bool ReplaceComposerAttachment(ComposerAttachment target, string path)
+    {
+        if (!TryNormalizeComposerFile(path, out var fullPath)) return false;
+        var index = composerAttachments.FindIndex(value => value.Id == target.Id);
+        if (index < 0) return false;
+        if (target.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)) return true;
+        if (composerAttachments.Any(value => value.Id != target.Id && value.LocalPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            ShowRemoteImageStatus("File is already attached", "Choose a different file for this attachment slot.", false, true);
+            return false;
+        }
+
+        var updatedCommand = CommandInput.Text.Replace(target.LocalPath, fullPath, StringComparison.OrdinalIgnoreCase);
+        if (updatedCommand.Equals(CommandInput.Text, StringComparison.Ordinal)) return false;
+        var originalCaret = CommandInput.CaretIndex;
+        var replacement = target with
+        {
+            LocalPath = fullPath,
+            DisplayName = Path.GetFileName(fullPath),
+            IsImage = IsImageFile(fullPath),
+            IsTemporary = false
+        };
+        composerAttachments[index] = replacement;
+        synchronizingComposerAttachments = true;
+        try
+        {
+            CommandInput.Text = updatedCommand;
+            CommandInput.CaretIndex = Math.Clamp(originalCaret + fullPath.Length - target.LocalPath.Length, 0, CommandInput.Text.Length);
+            Profile.CommandDraft = CommandInput.Text;
+        }
+        finally { synchronizingComposerAttachments = false; }
+        RefreshAttachmentPills();
+        PersistComposerAttachments();
+        if (target.IsTemporary)
+        {
+            try { File.Delete(target.LocalPath); } catch { }
+        }
+        ShowRemoteImageStatus(replacement.IsImage ? "Image replaced" : "File replaced",
+            "The command path and attachment type were updated together.", false, true);
+        CommandInput.Focus();
+        return true;
     }
 
     private static string SwapAttachmentPaths(string command, string first, string second)
