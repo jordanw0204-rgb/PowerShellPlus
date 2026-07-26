@@ -18,6 +18,7 @@ namespace PowerShellPlus.Native;
 public partial class MainWindow : Window
 {
     private enum EditorMode { Terminal, WorkspaceSession, Snippet, Automation }
+    private enum AccentColorPickerTarget { Terminal, WorkspaceSession }
     private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId);
     private const double WorkspaceSidebarWidth = 278;
     private readonly WindowsTerminalProfile terminalProfile;
@@ -55,6 +56,16 @@ public partial class MainWindow : Window
     private readonly object recoveryCaptureSync = new();
     private int recoveryCaptureInProgress;
     private int layoutTransitionVersion;
+    private string terminalEditorAccentColor = WorkspaceAccentPalette.DefaultTerminal;
+    private string workspaceEditorAccentColor = WorkspaceAccentPalette.DefaultSession;
+    private AccentColorPickerTarget accentColorPickerTarget;
+    private double accentPickerHue;
+    private double accentPickerSaturation = 1;
+    private double accentPickerValue = 1;
+    private bool accentSelectionSync;
+    private bool accentHexSync;
+    private bool accentFieldDragging;
+    private bool accentHueDragging;
 
     public MainWindow(bool automationMode = false)
     {
@@ -1102,11 +1113,183 @@ public partial class MainWindow : Window
         editorMode = EditorMode.Terminal; editingValue = profile;
         EditorTitle.Text = profile is null ? "New native terminal" : "Edit terminal";
         SessionNameEdit.Text = profile?.Name ?? terminalProfile.ProfileName;
-        SessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Normalize(profile?.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+        SetTerminalEditorAccent(profile?.AccentColor);
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
         ShowEditor(SessionEditor);
+    }
+
+    private void SetTerminalEditorAccent(string? value)
+    {
+        terminalEditorAccentColor = WorkspaceAccentPalette.Normalize(value, WorkspaceAccentPalette.DefaultTerminal);
+        accentSelectionSync = true;
+        SessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Choices.Any(choice => string.Equals(choice.Value, terminalEditorAccentColor, StringComparison.OrdinalIgnoreCase))
+            ? terminalEditorAccentColor
+            : null;
+        accentSelectionSync = false;
+        SessionAccentPreview.Background = WorkspaceAccentPalette.BrushFor(terminalEditorAccentColor, WorkspaceAccentPalette.DefaultTerminal);
+        SessionAccentValueText.Text = terminalEditorAccentColor;
+    }
+
+    private void SetWorkspaceEditorAccent(string? value)
+    {
+        workspaceEditorAccentColor = WorkspaceAccentPalette.Normalize(value, WorkspaceAccentPalette.DefaultSession);
+        accentSelectionSync = true;
+        WorkspaceSessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Choices.Any(choice => string.Equals(choice.Value, workspaceEditorAccentColor, StringComparison.OrdinalIgnoreCase))
+            ? workspaceEditorAccentColor
+            : null;
+        accentSelectionSync = false;
+        WorkspaceSessionAccentPreview.Background = WorkspaceAccentPalette.BrushFor(workspaceEditorAccentColor, WorkspaceAccentPalette.DefaultSession);
+        WorkspaceSessionAccentValueText.Text = workspaceEditorAccentColor;
+    }
+
+    private void SessionAccentSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!accentSelectionSync && SessionAccentEdit.SelectedValue is string value) SetTerminalEditorAccent(value);
+    }
+
+    private void WorkspaceSessionAccentSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!accentSelectionSync && WorkspaceSessionAccentEdit.SelectedValue is string value) SetWorkspaceEditorAccent(value);
+    }
+
+    private void OpenTerminalColorPickerClick(object sender, RoutedEventArgs e) => OpenAccentColorPicker(AccentColorPickerTarget.Terminal, terminalEditorAccentColor);
+    private void OpenWorkspaceColorPickerClick(object sender, RoutedEventArgs e) => OpenAccentColorPicker(AccentColorPickerTarget.WorkspaceSession, workspaceEditorAccentColor);
+
+    private void OpenAccentColorPicker(AccentColorPickerTarget target, string colorValue)
+    {
+        accentColorPickerTarget = target;
+        var color = (Color)ColorConverter.ConvertFromString(WorkspaceAccentPalette.Normalize(colorValue,
+            target == AccentColorPickerTarget.Terminal ? WorkspaceAccentPalette.DefaultTerminal : WorkspaceAccentPalette.DefaultSession))!;
+        (accentPickerHue, accentPickerSaturation, accentPickerValue) = RgbToHsv(color);
+        AccentColorPickerOverlay.Visibility = Visibility.Visible;
+        Dispatcher.BeginInvoke(() => UpdateAccentColorPickerVisuals(true), DispatcherPriority.Loaded);
+    }
+
+    private void CloseAccentColorPicker()
+    {
+        accentFieldDragging = false;
+        accentHueDragging = false;
+        Mouse.Capture(null);
+        AccentColorPickerOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void AccentColorPickerBackdropMouseDown(object sender, MouseButtonEventArgs e) { CloseAccentColorPicker(); e.Handled = true; }
+    private void AccentColorPickerCardMouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+    private void CancelAccentColorPickerClick(object sender, RoutedEventArgs e) { CloseAccentColorPicker(); e.Handled = true; }
+    private void ApplyAccentColorPickerClick(object sender, RoutedEventArgs e)
+    {
+        var value = ColorToHex(HsvToColor(accentPickerHue, accentPickerSaturation, accentPickerValue));
+        if (accentColorPickerTarget == AccentColorPickerTarget.Terminal) SetTerminalEditorAccent(value);
+        else SetWorkspaceEditorAccent(value);
+        CloseAccentColorPicker();
+        e.Handled = true;
+    }
+
+    private void AccentColorFieldMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        accentFieldDragging = true;
+        AccentColorField.CaptureMouse();
+        UpdateAccentFieldFromPoint(e.GetPosition(AccentColorField));
+        e.Handled = true;
+    }
+
+    private void AccentColorFieldMouseMove(object sender, MouseEventArgs e)
+    {
+        if (accentFieldDragging && e.LeftButton == MouseButtonState.Pressed) UpdateAccentFieldFromPoint(e.GetPosition(AccentColorField));
+    }
+
+    private void AccentColorFieldMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!accentFieldDragging) return;
+        UpdateAccentFieldFromPoint(e.GetPosition(AccentColorField));
+        accentFieldDragging = false;
+        AccentColorField.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void UpdateAccentFieldFromPoint(Point point)
+    {
+        accentPickerSaturation = Math.Clamp(point.X / Math.Max(1, AccentColorField.ActualWidth), 0, 1);
+        accentPickerValue = 1 - Math.Clamp(point.Y / Math.Max(1, AccentColorField.ActualHeight), 0, 1);
+        UpdateAccentColorPickerVisuals(true);
+    }
+
+    private void AccentHueBarMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        accentHueDragging = true;
+        AccentHueBar.CaptureMouse();
+        UpdateAccentHueFromPoint(e.GetPosition(AccentHueBar));
+        e.Handled = true;
+    }
+
+    private void AccentHueBarMouseMove(object sender, MouseEventArgs e)
+    {
+        if (accentHueDragging && e.LeftButton == MouseButtonState.Pressed) UpdateAccentHueFromPoint(e.GetPosition(AccentHueBar));
+    }
+
+    private void AccentHueBarMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!accentHueDragging) return;
+        UpdateAccentHueFromPoint(e.GetPosition(AccentHueBar));
+        accentHueDragging = false;
+        AccentHueBar.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void UpdateAccentHueFromPoint(Point point)
+    {
+        accentPickerHue = Math.Clamp(point.X / Math.Max(1, AccentHueBar.ActualWidth), 0, 1) * 360;
+        UpdateAccentColorPickerVisuals(true);
+    }
+
+    private void AccentColorHexTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (accentHexSync || AccentColorPickerOverlay.Visibility != Visibility.Visible) return;
+        var value = AccentColorHexEdit.Text.Trim();
+        if (value is not { Length: 7 } || value[0] != '#' || !value.Skip(1).All(Uri.IsHexDigit)) return;
+        var color = (Color)ColorConverter.ConvertFromString(value)!;
+        (accentPickerHue, accentPickerSaturation, accentPickerValue) = RgbToHsv(color);
+        UpdateAccentColorPickerVisuals(false);
+    }
+
+    private void UpdateAccentColorPickerVisuals(bool updateHex)
+    {
+        var color = HsvToColor(accentPickerHue, accentPickerSaturation, accentPickerValue);
+        AccentColorHueBase.Background = new SolidColorBrush(HsvToColor(accentPickerHue, 1, 1));
+        AccentColorPreview.Background = new SolidColorBrush(color);
+        Canvas.SetLeft(AccentColorFieldThumb, Math.Clamp(accentPickerSaturation * AccentColorField.ActualWidth - AccentColorFieldThumb.Width / 2, -AccentColorFieldThumb.Width / 2, Math.Max(0, AccentColorField.ActualWidth - AccentColorFieldThumb.Width / 2)));
+        Canvas.SetTop(AccentColorFieldThumb, Math.Clamp((1 - accentPickerValue) * AccentColorField.ActualHeight - AccentColorFieldThumb.Height / 2, -AccentColorFieldThumb.Height / 2, Math.Max(0, AccentColorField.ActualHeight - AccentColorFieldThumb.Height / 2)));
+        Canvas.SetLeft(AccentHueThumb, Math.Clamp(accentPickerHue / 360 * AccentHueBar.ActualWidth - AccentHueThumb.Width / 2, -AccentHueThumb.Width / 2, Math.Max(0, AccentHueBar.ActualWidth - AccentHueThumb.Width / 2)));
+        if (!updateHex) return;
+        accentHexSync = true;
+        AccentColorHexEdit.Text = ColorToHex(color);
+        AccentColorHexEdit.CaretIndex = AccentColorHexEdit.Text.Length;
+        accentHexSync = false;
+    }
+
+    private static string ColorToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private static (double Hue, double Saturation, double Value) RgbToHsv(Color color)
+    {
+        var red = color.R / 255d; var green = color.G / 255d; var blue = color.B / 255d;
+        var maximum = Math.Max(red, Math.Max(green, blue)); var minimum = Math.Min(red, Math.Min(green, blue)); var delta = maximum - minimum;
+        var hue = delta == 0 ? 0 : maximum == red ? 60 * (((green - blue) / delta) % 6) : maximum == green ? 60 * ((blue - red) / delta + 2) : 60 * ((red - green) / delta + 4);
+        if (hue < 0) hue += 360;
+        return (hue, maximum == 0 ? 0 : delta / maximum, maximum);
+    }
+
+    private static Color HsvToColor(double hue, double saturation, double value)
+    {
+        hue = (hue % 360 + 360) % 360; saturation = Math.Clamp(saturation, 0, 1); value = Math.Clamp(value, 0, 1);
+        var chroma = value * saturation; var x = chroma * (1 - Math.Abs(hue / 60 % 2 - 1)); var match = value - chroma;
+        var (red, green, blue) = hue switch
+        {
+            < 60 => (chroma, x, 0d), < 120 => (x, chroma, 0d), < 180 => (0d, chroma, x),
+            < 240 => (0d, x, chroma), < 300 => (x, 0d, chroma), _ => (chroma, 0d, x)
+        };
+        return Color.FromRgb((byte)Math.Round((red + match) * 255), (byte)Math.Round((green + match) * 255), (byte)Math.Round((blue + match) * 255));
     }
 
     private void OpenSnippetEditor(CommandSnippet? snippet)
@@ -1151,6 +1334,7 @@ public partial class MainWindow : Window
 
     private void HideEditor()
     {
+        CloseAccentColorPicker();
         EditorOverlay.Visibility = Visibility.Collapsed;
         TerminalHost.Visibility = Visibility.Visible;
     }
@@ -1198,11 +1382,11 @@ public partial class MainWindow : Window
             if (editingValue is SessionProfile existing)
             {
                 await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true,
-                    SessionAccentEdit.SelectedValue?.ToString());
+                    terminalEditorAccentColor);
             }
             else
             {
-                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = WorkspaceAccentPalette.Normalize(SessionAccentEdit.SelectedValue?.ToString(), WorkspaceAccentPalette.DefaultTerminal), CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true };
+                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = terminalEditorAccentColor, CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true };
                 AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
             }
         }
@@ -1210,7 +1394,7 @@ public partial class MainWindow : Window
         {
             if (editingValue is not TerminalSession session || string.IsNullOrWhiteSpace(WorkspaceSessionNameEdit.Text)) return;
             session.Name = WorkspaceSessionNameEdit.Text.Trim();
-            session.AccentColor = WorkspaceAccentPalette.Normalize(WorkspaceSessionAccentEdit.SelectedValue?.ToString(), WorkspaceAccentPalette.DefaultSession);
+            session.AccentColor = workspaceEditorAccentColor;
             RefreshWorkspaceSessionViews();
         }
         else if (editorMode == EditorMode.Snippet)
@@ -1421,6 +1605,7 @@ public partial class MainWindow : Window
         if (activePane is { } historySnapshotPane)
         {
             var originalHistory = historySnapshotPane.Profile.CommandHistory.ToArray();
+            var originalHistoryTimestamps = historySnapshotPane.Profile.CommandHistoryTimestampsUtc.ToArray();
             var originalDraft = historySnapshotPane.CommandInputTextForTest;
             historySnapshotPane.SetCommandHistoryForTest([
                 "Deploy the validated release and verify every health endpoint.",
@@ -1431,7 +1616,16 @@ public partial class MainWindow : Window
             Render(root, "ui-command-history.png");
             historySnapshotPane.HideCommandHistoryForTest();
             historySnapshotPane.SetCommandHistoryForTest(originalHistory);
+            historySnapshotPane.Profile.CommandHistoryTimestampsUtc = originalHistoryTimestamps.ToList();
             historySnapshotPane.SetCommandInputForTest(originalDraft);
+        }
+        if (activePane is { } colorSnapshotPane)
+        {
+            OpenSessionEditor(colorSnapshotPane.Profile);
+            OpenAccentColorPicker(AccentColorPickerTarget.Terminal, "#2DD4BF");
+            await Settle();
+            Render(root, "ui-custom-color-picker.png");
+            HideEditor();
         }
         var snapshotLayout = activeWorkspaceSession?.Layout ?? "Grid";
         SetLayout("Tabs");
@@ -2328,6 +2522,19 @@ public partial class MainWindow : Window
             var sidebarCardsUseSingleFrame = workspaceCardContainer is not null && terminalCardContainer is not null
                 && VisualTreeHelper.GetChildrenCount(workspaceCardContainer) == 1 && VisualTreeHelper.GetChild(workspaceCardContainer, 0) is ContentPresenter
                 && VisualTreeHelper.GetChildrenCount(terminalCardContainer) == 1 && VisualTreeHelper.GetChild(terminalCardContainer, 0) is ContentPresenter;
+            var accentCardStyle = FindResource("AccentCardSurface") as Style;
+            var sidebarCardHoverStylesReady = accentCardStyle?.Triggers.OfType<DataTrigger>().Count() >= 2;
+            var selectedWorkspaceContainer = WorkspaceSessionList.ItemContainerGenerator.ContainerFromItem(activeWorkspaceSession) as ListBoxItem;
+            var selectedTerminalContainer = SessionList.ItemContainerGenerator.ContainerFromItem(activePane?.Profile) as ListBoxItem;
+            var selectedWorkspaceSurface = selectedWorkspaceContainer is null ? null : FindVisualDescendant<Border>(selectedWorkspaceContainer);
+            var selectedTerminalSurface = selectedTerminalContainer is null ? null : FindVisualDescendant<Border>(selectedTerminalContainer);
+            var sidebarCardSelectionVisible = selectedWorkspaceContainer?.IsSelected == true && selectedTerminalContainer?.IsSelected == true
+                && selectedWorkspaceSurface?.Background is SolidColorBrush workspaceSelectedBrush
+                && activeWorkspaceSession?.AccentSelectedBrush is SolidColorBrush expectedWorkspaceSelectedBrush
+                && workspaceSelectedBrush.Color == expectedWorkspaceSelectedBrush.Color
+                && selectedTerminalSurface?.Background is SolidColorBrush terminalSelectedBrush
+                && activePane?.Profile.AccentSelectedBrush is SolidColorBrush expectedTerminalSelectedBrush
+                && terminalSelectedBrush.Color == expectedTerminalSelectedBrush.Color;
             var workspaceCardMenuReliable = workspaceCardSurface?.ContextMenu is { } workspaceCardMenu
                 && workspaceCardMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
                 && OpenCardContextMenu(workspaceCardSurface, System.Windows.Controls.Primitives.PlacementMode.MousePoint);
@@ -2344,6 +2551,7 @@ public partial class MainWindow : Window
             Width = originalWindowWidth;
             await Dispatcher.Yield(DispatcherPriority.Background);
             var terminalScrollbarsThemed = panes.Values.All(pane => pane.IsNativeScrollbarThemed());
+            var terminalScrollbarsInteractive = panes.Values.All(pane => pane.NativeScrollbarInteractiveForTest);
             var activationTarget = panes[added[0].Id];
             SelectPane(panes.Values.First().Profile.Id, false);
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
@@ -2527,7 +2735,12 @@ public partial class MainWindow : Window
             var commandHistoryRecordsSentCommands = activationTarget.CommandHistoryCountForTest >= 3
                 && activationTarget.Profile.CommandHistory.TakeLast(3).SequenceEqual([
                     "Write-Output 'QUEUE_NOW'", "Write-Output 'QUEUE_FIRST'", "Write-Output 'QUEUE_SECOND'"
-                ]);
+                ])
+                && activationTarget.Profile.CommandHistoryTimestampsUtc.Count == activationTarget.Profile.CommandHistory.Count
+                && activationTarget.Profile.CommandHistoryTimestampsUtc[^1] > DateTime.UtcNow.AddMinutes(-1);
+            var commandHistoryRelativeTimesWork = TerminalPane.FormatRelativeHistoryTime(DateTime.UtcNow.AddSeconds(-30), DateTime.UtcNow) == "30s"
+                && TerminalPane.FormatRelativeHistoryTime(DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow) == "1m"
+                && TerminalPane.FormatRelativeHistoryTime(DateTime.UtcNow.AddHours(-1), DateTime.UtcNow) == "1h";
             activationTarget.ShowCommandHistoryForTest();
             var commandHistoryPanelAdapts = activationTarget.CommandHistoryPanelVisibleForTest
                 && activationTarget.CommandHistoryVisibleItemCountForTest == activationTarget.CommandHistoryCountForTest;
@@ -2536,8 +2749,9 @@ public partial class MainWindow : Window
             var commandHistoryRestoresInput = activationTarget.CommandInputTextForTest == "Write-Output 'QUEUE_SECOND'"
                 && !activationTarget.CommandHistoryPanelVisibleForTest;
             WorkspaceStore.Save(state);
-            var commandHistoryPersists = WorkspaceStore.Load(terminalProfile).Sessions
-                .First(value => value.Id == activationTarget.Profile.Id).CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory);
+            var persistedHistoryProfile = WorkspaceStore.Load(terminalProfile).Sessions.First(value => value.Id == activationTarget.Profile.Id);
+            var commandHistoryPersists = persistedHistoryProfile.CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory)
+                && persistedHistoryProfile.CommandHistoryTimestampsUtc.SequenceEqual(activationTarget.Profile.CommandHistoryTimestampsUtc);
             var commandHistoryIsPerTerminal = panes[added[1].Id].Profile.CommandHistory.Count == 0;
             activationTarget.SetCommandInputForTest(string.Empty);
 
@@ -2578,6 +2792,9 @@ public partial class MainWindow : Window
             var terminalTabContainer = TerminalTabList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
             var workspaceTabSurface = workspaceTabContainer is null ? null : FindContextMenuSurface(workspaceTabContainer);
             var terminalTabSurface = terminalTabContainer is null ? null : FindContextMenuSurface(terminalTabContainer);
+            var terminalTabsShowNamesOnly = terminalTabContainer is not null
+                && FindVisualDescendant<System.Windows.Shapes.Ellipse>(terminalTabContainer) is null
+                && FindVisualDescendant<TextBlock>(terminalTabContainer)?.Text == ((SessionProfile)TerminalTabList.Items[0]).Name;
             var tabContextMenusWork = workspaceTabSurface?.ContextMenu is { } workspaceTabMenu
                 && workspaceTabMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
                 && terminalTabSurface?.ContextMenu is { } terminalTabMenu
@@ -2597,18 +2814,18 @@ public partial class MainWindow : Window
             SelectPane(tabReorderTarget.Id, false);
             var originalTerminalAccent = tabReorderTarget.AccentColor;
             var originalSessionAccent = activeWorkspaceSession.AccentColor;
-            tabReorderTarget.AccentColor = "#CBA6F7";
-            activeWorkspaceSession.AccentColor = "#FAB387";
+            tabReorderTarget.AccentColor = "#2DD4BF";
+            activeWorkspaceSession.AccentColor = "#FB7185";
             panes[tabReorderTarget.Id].RefreshProfileDisplay(tabReorderTarget);
             RefreshWorkspaceSessionViews();
             var accentColorsApply = panes[tabReorderTarget.Id].AccentAppliedForTest
-                && WorkspaceAccentPalette.Normalize(tabReorderTarget.AccentColor, WorkspaceAccentPalette.DefaultTerminal) == "#CBA6F7"
-                && WorkspaceAccentPalette.Normalize(activeWorkspaceSession.AccentColor, WorkspaceAccentPalette.DefaultSession) == "#FAB387";
+                && WorkspaceAccentPalette.Normalize(tabReorderTarget.AccentColor, WorkspaceAccentPalette.DefaultTerminal) == "#2DD4BF"
+                && WorkspaceAccentPalette.Normalize(activeWorkspaceSession.AccentColor, WorkspaceAccentPalette.DefaultSession) == "#FB7185";
             WorkspaceStore.Save(state);
             var persistedAccentWorkspace = WorkspaceStore.Load(terminalProfile);
             accentColorsApply = accentColorsApply
-                && persistedAccentWorkspace.Sessions.First(value => value.Id == tabReorderTarget.Id).AccentColor == "#CBA6F7"
-                && persistedAccentWorkspace.TerminalSessions.First(value => value.Id == activeWorkspaceSession.Id).AccentColor == "#FAB387"
+                && persistedAccentWorkspace.Sessions.First(value => value.Id == tabReorderTarget.Id).AccentColor == "#2DD4BF"
+                && persistedAccentWorkspace.TerminalSessions.First(value => value.Id == activeWorkspaceSession.Id).AccentColor == "#FB7185"
                 && persistedAccentWorkspace.TerminalSessions.First(value => value.Id == activeWorkspaceSession.Id).Layout == "Tabs";
             tabReorderTarget.AccentColor = originalTerminalAccent;
             activeWorkspaceSession.AccentColor = originalSessionAccent;
@@ -2717,10 +2934,10 @@ public partial class MainWindow : Window
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
-                && commandHistoryRecordsSentCommands && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
+                && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
                 && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal;
-            var success = inputReady && outputReady && terminalScrollbarsThemed && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
-                && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && workspaceCardMenuReliable && terminalCardMenuReliable
+            var success = inputReady && outputReady && terminalScrollbarsThemed && terminalScrollbarsInteractive && settingsScrollbarThemed && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
+                && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTypingAvoidsPillRebuild
@@ -2729,17 +2946,17 @@ public partial class MainWindow : Window
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && tabs && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && rows && columns && focus && grid && tabs && terminalTabsShowNamesOnly && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && scheduleLogic && countdownLogic && automationHoverContainerStable && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
-            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
-            File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
-            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowNamesOnly={terminalTabsShowNamesOnly}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
@@ -2946,7 +3163,7 @@ public partial class MainWindow : Window
         editingValue = value;
         EditorTitle.Text = "Rename session";
         WorkspaceSessionNameEdit.Text = value.Name;
-        WorkspaceSessionAccentEdit.SelectedValue = WorkspaceAccentPalette.Normalize(value.AccentColor, WorkspaceAccentPalette.DefaultSession);
+        SetWorkspaceEditorAccent(value.AccentColor);
         ShowEditor(WorkspaceSessionEditor);
         WorkspaceSessionNameEdit.Focus();
         WorkspaceSessionNameEdit.SelectAll();

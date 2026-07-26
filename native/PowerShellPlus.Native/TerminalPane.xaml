@@ -38,7 +38,13 @@
           </StackPanel>
         </Grid>
       </Border>
-      <term:EasyTerminalControl x:Name="Terminal" Grid.Row="1" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" PreviewMouseWheel="TerminalPreviewMouseWheel"/>
+      <Grid x:Name="TerminalSurfaceGrid" Grid.Row="1">
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/></Grid.ColumnDefinitions>
+        <term:EasyTerminalControl x:Name="Terminal" Grid.Column="0" LogConPTYOutput="True" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" PreviewMouseWheel="TerminalPreviewMouseWheel"/>
+        <Border x:Name="TerminalScrollbarGutter" Grid.Column="1" Background="#181825" BorderBrush="#313244" BorderThickness="1,0,0,0">
+          <Grid x:Name="TerminalScrollbarHost" Background="Transparent"/>
+        </Border>
+      </Grid>
       <Border x:Name="RemoteImagePasteIndicator" Grid.Row="1" Panel.ZIndex="4" Visibility="Collapsed"
               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="10,7"
               Background="#F2181825" BorderBrush="#585B70" BorderThickness="1" CornerRadius="7">
@@ -108,16 +114,19 @@
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
               <Grid Grid.Row="0" Margin="2,0,2,4">
-                <StackPanel Orientation="Horizontal"><Path Data="M3,8 A5,5 0 1 0 5,3 M5,3 H2 M5,3 V6 M8,5 V8 L10,9" Stroke="#89B4FA" StrokeThickness="1.2" Fill="Transparent" Width="13" Height="13" Stretch="Uniform"/><TextBlock Text="Command history" Foreground="#A6ADC8" FontSize="9" FontWeight="SemiBold" Margin="7,0,0,0" VerticalAlignment="Center"/></StackPanel>
+                <StackPanel Orientation="Horizontal"><Path Data="M3,8 A5,5 0 1 0 5,3 M5,3 H2 M5,3 V6 M8,5 V8 L10,9" Stroke="#89B4FA" StrokeThickness="1.2" Fill="Transparent" Width="13" Height="13" Stretch="Uniform"/><TextBlock Text="History" Foreground="#A6ADC8" FontSize="9" FontWeight="SemiBold" Margin="7,0,0,0" VerticalAlignment="Center"/></StackPanel>
                 <TextBlock x:Name="CommandHistoryEmptyText" Text="Nothing sent from this terminal yet" Foreground="#6C7086" FontSize="9" HorizontalAlignment="Right" VerticalAlignment="Center"/>
               </Grid>
               <ScrollViewer Grid.Row="1" MaxHeight="184" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <ItemsControl x:Name="CommandHistoryList">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                      <Border Padding="7,5" Margin="0,1" Cursor="Hand" MouseLeftButtonDown="CommandHistoryEntryMouseDown" ToolTip="Restore this command to the input box">
+                      <Border Padding="7,5" Margin="0,1" Cursor="Hand" MouseLeftButtonDown="CommandHistoryEntryMouseDown" ToolTip="Restore this message to the input box">
                         <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="Transparent"/><Setter Property="CornerRadius" Value="4"/><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#242438"/></Trigger></Style.Triggers></Style></Border.Style>
-                        <TextBlock Text="{Binding}" FontFamily="Cascadia Mono" FontSize="11" Foreground="#CDD6F4" TextWrapping="Wrap" TextAlignment="Left"/>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="38"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                          <TextBlock Text="{Binding RelativeTime}" Foreground="#89B4FA" FontSize="9" FontWeight="SemiBold" Margin="0,2,8,0" VerticalAlignment="Top" TextAlignment="Right"/>
+                          <TextBlock Grid.Column="1" Text="{Binding Message}" FontFamily="Cascadia Mono" FontSize="11" Foreground="#CDD6F4" TextWrapping="Wrap" TextAlignment="Left"/>
+                        </Grid>
                       </Border>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
@@ -169,7 +178,7 @@
             </StackPanel>
           </Border>
           <Button x:Name="CommandHistoryButton" Grid.Row="2" Grid.Column="1" Panel.ZIndex="5" Width="25" Height="24" Padding="0" Margin="0,1,3,1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                  Background="Transparent" BorderThickness="0" Click="CommandHistoryClick" ToolTip="Show command history">
+                  Background="Transparent" BorderThickness="0" Click="CommandHistoryClick" ToolTip="Show history">
             <Viewbox Width="14" Height="14"><Path x:Name="CommandHistoryIcon" Data="M4,7 A5,5 0 1 0 6,2 M6,2 H3 M6,2 V5 M9,4 V7 L11,8" Stroke="#A6ADC8" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/></Viewbox>
           </Button>
           <Button x:Name="QueueCommandButton" Grid.Row="2" Grid.Column="2" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">

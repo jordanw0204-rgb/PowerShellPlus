@@ -40,6 +40,13 @@ public static class WorkspaceStore
                         .Where(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 32_768)
                         .TakeLast(100)
                         .ToList();
+                    session.CommandHistoryTimestampsUtc ??= [];
+                    session.CommandHistoryTimestampsUtc = session.CommandHistoryTimestampsUtc.TakeLast(session.CommandHistory.Count).ToList();
+                    if (session.CommandHistoryTimestampsUtc.Count < session.CommandHistory.Count)
+                    {
+                        var legacyCount = session.CommandHistory.Count - session.CommandHistoryTimestampsUtc.Count;
+                        session.CommandHistoryTimestampsUtc.InsertRange(0, Enumerable.Repeat(DateTime.MinValue, legacyCount));
+                    }
                 }
                 loaded.TerminalSessions ??= [];
                 if (loaded.TerminalSessions.Count == 0)

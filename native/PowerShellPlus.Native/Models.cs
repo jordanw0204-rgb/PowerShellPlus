@@ -19,22 +19,39 @@ public static class WorkspaceAccentPalette
         Choice("Pink", "#F5C2E7"), Choice("Mauve", "#CBA6F7"), Choice("Red", "#F38BA8")
     ];
 
+    private static readonly object BrushCacheSync = new();
     private static readonly Dictionary<string, Brush> OpaqueBrushes = Choices.ToDictionary(value => value.Value, value => value.Brush, StringComparer.OrdinalIgnoreCase);
-    private static readonly Dictionary<string, Brush> TintBrushes = Choices.ToDictionary(value => value.Value, value => CreateBrush(value.Value, 38), StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<(string Value, byte Alpha), Brush> TintBrushes = Choices
+        .SelectMany(value => new byte[] { 30, 54, 78 }.Select(alpha => new KeyValuePair<(string, byte), Brush>((value.Value, alpha), CreateBrush(value.Value, alpha))))
+        .ToDictionary(value => value.Key, value => value.Value);
 
     public static string Normalize(string? value, string fallback)
-        => Choices.Any(choice => string.Equals(choice.Value, value, StringComparison.OrdinalIgnoreCase)) ? value!.ToUpperInvariant() : fallback;
+    {
+        var candidate = value?.Trim().ToUpperInvariant();
+        return candidate is { Length: 7 } && candidate[0] == '#' && candidate.Skip(1).All(Uri.IsHexDigit)
+            ? candidate
+            : fallback;
+    }
 
     public static Brush BrushFor(string? value, string fallback)
     {
         var normalized = Normalize(value, fallback);
-        return OpaqueBrushes.TryGetValue(normalized, out var brush) ? brush : OpaqueBrushes[fallback];
+        lock (BrushCacheSync)
+        {
+            if (OpaqueBrushes.TryGetValue(normalized, out var brush)) return brush;
+            return OpaqueBrushes[normalized] = CreateBrush(normalized, 255);
+        }
     }
 
-    public static Brush TintFor(string? value, string fallback)
+    public static Brush TintFor(string? value, string fallback, byte alpha = 30)
     {
         var normalized = Normalize(value, fallback);
-        return TintBrushes.TryGetValue(normalized, out var brush) ? brush : TintBrushes[fallback];
+        lock (BrushCacheSync)
+        {
+            var key = (normalized, alpha);
+            if (TintBrushes.TryGetValue(key, out var brush)) return brush;
+            return TintBrushes[key] = CreateBrush(normalized, alpha);
+        }
     }
 
     private static AccentChoice Choice(string name, string value) => new(name, value, CreateBrush(value, 255));
@@ -83,6 +100,8 @@ public sealed class TerminalSession
     [JsonIgnore] public string Subtitle => $"{TerminalIds.Count} terminal{(TerminalIds.Count == 1 ? string.Empty : "s")}";
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultSession);
     [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultSession);
+    [JsonIgnore] public Brush AccentHoverBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultSession, 54);
+    [JsonIgnore] public Brush AccentSelectedBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultSession, 78);
 }
 
 public sealed class PaneLayoutSizing
@@ -123,9 +142,12 @@ public sealed class SessionProfile
     public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];
     public List<string> CommandHistory { get; set; } = [];
+    public List<DateTime> CommandHistoryTimestampsUtc { get; set; } = [];
     [JsonIgnore] public string Subtitle => WorkingDirectory;
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+    [JsonIgnore] public Brush AccentHoverBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal, 54);
+    [JsonIgnore] public Brush AccentSelectedBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal, 78);
 }
 
 public sealed class ComposerAttachmentState

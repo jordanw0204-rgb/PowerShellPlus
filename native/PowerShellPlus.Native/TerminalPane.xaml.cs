@@ -22,6 +22,10 @@ namespace PowerShellPlus.Native;
 internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
 internal sealed record ComposerAttachment(string Id, string LocalPath, string DisplayName, bool IsImage, bool IsTemporary);
+internal sealed record HistoryDisplayEntry(string Message, DateTime SentUtc)
+{
+    public string RelativeTime => TerminalPane.FormatRelativeHistoryTime(SentUtc, DateTime.UtcNow);
+}
 internal enum AttachmentPreviewKind { Image, Media, Text, Generic }
 internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Error }
 internal enum AgentKind { Terminal, Codex, Hermes }
@@ -171,6 +175,7 @@ public partial class TerminalPane : UserControl
     private bool startupProfileFallbackAttempted;
     private int attachmentPillRefreshCount;
     private bool commandInputFileDropHandlersInstalled;
+    private ScrollBar? nativeScrollbar;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -190,6 +195,7 @@ public partial class TerminalPane : UserControl
         remoteFontSize = EffectiveTerminalFontSize(appearance);
         Profile.PendingCommands ??= [];
         Profile.CommandHistory ??= [];
+        Profile.CommandHistoryTimestampsUtc ??= [];
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
         InitializeComponent();
@@ -204,7 +210,11 @@ public partial class TerminalPane : UserControl
         CommandInput.PlainTextPasted += PromotePastedLocalFiles;
         RefreshAttachmentPills();
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
-        agentStatusTimer.Tick += (_, _) => RefreshAgentStatus();
+        agentStatusTimer.Tick += (_, _) =>
+        {
+            RefreshAgentStatus();
+            if (CommandHistoryPanel.Visibility == Visibility.Visible) CommandHistoryList.Items.Refresh();
+        };
         Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         Terminal.Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
@@ -360,26 +370,54 @@ public partial class TerminalPane : UserControl
     private void RecordCommandHistory(string command)
     {
         if (string.IsNullOrWhiteSpace(command)) return;
-        if (Profile.CommandHistory.Count == 0 || !string.Equals(Profile.CommandHistory[^1], command, StringComparison.Ordinal))
-            Profile.CommandHistory.Add(command);
+        Profile.CommandHistory.Add(command);
+        Profile.CommandHistoryTimestampsUtc.Add(DateTime.UtcNow);
         if (Profile.CommandHistory.Count > MaximumCommandHistory)
+        {
             Profile.CommandHistory.RemoveRange(0, Profile.CommandHistory.Count - MaximumCommandHistory);
+            Profile.CommandHistoryTimestampsUtc.RemoveRange(0, Profile.CommandHistoryTimestampsUtc.Count - MaximumCommandHistory);
+        }
         RefreshCommandHistoryList();
     }
 
     private void RefreshCommandHistoryList()
     {
-        CommandHistoryList.ItemsSource = Profile.CommandHistory.AsEnumerable().Reverse().ToArray();
+        NormalizeCommandHistoryTimestamps();
+        CommandHistoryList.ItemsSource = Enumerable.Range(0, Profile.CommandHistory.Count)
+            .Reverse()
+            .Select(index => new HistoryDisplayEntry(Profile.CommandHistory[index], Profile.CommandHistoryTimestampsUtc[index]))
+            .ToArray();
         CommandHistoryEmptyText.Visibility = Profile.CommandHistory.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         CommandHistoryButton.IsEnabled = true;
         CommandHistoryButton.Opacity = Profile.CommandHistory.Count > 0 ? 1 : .72;
+    }
+
+    private void NormalizeCommandHistoryTimestamps()
+    {
+        Profile.CommandHistoryTimestampsUtc ??= [];
+        if (Profile.CommandHistoryTimestampsUtc.Count > Profile.CommandHistory.Count)
+            Profile.CommandHistoryTimestampsUtc.RemoveRange(0, Profile.CommandHistoryTimestampsUtc.Count - Profile.CommandHistory.Count);
+        if (Profile.CommandHistoryTimestampsUtc.Count < Profile.CommandHistory.Count)
+            Profile.CommandHistoryTimestampsUtc.InsertRange(0, Enumerable.Repeat(DateTime.MinValue, Profile.CommandHistory.Count - Profile.CommandHistoryTimestampsUtc.Count));
+    }
+
+    internal static string FormatRelativeHistoryTime(DateTime sentUtc, DateTime nowUtc)
+    {
+        if (sentUtc == DateTime.MinValue) return "saved";
+        var elapsed = nowUtc - (sentUtc.Kind == DateTimeKind.Utc ? sentUtc : sentUtc.ToUniversalTime());
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        if (elapsed.TotalSeconds < 60) return $"{Math.Max(0, (int)Math.Floor(elapsed.TotalSeconds))}s";
+        if (elapsed.TotalMinutes < 60) return $"{(int)Math.Floor(elapsed.TotalMinutes)}m";
+        if (elapsed.TotalHours < 24) return $"{(int)Math.Floor(elapsed.TotalHours)}h";
+        if (elapsed.TotalDays < 7) return $"{(int)Math.Floor(elapsed.TotalDays)}d";
+        return sentUtc.ToLocalTime().ToString("MMM d");
     }
 
     private void SetCommandHistoryVisible(bool visible)
     {
         CommandHistoryPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         CommandHistoryIcon.Stroke = new SolidColorBrush(visible ? Color.FromRgb(137, 180, 250) : Color.FromRgb(166, 173, 200));
-        CommandHistoryButton.ToolTip = visible ? "Hide command history" : "Show command history";
+        CommandHistoryButton.ToolTip = visible ? "Hide history" : "Show history";
     }
 
     private void RestoreCommandHistory(string command)
@@ -1241,11 +1279,18 @@ public partial class TerminalPane : UserControl
 
     public bool IsNativeScrollbarThemed()
     {
-        var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
+        var scrollbar = nativeScrollbar;
         return scrollbar is not null && scrollbar.Visibility == Visibility.Visible
             && scrollbar.Style == TryFindResource("ThemedScrollBar") as Style
-            && scrollbar.Width == 11;
+            && ReferenceEquals(VisualTreeHelper.GetParent(scrollbar), TerminalScrollbarHost)
+            && scrollbar.IsHitTestVisible && TerminalScrollbarGutter.ActualWidth >= 10;
     }
+
+    public bool NativeScrollbarInteractiveForTest => nativeScrollbar is { IsHitTestVisible: true }
+        && ReferenceEquals(VisualTreeHelper.GetParent(nativeScrollbar), TerminalScrollbarHost)
+        && nativeScrollbar.IsVisible && nativeScrollbar.ActualWidth >= 10 && nativeScrollbar.ActualHeight > 0
+        && (!nativeScrollbar.IsEnabled
+            || nativeScrollbar.InputHitTest(new Point(nativeScrollbar.ActualWidth / 2, nativeScrollbar.ActualHeight / 2)) is not null);
 
     public bool FocusCommandInputForTest() => CommandInput.Focus();
     public bool CommandBarExpandedForTest => Profile.CommandBarExpanded && CommandBarContainer.Visibility == Visibility.Visible;
@@ -1283,6 +1328,9 @@ public partial class TerminalPane : UserControl
     public void SetCommandHistoryForTest(IEnumerable<string> commands)
     {
         Profile.CommandHistory = commands.Where(value => !string.IsNullOrWhiteSpace(value)).TakeLast(MaximumCommandHistory).ToList();
+        Profile.CommandHistoryTimestampsUtc = Enumerable.Range(0, Profile.CommandHistory.Count)
+            .Select(index => DateTime.UtcNow.AddSeconds(-(Profile.CommandHistory.Count - index) * 30))
+            .ToList();
         RefreshCommandHistoryList();
     }
     public void ShowCommandHistoryForTest() => SetCommandHistoryVisible(true);
@@ -1357,12 +1405,24 @@ public partial class TerminalPane : UserControl
 
     private void ConfigureNativeScrollbar()
     {
-        var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
+        var scrollbar = nativeScrollbar ?? FindVisualChild<ScrollBar>(Terminal.Terminal);
         if (scrollbar is null) return;
+        nativeScrollbar = scrollbar;
+        if (!ReferenceEquals(VisualTreeHelper.GetParent(scrollbar), TerminalScrollbarHost))
+        {
+            if (VisualTreeHelper.GetParent(scrollbar) is Panel parent) parent.Children.Remove(scrollbar);
+            TerminalScrollbarHost.Children.Clear();
+            TerminalScrollbarHost.Children.Add(scrollbar);
+        }
         if (TryFindResource("ThemedScrollBar") is Style style) scrollbar.Style = style;
         scrollbar.Visibility = Visibility.Visible;
-        scrollbar.Width = 11;
-        scrollbar.MinWidth = 11;
+        scrollbar.Width = double.NaN;
+        scrollbar.MinWidth = 10;
+        scrollbar.HorizontalAlignment = HorizontalAlignment.Stretch;
+        scrollbar.VerticalAlignment = VerticalAlignment.Stretch;
+        scrollbar.IsHitTestVisible = true;
+        scrollbar.Focusable = true;
+        Panel.SetZIndex(scrollbar, 2);
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
@@ -2242,7 +2302,7 @@ public partial class TerminalPane : UserControl
     private void CommandHistoryClick(object sender, RoutedEventArgs e) { SetCommandHistoryVisible(CommandHistoryPanel.Visibility != Visibility.Visible); e.Handled = true; }
     private void CommandHistoryEntryMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is string command) RestoreCommandHistory(command);
+        if ((sender as FrameworkElement)?.DataContext is HistoryDisplayEntry entry) RestoreCommandHistory(entry.Message);
         e.Handled = true;
     }
     private void QueueCommandClick(object sender, RoutedEventArgs e) { ShowQueueMenu(); e.Handled = true; }
