@@ -109,6 +109,8 @@ public partial class TerminalPane : UserControl
     private const int MaximumCommandHistory = 100;
     private const int MaximumCommandLength = 32_768;
     private const int MaximumClipboardCharacters = 1_000_000;
+    private const int MaximumRecoveryOutputCharacters = 512_000;
+    private const int RecoveryOutputTrimThreshold = 576_000;
     private const int MaximumComposerAttachments = 10;
     private const int MinimumTerminalFontSize = 6;
     private const int MaximumTerminalFontSize = 36;
@@ -150,6 +152,8 @@ public partial class TerminalPane : UserControl
     private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly object agentOutputSync = new();
     private readonly StringBuilder recentAgentOutput = new();
+    private readonly StringBuilder recoveryOutput = new();
+    private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
     private readonly TerminalOutputActivityTracker terminalActivity = new();
     private string? activeCodexSessionId;
@@ -250,7 +254,7 @@ public partial class TerminalPane : UserControl
                 {
                     var term = Terminal.ConPTYTerm;
                     var commandLine = Terminal.StartupCommandLine;
-                    await Task.Run(() => term!.Start(commandLine, 100, 30, true));
+                    await Task.Run(() => term!.Start(commandLine, 100, 30, false));
                 }
                 catch (Exception exception)
                 {
@@ -965,7 +969,23 @@ public partial class TerminalPane : UserControl
 
     public string GetOutput()
     {
-        try { return Terminal.ConPTYTerm?.GetConsoleText() ?? string.Empty; } catch { return string.Empty; }
+        try
+        {
+            var raw = GetCapturedRawOutput();
+            return TermPTY.StripColors(raw).Replace("\r", string.Empty).Trim();
+        }
+        catch { return string.Empty; }
+    }
+
+    internal string GetRecoveryOutputForSnapshot()
+    {
+        lastRecoverySnapshotReadUsedDispatcher = Dispatcher.CheckAccess();
+        return GetOutput();
+    }
+
+    private string GetCapturedRawOutput()
+    {
+        lock (agentOutputSync) return recoveryOutput.ToString();
     }
 
     private async Task RecoverFromStalledPowerShellProfileAsync()
@@ -1026,7 +1046,23 @@ public partial class TerminalPane : UserControl
 
     public string GetRawOutputForTest()
     {
-        try { return Terminal.ConPTYTerm?.GetConsoleText(false) ?? string.Empty; } catch { return string.Empty; }
+        try { return GetCapturedRawOutput(); } catch { return string.Empty; }
+    }
+
+    internal bool RecoveryOutputIsBoundedForTest
+    {
+        get { lock (agentOutputSync) return recoveryOutput.Length <= RecoveryOutputTrimThreshold; }
+    }
+    internal bool DependencyOutputLoggingDisabledForTest => Terminal.ConPTYTerm?.ConsoleOutputLog is null;
+    internal bool LastRecoverySnapshotReadUsedDispatcherForTest => lastRecoverySnapshotReadUsedDispatcher;
+
+    internal static bool BoundedRecoveryOutputWorksForTest()
+    {
+        var buffer = new StringBuilder();
+        AppendBoundedRecoveryOutput(buffer, new string('a', RecoveryOutputTrimThreshold));
+        const string tail = "RECOVERY_BUFFER_TAIL";
+        AppendBoundedRecoveryOutput(buffer, new string('b', 1024) + tail);
+        return buffer.Length <= MaximumRecoveryOutputCharacters && buffer.ToString().EndsWith(tail, StringComparison.Ordinal);
     }
 
     internal RemoteTerminalSnapshotSource GetRemoteSnapshotSource()
@@ -1712,9 +1748,18 @@ public partial class TerminalPane : UserControl
         {
             recentAgentOutput.Append(args.Data);
             if (recentAgentOutput.Length > 8192) recentAgentOutput.Remove(0, recentAgentOutput.Length - 8192);
+            AppendBoundedRecoveryOutput(recoveryOutput, args.Data);
         }
         try { RawOutputReceived?.Invoke(this, args.Data); }
         catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
+    }
+
+    private static void AppendBoundedRecoveryOutput(StringBuilder buffer, string output)
+    {
+        if (string.IsNullOrEmpty(output)) return;
+        buffer.Append(output);
+        if (buffer.Length > RecoveryOutputTrimThreshold)
+            buffer.Remove(0, buffer.Length - MaximumRecoveryOutputCharacters);
     }
 
     private void RefreshAgentStatus(bool force = false)
