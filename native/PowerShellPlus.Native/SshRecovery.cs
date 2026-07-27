@@ -211,6 +211,22 @@ if ($global:__PowerShellPlusSshCommand) {
         return RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, BuildRemoteInteractiveWorkload());
     }
 
+    internal static bool InteractiveWrapperForcesPtyForTest()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "PowerShellPlus-ssh-wrapper-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var wrapper = BuildPowerShellWrapper("pty-fixture", directory);
+            return wrapper.Contains("$__pspInstrumented.Add('-tt')", StringComparison.Ordinal)
+                && wrapper.Contains("$__pspInstrumented.Add([string]$__pspArgs[$__pspDestinationIndex])", StringComparison.Ordinal)
+                && wrapper.Contains("@__pspInvokeArgs", StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
+        }
+    }
+
     internal static string BuildRemoteInteractiveWorkload()
         => "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
             + "__psp_previous_prompt_command=\"${PROMPT_COMMAND:-}\"; "

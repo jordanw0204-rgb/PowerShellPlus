@@ -285,3 +285,40 @@ print('PSP_REMOTE_CODEX:' + base64.b64encode(json.dumps(result, separators=(',',
         => root.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
 }
+
+internal static class RemoteCodexActivityProbe
+{
+    private const int MaximumProbeBytes = 2 * 1024 * 1024;
+
+    public static async Task<CodexTurnActivity> ProbeAsync(SessionRecoveryEntry recovery, CancellationToken cancellationToken = default)
+    {
+        if (recovery.RemoteCodexWasActive != true || !CodexSessionLocator.IsSafeCodexId(recovery.RemoteCodexSessionId)) return default;
+        var result = await RemoteTmuxSession.RunSshCommandAsync(recovery, BuildCommand(recovery.RemoteCodexSessionId!), cancellationToken);
+        return result.Started && result.ExitCode == 0
+            ? CodexSessionLocator.ClassifyActivityRecords(result.Output)
+            : default;
+    }
+
+    internal static string BuildCommand(string sessionId)
+    {
+        if (!CodexSessionLocator.IsSafeCodexId(sessionId)) throw new ArgumentException("Unsafe Codex session id.", nameof(sessionId));
+        var filePattern = $"*{sessionId}.jsonl";
+        return $"__psp_file=$(find \"$HOME/.codex/sessions\" -type f -name {QuotePosix(filePattern)} -print 2>/dev/null | head -n 1); "
+            + "if [ -z \"$__psp_file\" ]; then exit 3; fi; "
+            + $"tail -c {MaximumProbeBytes} -- \"$__psp_file\" 2>/dev/null "
+            + "| grep -E '\"type\":\"(task_started|task_complete|turn_aborted|shutdown_complete|request_user_input|[^\"]*approval_request|[^\"]*_output)\"' "
+            + "| tail -n 512";
+    }
+
+    internal static bool CommandIsReadOnlyAndBoundedForTest()
+    {
+        var command = BuildCommand("11111111-2222-3333-4444-555555555555");
+        return command.Contains("tail -c 2097152", StringComparison.Ordinal)
+            && command.Contains("find \"$HOME/.codex/sessions\"", StringComparison.Ordinal)
+            && command.Contains("tail -n 512", StringComparison.Ordinal)
+            && !command.Contains("rm ", StringComparison.Ordinal)
+            && !command.Contains("sed -i", StringComparison.Ordinal);
+    }
+
+    private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
+}

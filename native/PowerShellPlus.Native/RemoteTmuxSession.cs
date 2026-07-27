@@ -113,7 +113,7 @@ public static class RemoteTmuxSession
             ? recovery.RemoteTmuxSessionName!
             : GetSessionName(recovery.SessionId);
 
-    private static async Task<SshCommandResult> RunSshCommandAsync(SessionRecoveryEntry recovery, string remoteCommand,
+    internal static async Task<SshCommandResult> RunSshCommandAsync(SessionRecoveryEntry recovery, string remoteCommand,
         CancellationToken cancellationToken)
     {
         if (!SshRecovery.TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out var normalized, out var destination))
@@ -161,5 +161,5 @@ public static class RemoteTmuxSession
     }
 
     private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
-    private readonly record struct SshCommandResult(bool Started, int ExitCode, string Output, string Message);
+    internal readonly record struct SshCommandResult(bool Started, int ExitCode, string Output, string Message);
 }

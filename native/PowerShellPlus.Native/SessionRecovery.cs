@@ -445,6 +445,12 @@ public static class CodexSessionLocator
                 "{\"timestamp\":\"2026-07-20T11:14:04.851Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}"
             ]);
             if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:15:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"exec_command_approval_request\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Waiting) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:16:00.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"exec_command_output\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:17:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"request_user_input\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Waiting) return false;
             File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:28.703Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n");
             return FindActivity(sessionId, root).State == CodexTurnActivityState.Idle;
         }
@@ -453,6 +459,16 @@ public static class CodexSessionLocator
         {
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
+    }
+
+    internal static CodexTurnActivity ClassifyActivityRecords(string records)
+    {
+        if (string.IsNullOrWhiteSpace(records)) return default;
+        var cursor = new ActivityFileCursor(string.Empty);
+        using var reader = new StringReader(records);
+        string? line;
+        while ((line = reader.ReadLine()) is not null) ConsiderActivityRecord(line, cursor);
+        return new CodexTurnActivity(cursor.State, cursor.UpdatedUtc);
     }
 
     private static CodexSessionSettings FindLatestSettings(string? sessionId, string? sessionsRoot = null)

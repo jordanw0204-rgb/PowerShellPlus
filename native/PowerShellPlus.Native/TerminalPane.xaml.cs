@@ -90,6 +90,52 @@ internal sealed class TerminalOutputActivityTracker
     }
 }
 
+internal sealed class HermesOutputActivityTracker
+{
+    private static readonly Regex WaitingPrompt = new(
+        @"approval(?: required| request)|waiting for (?:your|user) input|do you want to|allow (?:this|command)|\[(?:y/n|Y/n|y/N)\]|once\s*/\s*session\s*/\s*always\s*/\s*deny|clarification",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ReadyPrompt = new(
+        @"(?:^|\n)\s*[❯>]\s*$|Welcome to Hermes Agent! Type your message|Resume this session with:",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private int state = (int)AgentActivityState.Idle;
+
+    public AgentActivityState State => (AgentActivityState)Volatile.Read(ref state);
+    public void TurnSubmitted() => Volatile.Write(ref state, (int)AgentActivityState.Working);
+
+    public void RecordOutput(string data, bool meaningful)
+    {
+        var visible = TerminalTextSanitizer.ForTranscript(data);
+        if (visible.Length == 0) return;
+        if (WaitingPrompt.IsMatch(visible))
+        {
+            Volatile.Write(ref state, (int)AgentActivityState.Waiting);
+            return;
+        }
+        if (ReadyPrompt.IsMatch(visible))
+        {
+            Volatile.Write(ref state, (int)AgentActivityState.Idle);
+            return;
+        }
+        if (meaningful && State != AgentActivityState.Waiting)
+            Volatile.Write(ref state, (int)AgentActivityState.Working);
+    }
+
+    internal static bool StateTransitionsPassForTest()
+    {
+        var tracker = new HermesOutputActivityTracker();
+        tracker.TurnSubmitted();
+        if (tracker.State != AgentActivityState.Working) return false;
+        tracker.RecordOutput("Approval required\nonce / session / always / deny", true);
+        if (tracker.State != AgentActivityState.Waiting) return false;
+        tracker.TurnSubmitted();
+        tracker.RecordOutput("streaming model response", true);
+        if (tracker.State != AgentActivityState.Working) return false;
+        tracker.RecordOutput("\n❯ ", true);
+        return tracker.State == AgentActivityState.Idle;
+    }
+}
+
 public partial class TerminalPane : UserControl
 {
     private const int WmLeftButtonDown = 0x0201;
@@ -105,6 +151,7 @@ public partial class TerminalPane : UserControl
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
     private const int VkV = 0x56;
+    private const int VkReturn = 0x0D;
     private const int MaximumQueuedCommands = 100;
     private const int MaximumCommandHistory = 100;
     private const int MaximumCommandLength = 32_768;
@@ -163,13 +210,18 @@ public partial class TerminalPane : UserControl
     private readonly StringBuilder recentAgentOutput = new();
     private readonly StringBuilder recoveryOutput = new();
     private readonly StringBuilder workingDirectoryOscBuffer = new();
+    private char[]? terminalOutputScratch;
     private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
     private readonly TerminalOutputActivityTracker terminalActivity = new();
+    private readonly HermesOutputActivityTracker hermesActivity = new();
     private string? activeCodexSessionId;
     private AgentKind detectedAgentKind;
     private AgentKind displayedAgentKind = (AgentKind)(-1);
     private bool hermesExitObserved;
+    private bool remoteCodexActivityProbePending;
+    private DateTime nextRemoteCodexActivityProbeUtc = DateTime.MinValue;
+    private CodexTurnActivity remoteCodexActivity;
     private bool remoteImagePastePending;
     private bool suppressRemoteImagePasteVSequence;
     private Func<RemoteImagePasteMode, bool>? remoteClipboardPasteTestOverride;
@@ -236,7 +288,9 @@ public partial class TerminalPane : UserControl
         CommandInput.PlainTextPasted += PromotePastedLocalFiles;
         composerStateTimer.Tick += (_, _) => FlushComposerState();
         RefreshAttachmentPills();
-        detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
+        detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes
+            : recovery?.CodexWasActive == true || recovery?.RemoteCodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
+        activeCodexSessionId = recovery?.RemoteCodexWasActive == true ? recovery.RemoteCodexSessionId : recovery?.CodexSessionId;
         agentStatusTimer.Tick += (_, _) =>
         {
             RefreshAgentStatus();
@@ -369,6 +423,7 @@ public partial class TerminalPane : UserControl
                 if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
                 {
                     terminalActivity.RecordInput(DateTime.UtcNow);
+                    if (detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
                     Terminal.ConPTYTerm.WriteToTerm(command + "\r");
                     Terminal.Focus();
                     return true;
@@ -1167,7 +1222,7 @@ public partial class TerminalPane : UserControl
         try
         {
             var raw = GetCapturedRawOutput();
-            return TermPTY.StripColors(raw).Replace("\r", string.Empty).Trim();
+            return TerminalTextSanitizer.ForTranscript(raw);
         }
         catch { return string.Empty; }
     }
@@ -2007,15 +2062,18 @@ public partial class TerminalPane : UserControl
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
-        terminalActivity.RecordOutput(args.Data, DateTime.UtcNow);
         CaptureWorkingDirectory(args.Data);
+        var output = TerminalTextSanitizer.ForLiveOutput(args.Data);
+        if (output.Length == 0) return;
+        var meaningful = terminalActivity.RecordOutput(output, DateTime.UtcNow);
+        hermesActivity.RecordOutput(output, meaningful);
         lock (agentOutputSync)
         {
-            recentAgentOutput.Append(args.Data);
+            recentAgentOutput.Append(output);
             if (recentAgentOutput.Length > 8192) recentAgentOutput.Remove(0, recentAgentOutput.Length - 8192);
-            AppendBoundedRecoveryOutput(recoveryOutput, args.Data);
+            AppendBoundedRecoveryOutput(recoveryOutput, output);
         }
-        try { RawOutputReceived?.Invoke(this, args.Data); }
+        try { RawOutputReceived?.Invoke(this, output); }
         catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
     }
 
@@ -2078,10 +2136,15 @@ public partial class TerminalPane : UserControl
             var output = string.Empty;
             lock (agentOutputSync) output = recentAgentOutput.ToString();
             var codexLaunch = CodexLaunchStore.Load(Profile.Id);
-            if (codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
+            var remoteCodex = startupRecovery?.RemoteCodexWasActive == true
+                && CodexSessionLocator.IsSafeCodexId(startupRecovery.RemoteCodexSessionId);
+            if (remoteCodex || codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
             {
                 detectedAgentKind = AgentKind.Codex;
-                activeCodexSessionId = codexLaunch?.SessionId ?? startupRecovery?.CodexSessionId;
+                activeCodexSessionId = remoteCodex
+                    ? startupRecovery!.RemoteCodexSessionId
+                    : codexLaunch?.SessionId ?? startupRecovery?.CodexSessionId;
+                if (remoteCodex) QueueRemoteCodexActivityProbe(now);
             }
             else if (output.Contains("Resume this session with:", StringComparison.OrdinalIgnoreCase))
             {
@@ -2102,15 +2165,31 @@ public partial class TerminalPane : UserControl
         bool terminalRunning;
         try { terminalRunning = Terminal.ConPTYTerm?.TermProcIsStarted == true; }
         catch { terminalRunning = false; }
-        var recentTerminalOutput = terminalActivity.HasRecentOutput(now, TimeSpan.FromSeconds(1.9));
-        var codexActivity = detectedAgentKind == AgentKind.Codex
-            ? CodexSessionLocator.FindActivity(activeCodexSessionId)
-            : default;
-        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, recentTerminalOutput, codexActivity.State);
+        var remoteCodexActive = startupRecovery?.RemoteCodexWasActive == true
+            && string.Equals(activeCodexSessionId, startupRecovery.RemoteCodexSessionId, StringComparison.OrdinalIgnoreCase);
+        var codexActivity = detectedAgentKind != AgentKind.Codex ? default
+            : remoteCodexActive ? remoteCodexActivity
+            : CodexSessionLocator.FindActivity(activeCodexSessionId);
+        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State, hermesActivity.State);
         SetAgentStatus(detectedAgentKind, next);
     }
 
-    private static AgentActivityState ClassifyAgentActivity(AgentKind kind, bool terminalRunning, bool recentTerminalOutput, CodexTurnActivityState codexState)
+    private async void QueueRemoteCodexActivityProbe(DateTime now)
+    {
+        if (remoteCodexActivityProbePending || now < nextRemoteCodexActivityProbeUtc || startupRecovery is not { RemoteCodexWasActive: true } recovery) return;
+        remoteCodexActivityProbePending = true;
+        nextRemoteCodexActivityProbeUtc = now.AddSeconds(4);
+        try
+        {
+            remoteCodexActivity = await RemoteCodexActivityProbe.ProbeAsync(recovery);
+            if (!Dispatcher.HasShutdownStarted) RefreshAgentStatus();
+        }
+        catch { remoteCodexActivity = default; }
+        finally { remoteCodexActivityProbePending = false; }
+    }
+
+    private static AgentActivityState ClassifyAgentActivity(AgentKind kind, bool terminalRunning, CodexTurnActivityState codexState,
+        AgentActivityState hermesState)
     {
         if (!terminalRunning) return AgentActivityState.Stopped;
         if (kind == AgentKind.Codex)
@@ -2122,10 +2201,11 @@ public partial class TerminalPane : UserControl
                 _ => AgentActivityState.Idle
             };
         }
-        // Hermes does not currently expose a local structured turn-event API.
-        // Its streaming output is authoritative while data is arriving; once
-        // output settles, both Hermes and an ordinary shell are genuinely idle.
-        return recentTerminalOutput ? AgentActivityState.Working : AgentActivityState.Idle;
+        // Hermes currently has no supported structured status API. Its state is
+        // latched from a submitted turn until the TUI renders either its ready
+        // prompt or a blocking approval/clarification overlay. Ordinary shells
+        // never animate merely because they printed output.
+        return kind == AgentKind.Hermes ? hermesState : AgentActivityState.Idle;
     }
 
     private void SetAgentStatus(AgentKind kind, AgentActivityState state)
@@ -2216,13 +2296,14 @@ public partial class TerminalPane : UserControl
             && tracker.HasRecentOutput(now.AddMilliseconds(800), TimeSpan.FromSeconds(2));
     }
     internal static bool AgentActivityClassificationForTest()
-        => ClassifyAgentActivity(AgentKind.Codex, true, true, CodexTurnActivityState.Idle) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Codex, true, false, CodexTurnActivityState.Working) == AgentActivityState.Working
-            && ClassifyAgentActivity(AgentKind.Codex, true, false, CodexTurnActivityState.Waiting) == AgentActivityState.Waiting
-            && ClassifyAgentActivity(AgentKind.Hermes, true, true, CodexTurnActivityState.Unknown) == AgentActivityState.Working
-            && ClassifyAgentActivity(AgentKind.Hermes, true, false, CodexTurnActivityState.Unknown) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Terminal, true, false, CodexTurnActivityState.Unknown) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Terminal, false, true, CodexTurnActivityState.Unknown) == AgentActivityState.Stopped;
+        => ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Idle, AgentActivityState.Working) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Working, AgentActivityState.Idle) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Waiting, AgentActivityState.Idle) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Working) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Waiting) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, true, CodexTurnActivityState.Working, AgentActivityState.Working) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, false, CodexTurnActivityState.Working, AgentActivityState.Working) == AgentActivityState.Stopped;
     internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
         && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
         && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom
@@ -2251,6 +2332,15 @@ public partial class TerminalPane : UserControl
 
     private void EnforceCursorStyle(ref Span<char> output)
     {
+        var sanitized = TerminalTextSanitizer.ForLiveOutput(output.ToString());
+        if (sanitized.Length != output.Length)
+        {
+            // The terminal-control library explicitly permits replacing the
+            // intercepted span. Keep the backing array rooted until the next
+            // callback so the native renderer can consume it safely.
+            terminalOutputScratch = sanitized.ToCharArray();
+            output = terminalOutputScratch.AsSpan();
+        }
         // DECSCUSR is ESC [ Ps SP q. Applications such as TUIs can emit it
         // after the theme is applied, so normalize it to the user's setting.
         for (var index = 0; index <= output.Length - 5; index++)
@@ -2287,6 +2377,7 @@ public partial class TerminalPane : UserControl
         else if (message == WmKeyDown)
         {
             terminalActivity.RecordInput(DateTime.UtcNow);
+            if (wParam.ToInt32() == VkReturn && detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
             if (TryHandleEditShortcut(wParam.ToInt32()))
             {
                 handled = true;
@@ -2731,7 +2822,7 @@ public partial class TerminalPane : UserControl
     internal static string BuildPowerShellDirectoryHook()
         => "$global:__PowerShellPlusOriginalPrompt = $function:prompt; function global:prompt { "
             + "$__pspLocation = $executionContext.SessionState.Path.CurrentLocation.ProviderPath; "
-            + "$__pspLocationMarker = \"`e]9;9;`\"$__pspLocation`\"`a\"; "
+            + "$__pspLocationMarker = ([string][char]27) + ']9;9;\"' + $__pspLocation + '\"' + ([char]27) + '\\'; "
             + "$__pspRenderedPrompt = & $global:__PowerShellPlusOriginalPrompt; "
             + "return $__pspLocationMarker + ($__pspRenderedPrompt -join '') }";
 
@@ -2792,7 +2883,7 @@ public partial class TerminalPane : UserControl
     {
         if (string.IsNullOrWhiteSpace(previousOutput)) return;
         PreviousOutputButton.Visibility = Visibility.Visible;
-        RecoveryOutputText.Text = previousOutput;
+        RecoveryOutputText.Text = TerminalTextSanitizer.ForTranscript(previousOutput);
         RecoveryTimestampText.Text = startupRecovery?.CapturedUtc.ToLocalTime().ToString("Recovered MMM d, yyyy 'at' h:mm tt") ?? "Recovered after restart";
         // Recovered output remains one click away in the pane header, but a live
         // terminal always owns the viewport after startup. Auto-opening this
