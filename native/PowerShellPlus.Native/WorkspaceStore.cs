@@ -30,6 +30,8 @@ public static class WorkspaceStore
                     automation.Name = string.IsNullOrWhiteSpace(automation.Name) ? "Automation" : automation.Name;
                     automation.Command ??= string.Empty;
                     automation.TargetSessionId = string.IsNullOrWhiteSpace(automation.TargetSessionId) ? "*" : automation.TargetSessionId;
+                    if (automation.ScheduleType is not (AutomationRule.NoSchedule or "Interval" or "Daily" or "Once"))
+                        automation.ScheduleType = AutomationRule.NoSchedule;
                 }
                 var automationIds = loaded.Automations.Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
                 foreach (var session in loaded.Sessions)

@@ -1683,9 +1683,12 @@ public partial class TerminalPane : UserControl
         ShowAutomationMenu();
         var assigned = AutomationButton.ContextMenu?.Items.OfType<MenuItem>().FirstOrDefault(value => value.Items.Count > 0 && value.Header?.ToString() != "Add automation");
         var headers = assigned?.Items.OfType<MenuItem>().Select(value => value.Header?.ToString()).ToHashSet(StringComparer.Ordinal) ?? [];
+        var add = AutomationButton.ContextMenu?.Items.OfType<MenuItem>().FirstOrDefault(value => value.Header?.ToString() == "Add automation");
+        add?.ApplyTemplate();
+        var submenuCanOpen = add?.Items.Count > 0 && add.Template?.FindName("PART_Popup", add) is Popup;
         if (AutomationButton.ContextMenu is { } menu) menu.IsOpen = false;
         return headers.Contains("Run now") && headers.Contains("Enabled") && headers.Contains("Auto insert at end of input")
-            && headers.Contains("Edit automation") && headers.Contains("Remove from terminal");
+            && headers.Contains("Edit automation") && headers.Contains("Remove from terminal") && submenuCanOpen;
     }
     public bool SelectFirstQuickAccessCommandForTest()
     {

@@ -94,17 +94,31 @@
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="MenuItem">
-            <Border x:Name="ItemRoot" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
-              <Grid>
-                <Grid.ColumnDefinitions><ColumnDefinition Width="25"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <ContentPresenter Grid.Column="0" ContentSource="Icon" HorizontalAlignment="Left" VerticalAlignment="Center"/>
-                <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
-                <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="{StaticResource Muted}" FontSize="10" Margin="18,0,0,0" VerticalAlignment="Center"/>
-              </Grid>
-            </Border>
+            <Grid>
+              <Border x:Name="ItemRoot" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="25"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <ContentPresenter x:Name="IconPresenter" Grid.Column="0" ContentSource="Icon" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="CheckGlyph" Grid.Column="0" Text="✓" Foreground="#89B4FA" FontWeight="Bold" Visibility="Collapsed" VerticalAlignment="Center"/>
+                  <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="GestureText" Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="{StaticResource Muted}" FontSize="10" Margin="18,0,0,0" VerticalAlignment="Center"/>
+                  <TextBlock x:Name="SubmenuGlyph" Grid.Column="3" Text="›" Foreground="{StaticResource Muted}" FontSize="16" FontWeight="SemiBold" Margin="16,-1,0,0" Visibility="Collapsed" VerticalAlignment="Center"/>
+                </Grid>
+              </Border>
+              <Popup x:Name="PART_Popup" AllowsTransparency="True" Focusable="False" IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}" Placement="Right" PopupAnimation="Fade">
+                <Border Background="#F51E1E2E" BorderBrush="#585B70" BorderThickness="1" CornerRadius="10" Padding="6" MinWidth="250">
+                  <Border.Effect><DropShadowEffect BlurRadius="22" ShadowDepth="7" Opacity="0.42" Color="#000000"/></Border.Effect>
+                  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="True" MaxHeight="420">
+                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle"/>
+                  </ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ItemRoot" Property="Background" Value="#313244"/></Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.42"/></Trigger>
+              <Trigger Property="IsChecked" Value="True"><Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible"/><Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed"/></Trigger>
+              <Trigger Property="HasItems" Value="True"><Setter TargetName="SubmenuGlyph" Property="Visibility" Value="Visible"/><Setter TargetName="GestureText" Property="Visibility" Value="Collapsed"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>

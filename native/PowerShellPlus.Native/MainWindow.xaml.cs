@@ -1335,7 +1335,7 @@ public partial class MainWindow : Window
         targets.Insert(0, new SessionProfile { Id = "*", Name = "All terminals", CommandLine = string.Empty });
         targets.Insert(0, new SessionProfile { Id = AutomationRule.NoTarget, Name = "None · manual only", CommandLine = string.Empty });
         AutomationTargetEdit.ItemsSource = targets; AutomationTargetEdit.SelectedValue = rule?.TargetSessionId ?? AutomationRule.NoTarget;
-        AutomationTypeEdit.SelectedIndex = rule?.ScheduleType switch { "Daily" => 1, "Once" => 2, _ => 0 };
+        AutomationTypeEdit.SelectedIndex = rule?.ScheduleType switch { "Interval" => 1, "Daily" => 2, "Once" => 3, _ => 0 };
         AutomationValueEdit.Text = (rule?.IntervalMinutes ?? 60).ToString(CultureInfo.InvariantCulture);
         var exactTime = TimeSpan.TryParseExact(rule?.DailyTime ?? "09:00", @"hh\:mm", CultureInfo.InvariantCulture, out var parsedTime) ? parsedTime : TimeSpan.FromHours(9);
         var hour = exactTime.Hours % 12; if (hour == 0) hour = 12;
@@ -1439,7 +1439,7 @@ public partial class MainWindow : Window
             if (string.IsNullOrWhiteSpace(AutomationNameEdit.Text) || string.IsNullOrWhiteSpace(AutomationCommandEdit.Text)) return;
             var value = editingValue as AutomationRule ?? new AutomationRule();
             var previousScheduleType = value.ScheduleType; var previousTime = value.DailyTime;
-            value.Name = AutomationNameEdit.Text.Trim(); value.Command = AutomationCommandEdit.Text.Trim(); value.TargetSessionId = AutomationTargetEdit.SelectedValue?.ToString() ?? AutomationRule.NoTarget; value.ScheduleType = AutomationTypeEdit.SelectedIndex switch { 1 => "Daily", 2 => "Once", _ => "Interval" }; value.Enabled = AutomationEnabledEdit.IsChecked == true; value.ClearLine = AutomationClearLineEdit.IsChecked == true;
+            value.Name = AutomationNameEdit.Text.Trim(); value.Command = AutomationCommandEdit.Text.Trim(); value.TargetSessionId = AutomationTargetEdit.SelectedValue?.ToString() ?? AutomationRule.NoTarget; value.ScheduleType = AutomationTypeEdit.SelectedIndex switch { 1 => "Interval", 2 => "Daily", 3 => "Once", _ => AutomationRule.NoSchedule }; value.Enabled = AutomationEnabledEdit.IsChecked == true; value.ClearLine = AutomationClearLineEdit.IsChecked == true;
             if (value.ScheduleType == "Interval")
             {
                 if (!int.TryParse(AutomationValueEdit.Text, out var minutes)) { UpdateStatus("Enter a valid interval in minutes"); return; }
@@ -3265,6 +3265,11 @@ public partial class MainWindow : Window
             var manualOnlyScheduleStaysDormant = !manualOnlyRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow)
                 && manualOnlyRule.GetCountdownText(scheduleNow.ToUniversalTime(), scheduleNow) == "Manual only"
                 && AutomationTargets(manualOnlyRule).Count == 0;
+            var noScheduleRule = new AutomationRule { Command = "Write-Output manual", TargetSessionId = "*", ScheduleType = AutomationRule.NoSchedule, Enabled = true };
+            var explicitNoScheduleStaysDormant = !noScheduleRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow)
+                && noScheduleRule.GetNextRunLocal(scheduleNow.ToUniversalTime(), scheduleNow) is null
+                && noScheduleRule.GetCountdownText(scheduleNow.ToUniversalTime(), scheduleNow) == "Manual only"
+                && noScheduleRule.Subtitle == "No schedule";
             var countdownLogic = AutomationRule.FormatCountdown(TimeSpan.FromSeconds(61)) == "1m 1s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromHours(23) + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(10)) == "23h 1m 10s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(30)) == "1d 2h";
@@ -3303,6 +3308,9 @@ public partial class MainWindow : Window
             var automationClearLineWorks = TerminalPane.AutomationClearLineInputWorksForTest();
             OpenAutomationEditor(terminalAutomationFixture);
             var automationEditorSupportsManualTargetAndClearLine = Equals(AutomationTargetEdit.SelectedValue, AutomationRule.NoTarget)
+                && AutomationTypeEdit.SelectedIndex == 0
+                && AutomationIntervalPanel.Visibility == Visibility.Collapsed
+                && AutomationExactPanel.Visibility == Visibility.Collapsed
                 && AutomationClearLineEdit.IsChecked == true;
             HideEditor();
 
@@ -3409,7 +3417,7 @@ public partial class MainWindow : Window
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && terminalTabAgentStateMirrorsPane
                 && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && hermesActivityTransitionsExact && remoteCodexActivityProbeBounded
-                && scheduleLogic && countdownLogic && automationHoverContainerStable && manualOnlyScheduleStaysDormant
+                && scheduleLogic && countdownLogic && automationHoverContainerStable && manualOnlyScheduleStaysDormant && explicitNoScheduleStaysDormant
                 && terminalStartsWithoutAutomations && automationButtonReady && automationCanBeAddedPerTerminal
                 && automationCanAutoInsert && automationCanBeDisabled && automationMenuContractReady && automationClearLineWorks
                 && automationEditorSupportsManualTargetAndClearLine && terminalAutomationStatePersists
@@ -3424,7 +3432,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
-            File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
+            File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
@@ -3958,11 +3966,12 @@ public partial class MainWindow : Window
     private void UpdateAutomationScheduleEditor()
     {
         if (AutomationIntervalPanel is null) return;
-        var exact = AutomationTypeEdit.SelectedIndex is 1 or 2;
-        AutomationIntervalPanel.Visibility = exact ? Visibility.Collapsed : Visibility.Visible;
+        var interval = AutomationTypeEdit.SelectedIndex == 1;
+        var exact = AutomationTypeEdit.SelectedIndex is 2 or 3;
+        AutomationIntervalPanel.Visibility = interval ? Visibility.Visible : Visibility.Collapsed;
         AutomationExactPanel.Visibility = exact ? Visibility.Visible : Visibility.Collapsed;
-        AutomationDatePanel.Visibility = AutomationTypeEdit.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
-        AutomationTimeLabel.Text = AutomationTypeEdit.SelectedIndex == 2 ? "Run at" : "Run every day at";
+        AutomationDatePanel.Visibility = AutomationTypeEdit.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationTimeLabel.Text = AutomationTypeEdit.SelectedIndex == 3 ? "Run at" : "Run every day at";
     }
     private void BrowseDirectoryClick(object sender, RoutedEventArgs e) { var dialog = new OpenFolderDialog { InitialDirectory = SessionDirectoryEdit.Text }; if (dialog.ShowDialog(this) == true) SessionDirectoryEdit.Text = dialog.FolderName; }
     private void SettingsSectionClick(object sender, RoutedEventArgs e) => ShowSection(SettingsPanel);

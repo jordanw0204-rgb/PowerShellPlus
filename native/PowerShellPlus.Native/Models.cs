@@ -219,12 +219,13 @@ public sealed class CommandSnippet
 public sealed class AutomationRule : INotifyPropertyChanged
 {
     public const string NoTarget = "none";
+    public const string NoSchedule = "None";
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Automation";
     public string Command { get; set; } = string.Empty;
     public string TargetSessionId { get; set; } = NoTarget;
-    public string ScheduleType { get; set; } = "Interval";
+    public string ScheduleType { get; set; } = NoSchedule;
     public int IntervalMinutes { get; set; } = 60;
     public string DailyTime { get; set; } = "09:00";
     public string ScheduledDate { get; set; } = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -234,6 +235,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
     public DateTime LastRunUtc { get; set; } = DateTime.UtcNow;
     [JsonIgnore] public string Subtitle => ScheduleType switch
     {
+        NoSchedule => "No schedule",
         "Daily" => $"Daily at {DisplayTime(DailyTime)}",
         "Once" => $"{DisplayDate(ScheduledDate)} at {DisplayTime(DailyTime)}",
         _ => $"Every {IntervalMinutes} min"
@@ -251,7 +253,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
 
     public bool IsDue(DateTime utcNow, DateTime localNow)
     {
-        if (!Enabled || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return false;
+        if (!Enabled || ScheduleType == NoSchedule || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return false;
         if (ScheduleType == "Interval") return utcNow - LastRunUtc >= TimeSpan.FromMinutes(Math.Max(1, IntervalMinutes));
         if (!TimeSpan.TryParseExact(DailyTime, @"hh\:mm", CultureInfo.InvariantCulture, out var time)) return false;
         if (ScheduleType == "Daily") return localNow >= localNow.Date.Add(time) && LastRunUtc.ToLocalTime().Date < localNow.Date;
@@ -261,7 +263,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
 
     public DateTime? GetNextRunLocal(DateTime utcNow, DateTime localNow)
     {
-        if (!Enabled || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return null;
+        if (!Enabled || ScheduleType == NoSchedule || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return null;
         if (ScheduleType == "Interval") return LastRunUtc.AddMinutes(Math.Max(1, IntervalMinutes)).ToLocalTime();
         if (!TimeSpan.TryParseExact(DailyTime, @"hh\:mm", CultureInfo.InvariantCulture, out var time)) return null;
         if (ScheduleType == "Daily")
@@ -277,6 +279,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
     {
         if (ScheduleType == "Once" && HasRun) return "Completed";
         if (!Enabled) return "Paused";
+        if (ScheduleType == NoSchedule) return "Manual only";
         if (TargetSessionId == NoTarget) return "Manual only";
         var next = GetNextRunLocal(utcNow, localNow);
         if (next is null) return "No schedule";
