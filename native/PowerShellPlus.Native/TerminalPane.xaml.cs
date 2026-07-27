@@ -150,6 +150,10 @@ public partial class TerminalPane : UserControl
     private string remoteFontFace = "Cascadia Mono";
     private int remoteFontSize = 12;
     private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly System.Windows.Threading.DispatcherTimer composerStateTimer = new(System.Windows.Threading.DispatcherPriority.Background)
+        { Interval = TimeSpan.FromMilliseconds(120) };
+    private bool composerStateDirty;
+    private int composerStateFlushCount;
     private readonly object agentOutputSync = new();
     private readonly StringBuilder recentAgentOutput = new();
     private readonly StringBuilder recoveryOutput = new();
@@ -215,6 +219,7 @@ public partial class TerminalPane : UserControl
         CommandInput.CaretIndex = CommandInput.Text.Length;
         CommandInput.TextChanged += CommandInputTextChanged;
         CommandInput.PlainTextPasted += PromotePastedLocalFiles;
+        composerStateTimer.Tick += (_, _) => FlushComposerState();
         RefreshAttachmentPills();
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes : recovery?.CodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
         agentStatusTimer.Tick += (_, _) =>
@@ -272,6 +277,7 @@ public partial class TerminalPane : UserControl
         };
         Unloaded += (_, _) =>
         {
+            FlushComposerState();
             agentStatusTimer.Stop();
             UnregisterTerminalThreadMessageHook();
         };
@@ -397,6 +403,16 @@ public partial class TerminalPane : UserControl
         CommandHistoryEmptyText.Visibility = Profile.CommandHistory.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         CommandHistoryButton.IsEnabled = true;
         CommandHistoryButton.Opacity = Profile.CommandHistory.Count > 0 ? 1 : .72;
+        ClearCommandHistoryButton.IsEnabled = Profile.CommandHistory.Count > 0;
+        ClearCommandHistoryButton.Opacity = Profile.CommandHistory.Count > 0 ? 1 : .55;
+    }
+
+    private void ClearCommandHistory()
+    {
+        Profile.CommandHistory.Clear();
+        Profile.CommandHistoryTimestampsUtc.Clear();
+        RefreshCommandHistoryList();
+        commandStateChanged();
     }
 
     private void NormalizeCommandHistoryTimestamps()
@@ -550,12 +566,25 @@ public partial class TerminalPane : UserControl
     {
         if (synchronizingComposerAttachments) return;
         Profile.CommandDraft = CommandInput.Text;
+        composerStateDirty = true;
+        if (!composerStateTimer.IsEnabled) composerStateTimer.Start();
+    }
+
+    private void FlushComposerState()
+    {
+        composerStateTimer.Stop();
+        if (!composerStateDirty) return;
+        composerStateDirty = false;
+        composerStateFlushCount++;
         var detached = composerAttachments
             .Where(value => !CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         if (detached.Length > 0) RemoveComposerAttachments(detached);
-        else if (composerAttachments.Count > 1 && SynchronizeComposerAttachmentOrder()) RefreshAttachmentPills();
-        else commandStateChanged();
+        else
+        {
+            if (composerAttachments.Count > 1 && SynchronizeComposerAttachmentOrder()) RefreshAttachmentPills();
+            commandStateChanged();
+        }
     }
 
     private void ConfigureComposerFileDrop()
@@ -1382,6 +1411,7 @@ public partial class TerminalPane : UserControl
     public int QueuedCommandCountForTest => Profile.PendingCommands.Count;
     public string QueueCountTextForTest => QueueCountText.Text;
     public string CommandInputTextForTest => CommandInput.Text;
+    public int CommandInputCaretIndexForTest => CommandInput.CaretIndex;
     public bool CommandInputAutoGrowsForTest => CommandInput.MinLines == 1 && CommandInput.MaxLines == 8
         && CommandInput.VerticalContentAlignment == VerticalAlignment.Top
         && CommandInput.VerticalScrollBarVisibility == ScrollBarVisibility.Auto
@@ -1404,7 +1434,23 @@ public partial class TerminalPane : UserControl
         if (QuickAccessButton.ContextMenu is { } menu) menu.IsOpen = false;
         return string.Equals(CommandInput.Text, expected.Command, StringComparison.Ordinal);
     }
-    public void SetCommandInputForTest(string value) { queueSelectionIndex = null; queueNavigationDraft = string.Empty; CommandInput.Text = value; }
+    public void SetCommandInputForTest(string value)
+    {
+        queueSelectionIndex = null;
+        queueNavigationDraft = string.Empty;
+        CommandInput.Text = value;
+        FlushComposerState();
+    }
+    public void SetCommandInputDeferredForTest(string value)
+    {
+        queueSelectionIndex = null;
+        queueNavigationDraft = string.Empty;
+        CommandInput.Text = value;
+    }
+    public void SetCommandInputCaretForTest(int value) => CommandInput.CaretIndex = value;
+    public Task<bool> HandleCommandInputKeyForTestAsync(Key key, ModifierKeys modifiers) => HandleCommandInputKeyAsync(key, modifiers);
+    public int ComposerStateFlushCountForTest => composerStateFlushCount;
+    public void FlushComposerStateForTest() => FlushComposerState();
     public int CommandHistoryCountForTest => Profile.CommandHistory.Count;
     public int CommandHistoryVisibleItemCountForTest => CommandHistoryList.Items.Count;
     public bool CommandHistoryButtonIsFramelessForTest => CommandHistoryButton.Background == Brushes.Transparent && CommandHistoryButton.BorderThickness == new Thickness(0);
@@ -1420,6 +1466,14 @@ public partial class TerminalPane : UserControl
     }
     public void ShowCommandHistoryForTest() => SetCommandHistoryVisible(true);
     public void HideCommandHistoryForTest() => SetCommandHistoryVisible(false);
+    public bool ClearCommandHistoryForTest(bool confirmed)
+    {
+        if (!confirmed || Profile.CommandHistory.Count == 0) return false;
+        ClearCommandHistory();
+        return Profile.CommandHistory.Count == 0 && Profile.CommandHistoryTimestampsUtc.Count == 0;
+    }
+    public bool ClearCommandHistoryButtonReadyForTest => ClearCommandHistoryButton.Content?.ToString() == "Clear history"
+        && ClearCommandHistoryButton.Foreground is SolidColorBrush && ClearCommandHistoryButton.ToolTip is not null;
     public void RestoreLatestCommandHistoryForTest()
     {
         if (Profile.CommandHistory.Count > 0) RestoreCommandHistory(Profile.CommandHistory[^1]);
@@ -2264,6 +2318,7 @@ public partial class TerminalPane : UserControl
         var attachment = composerAttachments.FirstOrDefault();
         if (attachment is null) return false;
         CommandInput.Text = CommandInput.Text.Replace(attachment.LocalPath, string.Empty, StringComparison.OrdinalIgnoreCase);
+        FlushComposerState();
         return composerAttachments.Count == 0 && Profile.ComposerAttachments.Count == 0
             && AttachmentStrip.Visibility == Visibility.Collapsed && Profile.CommandDraft == CommandInput.Text;
     }
@@ -2282,6 +2337,7 @@ public partial class TerminalPane : UserControl
         var second = composerAttachments[1];
         var before = CommandInput.Text;
         CommandInput.Text = SwapAttachmentPaths(before, first.LocalPath, second.LocalPath);
+        FlushComposerState();
         return composerAttachments.Count >= 2 && composerAttachments[0].Id == second.Id
             && composerAttachments[0].DisplayName == "Image 1" && composerAttachments[1].DisplayName == "Image 2"
             && FirstAttachmentPathIndex(CommandInput.Text, second.LocalPath) < FirstAttachmentPathIndex(CommandInput.Text, first.LocalPath);
@@ -2495,6 +2551,18 @@ public partial class TerminalPane : UserControl
     }
     private void QuickAccessClick(object sender, RoutedEventArgs e) { ShowQuickAccessMenu(); e.Handled = true; }
     private void CommandHistoryClick(object sender, RoutedEventArgs e) { SetCommandHistoryVisible(CommandHistoryPanel.Visibility != Visibility.Visible); e.Handled = true; }
+    private void ClearCommandHistoryClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (Profile.CommandHistory.Count == 0) return;
+        var historyLabel = Profile.CommandHistory.Count == 1 ? "history entry" : "history entries";
+        if (!PowerShellPlusDialog.Confirm(Window.GetWindow(this),
+                $"Clear all {Profile.CommandHistory.Count} saved {historyLabel} for {Profile.Name}?\n\nThis cannot be undone.",
+                "Clear history?", PowerShellPlusDialogKind.Warning, "Clear history", "Cancel",
+                defaultToPrimary: false, primaryIsDangerous: true)) return;
+        ClearCommandHistory();
+        CommandInput.Focus();
+    }
     private void CommandHistoryEntryMouseDown(object sender, MouseButtonEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is HistoryDisplayEntry entry) RestoreCommandHistory(entry.Message);
@@ -2512,9 +2580,33 @@ public partial class TerminalPane : UserControl
         if (key == Key.V && (modifiers.HasFlag(ModifierKeys.Control) || modifiers.HasFlag(ModifierKeys.Alt))
             && TryPasteComposerAttachments()) return true;
         if (key == Key.Enter && modifiers.HasFlag(ModifierKeys.Control)) { QueueCurrentCommand(); return true; }
+        if ((key == Key.J && modifiers == ModifierKeys.Control)
+            || (key == Key.Enter && modifiers == ModifierKeys.Shift))
+        {
+            CommandInput.InsertLineBreakAtCaret();
+            return true;
+        }
+        if (key == Key.U && modifiers == ModifierKeys.Control)
+        {
+            CommandInput.DeleteToCurrentLineBoundary(true);
+            return true;
+        }
+        if (key == Key.K && modifiers == ModifierKeys.Control)
+        {
+            CommandInput.DeleteToCurrentLineBoundary(false);
+            return true;
+        }
         if (key == Key.Enter) { await RunCommandInputAsync(IsSendToAllActive(modifiers)); return true; }
-        if (key == Key.Up) { NavigateQueue(-1); return true; }
-        if (key == Key.Down) { NavigateQueue(1); return true; }
+        if (modifiers == ModifierKeys.None && key == Key.Up)
+        {
+            if (!CommandInput.TryMoveCaretByVisualLine(-1)) NavigateQueue(-1);
+            return true;
+        }
+        if (modifiers == ModifierKeys.None && key == Key.Down)
+        {
+            if (!CommandInput.TryMoveCaretByVisualLine(1)) NavigateQueue(1);
+            return true;
+        }
         return false;
     }
 

@@ -119,8 +119,12 @@
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
               <Grid Grid.Row="0" Margin="2,0,2,4">
+                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel Orientation="Horizontal"><Path Data="M3,8 A5,5 0 1 0 5,3 M5,3 H2 M5,3 V6 M8,5 V8 L10,9" Stroke="#89B4FA" StrokeThickness="1.2" Fill="Transparent" Width="13" Height="13" Stretch="Uniform"/><TextBlock Text="History" Foreground="#A6ADC8" FontSize="9" FontWeight="SemiBold" Margin="7,0,0,0" VerticalAlignment="Center"/></StackPanel>
-                <TextBlock x:Name="CommandHistoryEmptyText" Text="Nothing sent from this terminal yet" Foreground="#6C7086" FontSize="9" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <TextBlock x:Name="CommandHistoryEmptyText" Grid.Column="1" Text="Nothing sent from this terminal yet" Foreground="#6C7086" FontSize="9" Margin="8,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <Button x:Name="ClearCommandHistoryButton" Grid.Column="2" Content="Clear history" Padding="7,2" MinHeight="20" Margin="8,0,0,0"
+                        Background="#242438" BorderBrush="#45475A" Foreground="#F38BA8" FontSize="9" FontWeight="SemiBold"
+                        Click="ClearCommandHistoryClick" ToolTip="Clear this terminal's saved history"/>
               </Grid>
               <ScrollViewer Grid.Row="1" MaxHeight="184" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <ItemsControl x:Name="CommandHistoryList">

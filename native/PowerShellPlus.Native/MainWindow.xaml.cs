@@ -2754,6 +2754,42 @@ public partial class MainWindow : Window
             activationTarget.SetCommandBarExpandedForTest(true);
             var commandBarExpands = activationTarget.CommandBarExpandedForTest;
             var quickAccessPopulatesInput = activationTarget.SelectFirstQuickAccessCommandForTest();
+            activationTarget.SetCommandInputForTest("alpha\nbeta\ngamma");
+            activationTarget.SetCommandInputCaretForTest("alpha\nbeta".Length);
+            var ctrlUHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.U, ModifierKeys.Control);
+            var ctrlUDeletesToLineStart = ctrlUHandled && activationTarget.CommandInputTextForTest == "alpha\n\ngamma"
+                && activationTarget.CommandInputCaretIndexForTest == "alpha\n".Length;
+            activationTarget.SetCommandInputForTest("alpha\nbeta\ngamma");
+            activationTarget.SetCommandInputCaretForTest("alpha\nbe".Length);
+            var ctrlKHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.K, ModifierKeys.Control);
+            var ctrlKDeletesToLineEnd = ctrlKHandled && activationTarget.CommandInputTextForTest == "alpha\nbe\ngamma"
+                && activationTarget.CommandInputCaretIndexForTest == "alpha\nbe".Length;
+            activationTarget.SetCommandInputForTest("alpha\nbeta");
+            activationTarget.SetCommandInputCaretForTest("alpha".Length);
+            var ctrlJHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.J, ModifierKeys.Control);
+            var ctrlJAddsLine = ctrlJHandled && activationTarget.CommandInputTextForTest == "alpha\n\nbeta";
+            var shiftEnterHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.Enter, ModifierKeys.Shift);
+            var shiftEnterAddsLine = shiftEnterHandled && activationTarget.CommandInputTextForTest == "alpha\n\n\nbeta";
+            activationTarget.SetCommandInputForTest("first\nsecond\nthird");
+            activationTarget.SetCommandInputCaretForTest("first\nsecond".Length);
+            activationTarget.FocusCommandInputForTest();
+            activationTarget.UpdateLayout();
+            var verticalStart = activationTarget.CommandInputCaretIndexForTest;
+            var upLineHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.Up, ModifierKeys.None);
+            var verticalUp = activationTarget.CommandInputCaretIndexForTest;
+            var downLineHandled = await activationTarget.HandleCommandInputKeyForTestAsync(Key.Down, ModifierKeys.None);
+            var verticalDown = activationTarget.CommandInputCaretIndexForTest;
+            var arrowKeysNavigateComposerLines = upLineHandled && downLineHandled && verticalUp < verticalStart && verticalDown > verticalUp;
+            activationTarget.FlushComposerStateForTest();
+            var composerFlushBaseline = activationTarget.ComposerStateFlushCountForTest;
+            var composerBurstTimer = System.Diagnostics.Stopwatch.StartNew();
+            for (var characterCount = 1; characterCount <= 160; characterCount++)
+                activationTarget.SetCommandInputDeferredForTest(new string('x', characterCount));
+            composerBurstTimer.Stop();
+            var composerStateWorkDebounced = activationTarget.ComposerStateFlushCountForTest == composerFlushBaseline;
+            await Task.Delay(180);
+            composerStateWorkDebounced &= activationTarget.ComposerStateFlushCountForTest == composerFlushBaseline + 1;
+            var composerTypingLatencyBounded = composerBurstTimer.Elapsed < TimeSpan.FromSeconds(1);
             for (var queueIndex = 1; queueIndex <= 18; queueIndex++)
             {
                 activationTarget.SetCommandInputForTest($"Write-Output 'QUEUE_MENU_{queueIndex}'");
@@ -2810,6 +2846,15 @@ public partial class MainWindow : Window
             var commandHistoryPersists = persistedHistoryProfile.CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory)
                 && persistedHistoryProfile.CommandHistoryTimestampsUtc.SequenceEqual(activationTarget.Profile.CommandHistoryTimestampsUtc);
             var commandHistoryIsPerTerminal = panes[added[1].Id].Profile.CommandHistory.Count == 0;
+            var historyCountBeforeClear = activationTarget.CommandHistoryCountForTest;
+            var clearHistoryRequiresConfirmation = !activationTarget.ClearCommandHistoryForTest(false)
+                && activationTarget.CommandHistoryCountForTest == historyCountBeforeClear;
+            var clearHistoryButtonReady = activationTarget.ClearCommandHistoryButtonReadyForTest;
+            var clearHistoryWorks = activationTarget.ClearCommandHistoryForTest(true)
+                && activationTarget.CommandHistoryVisibleItemCountForTest == 0;
+            WorkspaceStore.Save(state);
+            var clearHistoryPersists = WorkspaceStore.Load(terminalProfile).Sessions
+                .First(value => value.Id == activationTarget.Profile.Id).CommandHistory.Count == 0;
             activationTarget.SetCommandInputForTest(string.Empty);
 
             state.Settings.SendToAllModifierEnabled = true;
@@ -2992,7 +3037,10 @@ public partial class MainWindow : Window
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
-                && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal;
+                && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal
+                && clearHistoryRequiresConfirmation && clearHistoryButtonReady && clearHistoryWorks && clearHistoryPersists
+                && ctrlUDeletesToLineStart && ctrlKDeletesToLineEnd && ctrlJAddsLine && shiftEnterAddsLine
+                && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerTypingLatencyBounded;
             var success = inputReady && outputReady && recoveryCapturesOutput && recoverySnapshotsAvoidUiThread
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
                 && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
@@ -3017,7 +3065,8 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowNamesOnly={terminalTabsShowNamesOnly}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
-            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
+            File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");

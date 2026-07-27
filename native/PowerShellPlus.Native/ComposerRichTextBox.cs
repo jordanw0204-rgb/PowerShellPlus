@@ -117,6 +117,33 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     public new void SelectAll() => Selection.Select(Document.ContentStart, Document.ContentEnd);
 
+    internal void InsertLineBreakAtCaret() => ReplaceCanonicalSelection("\n");
+
+    internal bool DeleteToCurrentLineBoundary(bool beforeCaret)
+    {
+        var caret = CaretIndex;
+        var boundary = beforeCaret
+            ? caret == 0 ? 0 : canonicalText.LastIndexOf('\n', caret - 1) + 1
+            : canonicalText.IndexOf('\n', caret);
+        if (!beforeCaret && boundary < 0) boundary = canonicalText.Length;
+        var start = beforeCaret ? boundary : caret;
+        var end = beforeCaret ? caret : boundary;
+        if (start >= end) return false;
+        canonicalText = canonicalText.Remove(start, end - start);
+        RenderCanonicalText(start);
+        return true;
+    }
+
+    internal bool TryMoveCaretByVisualLine(int direction)
+    {
+        if (direction == 0) return false;
+        var before = CaretIndex;
+        var command = direction < 0 ? EditingCommands.MoveUpByLine : EditingCommands.MoveDownByLine;
+        if (!command.CanExecute(null, this)) return false;
+        command.Execute(null, this);
+        return CaretIndex != before;
+    }
+
     protected override void OnTextChanged(TextChangedEventArgs e)
     {
         if (rebuilding) return;
