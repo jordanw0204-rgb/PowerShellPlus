@@ -119,6 +119,9 @@ public partial class TerminalPane : UserControl
     private static readonly Regex LocalFilePathRegex = new(
         """(?<![A-Za-z0-9_])(?<path>(?:[A-Za-z]:\\|\\\\)[^\r\n"'`<>|?*]+?\.[A-Za-z0-9]{1,32})(?=$|[\s,"'`;:!?)\]}])""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    private static readonly Regex WorkingDirectoryOscRegex = new(
+        "\u001b\\]9;9;(?<path>\"[^\"\a\u001b]*\"|[^\a\u001b]*)(?:\a|\u001b\\\\)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     public SessionProfile Profile { get; private set; }
     public event EventHandler? Activated;
     public event EventHandler? CloseRequested;
@@ -135,6 +138,8 @@ public partial class TerminalPane : UserControl
     private bool terminalThreadMessageHookInstalled;
     private TermPTY? outputCaptureTerminal;
     private readonly Func<IEnumerable<CommandSnippet>> quickAccessProvider;
+    private readonly Func<IEnumerable<AutomationRule>> automationProvider;
+    private readonly Action<AutomationRule> automationEditRequested;
     private readonly Action commandStateChanged;
     private readonly Func<string, Task<bool>> sendAllCommand;
     private readonly Func<bool> sendAllModifierEnabled;
@@ -157,6 +162,7 @@ public partial class TerminalPane : UserControl
     private readonly object agentOutputSync = new();
     private readonly StringBuilder recentAgentOutput = new();
     private readonly StringBuilder recoveryOutput = new();
+    private readonly StringBuilder workingDirectoryOscBuffer = new();
     private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
     private readonly TerminalOutputActivityTracker terminalActivity = new();
@@ -190,7 +196,8 @@ public partial class TerminalPane : UserControl
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
-        Func<string, Task<bool>>? sendAllCommand = null, Func<bool>? sendAllModifierEnabled = null, Func<ModifierKeys>? sendAllModifier = null)
+        Func<string, Task<bool>>? sendAllCommand = null, Func<bool>? sendAllModifierEnabled = null, Func<ModifierKeys>? sendAllModifier = null,
+        Func<IEnumerable<AutomationRule>>? automationProvider = null, Action<AutomationRule>? automationEditRequested = null)
     {
         Profile = profile;
         currentAppearance = appearance;
@@ -198,6 +205,8 @@ public partial class TerminalPane : UserControl
         startupRecovery = recovery;
         previousOutput = recoveredOutput ?? string.Empty;
         this.quickAccessProvider = quickAccessProvider ?? (() => []);
+        this.automationProvider = automationProvider ?? (() => []);
+        this.automationEditRequested = automationEditRequested ?? (_ => { });
         this.commandStateChanged = commandStateChanged ?? (() => { });
         this.sendAllCommand = sendAllCommand ?? SendCommandAsync;
         this.sendAllModifierEnabled = sendAllModifierEnabled ?? (() => true);
@@ -209,6 +218,12 @@ public partial class TerminalPane : UserControl
         Profile.CommandHistoryTimestampsUtc ??= [];
         Profile.CommandDraft ??= string.Empty;
         Profile.ComposerAttachments ??= [];
+        Profile.AutomationBindings ??= [];
+        if (recovery?.SshWasActive == true && !string.IsNullOrWhiteSpace(recovery.RemoteCodexWorkingDirectory))
+        {
+            Profile.LiveWorkingDirectory = recovery.RemoteCodexWorkingDirectory;
+            Profile.LiveWorkingDirectoryIsSsh = true;
+        }
         InitializeComponent();
         ApplyAccent();
         ConfigureComposerFileDrop();
@@ -231,6 +246,7 @@ public partial class TerminalPane : UserControl
         Terminal.Terminal.SizeChanged += (_, _) => ScheduleRemoteDimensionRefresh();
         SetCommandBarExpanded(Profile.CommandBarExpanded, false, false);
         UpdateQueueDisplay();
+        UpdateAutomationDisplay();
         RefreshCommandHistoryList();
         UpdateSendButtonVisual(false);
         AttachTerminalActivationHook();
@@ -367,6 +383,34 @@ public partial class TerminalPane : UserControl
         return false;
     }
 
+    public async Task<bool> RunAutomationAsync(AutomationRule automation)
+    {
+        if (string.IsNullOrWhiteSpace(automation.Command)) return false;
+        if (automation.ClearLine)
+        {
+            queueSelectionIndex = null;
+            queueNavigationDraft = string.Empty;
+            CommandInput.Clear();
+            FlushComposerState();
+        }
+        return await SendCommandAsync(BuildAutomationTerminalInput(automation));
+    }
+
+    private static string BuildAutomationTerminalInput(AutomationRule automation)
+        // Ctrl+A + Ctrl+K clears the active ReadLine/PSReadLine buffer in
+        // both common PowerShell and bash Emacs bindings before execution.
+        => (automation.ClearLine ? "\u0001\u000b" : string.Empty) + automation.Command;
+
+    private string AppendEnabledAutomationText(string command)
+    {
+        var additions = (from binding in Profile.AutomationBindings
+                         where binding.Enabled && binding.AutoInsertAtEnd
+                         join automation in automationProvider() on binding.AutomationId equals automation.Id
+                         where !string.IsNullOrWhiteSpace(automation.Command)
+                         select automation.Command.Trim()).ToArray();
+        return additions.Length == 0 ? command : command.TrimEnd() + "\n" + string.Join("\n", additions);
+    }
+
     private void QueueCurrentCommand()
     {
         var command = CommandInput.Text.Trim();
@@ -456,7 +500,8 @@ public partial class TerminalPane : UserControl
     private async Task<bool> RunCommandInputAsync(bool sendToAll = false)
     {
         if (commandExecutionPending) return false;
-        var command = CommandInput.Text.Trim();
+        var composerCommand = CommandInput.Text.Trim();
+        var command = AppendEnabledAutomationText(composerCommand);
         if (command.Length == 0 || command.Length > MaximumCommandLength) return false;
         var referencedAttachments = composerAttachments.Where(value => command.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase)).ToArray();
         if (sendToAll && referencedAttachments.Length > 0)
@@ -469,7 +514,7 @@ public partial class TerminalPane : UserControl
         try
         {
             var queuedIndex = queueSelectionIndex is int selected && selected >= 0 && selected < Profile.PendingCommands.Count
-                && string.Equals(Profile.PendingCommands[selected], command, StringComparison.Ordinal)
+                && string.Equals(Profile.PendingCommands[selected], composerCommand, StringComparison.Ordinal)
                     ? selected
                     : (int?)null;
             var preparedCommand = await PrepareComposerCommandAsync(command, referencedAttachments);
@@ -919,6 +964,122 @@ public partial class TerminalPane : UserControl
             }
         }
         QuickAccessButton.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private void UpdateAutomationDisplay()
+    {
+        var availableIds = automationProvider().Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
+        var count = Profile.AutomationBindings.Count(value => availableIds.Contains(value.AutomationId));
+        AutomationCountBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationCountText.Text = count > 99 ? "99+" : count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        AutomationButton.ToolTip = count == 0 ? "Terminal automations · none added" : $"Terminal automations · {count} added";
+    }
+
+    private MenuItem AutomationMenuItem(string header, string? gesture = null)
+        => new()
+        {
+            Header = header,
+            InputGestureText = gesture ?? string.Empty,
+            Style = TryFindResource("CardMenuItem") as Style
+        };
+
+    private void ShowAutomationMenu()
+    {
+        var menu = new ContextMenu
+        {
+            PlacementTarget = AutomationButton,
+            Placement = PlacementMode.Top,
+            HorizontalOffset = 0,
+            VerticalOffset = -4,
+            MinWidth = 290,
+            MaxHeight = 420,
+            Style = TryFindResource("CardContextMenu") as Style
+        };
+        var automations = automationProvider().Where(value => !string.IsNullOrWhiteSpace(value.Command)).ToList();
+        var automationById = automations.ToDictionary(value => value.Id, StringComparer.Ordinal);
+        var assigned = Profile.AutomationBindings
+            .Where(value => automationById.ContainsKey(value.AutomationId))
+            .ToList();
+        if (assigned.Count == 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = "No automations added to this terminal",
+                IsEnabled = false,
+                Style = TryFindResource("CardMenuItem") as Style
+            });
+        }
+        else
+        {
+            foreach (var binding in assigned)
+            {
+                var automation = automationById[binding.AutomationId];
+                var automationItem = AutomationMenuItem(automation.Name, binding.Enabled ? "Enabled" : "Disabled");
+                automationItem.ToolTip = automation.Command;
+
+                var runItem = AutomationMenuItem("Run now", automation.ClearLine ? "Clears line" : null);
+                runItem.Icon = new TextBlock { Text = "▶", Foreground = new SolidColorBrush(Color.FromRgb(166, 227, 161)), FontSize = 11 };
+                runItem.Click += async (_, _) => await RunAutomationAsync(automation);
+                automationItem.Items.Add(runItem);
+
+                var enabledItem = AutomationMenuItem("Enabled");
+                enabledItem.IsCheckable = true;
+                enabledItem.IsChecked = binding.Enabled;
+                enabledItem.Click += (_, _) =>
+                {
+                    binding.Enabled = enabledItem.IsChecked;
+                    commandStateChanged();
+                    UpdateAutomationDisplay();
+                };
+                automationItem.Items.Add(enabledItem);
+
+                var insertItem = AutomationMenuItem("Auto insert at end of input");
+                insertItem.IsCheckable = true;
+                insertItem.IsChecked = binding.AutoInsertAtEnd;
+                insertItem.ToolTip = "Append this automation's text on a new line whenever this terminal's composer sends";
+                insertItem.Click += (_, _) =>
+                {
+                    binding.AutoInsertAtEnd = insertItem.IsChecked;
+                    commandStateChanged();
+                };
+                automationItem.Items.Add(insertItem);
+                automationItem.Items.Add(new Separator());
+
+                var editItem = AutomationMenuItem("Edit automation");
+                editItem.Click += (_, _) => automationEditRequested(automation);
+                automationItem.Items.Add(editItem);
+                var removeItem = new MenuItem { Header = "Remove from terminal", Style = TryFindResource("CardDangerMenuItem") as Style };
+                removeItem.Click += (_, _) =>
+                {
+                    Profile.AutomationBindings.Remove(binding);
+                    commandStateChanged();
+                    UpdateAutomationDisplay();
+                };
+                automationItem.Items.Add(removeItem);
+                menu.Items.Add(automationItem);
+            }
+        }
+
+        menu.Items.Add(new Separator());
+        var addItem = AutomationMenuItem("Add automation");
+        var assignedIds = assigned.Select(value => value.AutomationId).ToHashSet(StringComparer.Ordinal);
+        foreach (var automation in automations.Where(value => !assignedIds.Contains(value.Id)))
+        {
+            var candidate = AutomationMenuItem(automation.Name, automation.Subtitle);
+            candidate.ToolTip = automation.Command;
+            candidate.Click += (_, _) =>
+            {
+                Profile.AutomationBindings.Add(new TerminalAutomationBinding { AutomationId = automation.Id });
+                commandStateChanged();
+                UpdateAutomationDisplay();
+            };
+            addItem.Items.Add(candidate);
+        }
+        if (addItem.Items.Count == 0)
+            addItem.Items.Add(new MenuItem { Header = automations.Count == 0 ? "Create an automation in Automate first" : "Every automation is already added", IsEnabled = false, Style = TryFindResource("CardMenuItem") as Style });
+        menu.Items.Add(addItem);
+        AutomationButton.ContextMenu = menu;
         menu.IsOpen = true;
     }
 
@@ -1412,6 +1573,14 @@ public partial class TerminalPane : UserControl
     public string QueueCountTextForTest => QueueCountText.Text;
     public string CommandInputTextForTest => CommandInput.Text;
     public int CommandInputCaretIndexForTest => CommandInput.CaretIndex;
+    public static bool WorkingDirectoryMarkerParsingWorksForTest()
+    {
+        var windows = WorkingDirectoryOscRegex.Match("before\u001b]9;9;\"D:\\Dev\\illest.lol\"\aafter");
+        var ssh = WorkingDirectoryOscRegex.Match("\u001b]9;9;/home/ubuntu/illest.bot\u001b\\");
+        return windows.Success && NormalizeWorkingDirectoryMarker(windows.Groups["path"].Value) == @"D:\Dev\illest.lol"
+            && ssh.Success && NormalizeWorkingDirectoryMarker(ssh.Groups["path"].Value) == "/home/ubuntu/illest.bot";
+    }
+    public void SetWorkingDirectoryForTest(string path, bool isSsh) => ApplyWorkingDirectory(path, isSsh);
     public bool CommandInputAutoGrowsForTest => CommandInput.MinLines == 1 && CommandInput.MaxLines == 8
         && CommandInput.VerticalContentAlignment == VerticalAlignment.Top
         && CommandInput.VerticalScrollBarVisibility == ScrollBarVisibility.Auto
@@ -1423,6 +1592,41 @@ public partial class TerminalPane : UserControl
     public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
     public string SendCommandToolTipForTest => RunCommandButton.ToolTip?.ToString() ?? string.Empty;
     public int QuickAccessCommandCountForTest => quickAccessProvider().Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
+    public bool AutomationButtonReadyForTest => AutomationButton.ToolTip is not null && AutomationCountText is not null;
+    public int AssignedAutomationCountForTest => Profile.AutomationBindings.Count;
+    public bool AddFirstAutomationForTest()
+    {
+        var automation = automationProvider().FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Command));
+        if (automation is null || Profile.AutomationBindings.Any(value => value.AutomationId == automation.Id)) return false;
+        Profile.AutomationBindings.Add(new TerminalAutomationBinding { AutomationId = automation.Id });
+        UpdateAutomationDisplay();
+        commandStateChanged();
+        return AutomationCountBadge.Visibility == Visibility.Visible;
+    }
+    public bool ConfigureFirstAutomationForTest(bool enabled, bool autoInsert)
+    {
+        var binding = Profile.AutomationBindings.FirstOrDefault();
+        if (binding is null) return false;
+        binding.Enabled = enabled;
+        binding.AutoInsertAtEnd = autoInsert;
+        commandStateChanged();
+        return true;
+    }
+    public string AppendAutomationTextForTest(string command) => AppendEnabledAutomationText(command);
+    public static bool AutomationClearLineInputWorksForTest()
+    {
+        var automation = new AutomationRule { Command = "Write-Output ready", ClearLine = true };
+        return BuildAutomationTerminalInput(automation) == "\u0001\u000bWrite-Output ready";
+    }
+    public bool AutomationMenuContractForTest()
+    {
+        ShowAutomationMenu();
+        var assigned = AutomationButton.ContextMenu?.Items.OfType<MenuItem>().FirstOrDefault(value => value.Items.Count > 0 && value.Header?.ToString() != "Add automation");
+        var headers = assigned?.Items.OfType<MenuItem>().Select(value => value.Header?.ToString()).ToHashSet(StringComparer.Ordinal) ?? [];
+        if (AutomationButton.ContextMenu is { } menu) menu.IsOpen = false;
+        return headers.Contains("Run now") && headers.Contains("Enabled") && headers.Contains("Auto insert at end of input")
+            && headers.Contains("Edit automation") && headers.Contains("Remove from terminal");
+    }
     public bool SelectFirstQuickAccessCommandForTest()
     {
         var expected = quickAccessProvider().FirstOrDefault(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
@@ -1798,6 +2002,7 @@ public partial class TerminalPane : UserControl
     {
         Interlocked.Increment(ref remoteOutputEventCount);
         terminalActivity.RecordOutput(args.Data, DateTime.UtcNow);
+        CaptureWorkingDirectory(args.Data);
         lock (agentOutputSync)
         {
             recentAgentOutput.Append(args.Data);
@@ -1806,6 +2011,47 @@ public partial class TerminalPane : UserControl
         }
         try { RawOutputReceived?.Invoke(this, args.Data); }
         catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
+    }
+
+    private void CaptureWorkingDirectory(string data)
+    {
+        string? path = null;
+        lock (agentOutputSync)
+        {
+            workingDirectoryOscBuffer.Append(data);
+            var matches = WorkingDirectoryOscRegex.Matches(workingDirectoryOscBuffer.ToString());
+            if (matches.Count > 0)
+            {
+                var match = matches[matches.Count - 1];
+                path = NormalizeWorkingDirectoryMarker(match.Groups["path"].Value);
+                workingDirectoryOscBuffer.Remove(0, match.Index + match.Length);
+            }
+            else if (workingDirectoryOscBuffer.Length > 4096)
+            {
+                workingDirectoryOscBuffer.Remove(0, workingDirectoryOscBuffer.Length - 4096);
+            }
+        }
+        if (path is null) return;
+        var isSsh = path.StartsWith("/", StringComparison.Ordinal) || path.StartsWith("~/", StringComparison.Ordinal);
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() => ApplyWorkingDirectory(path, isSsh)));
+    }
+
+    private static string? NormalizeWorkingDirectoryMarker(string value)
+    {
+        var path = value.Trim();
+        if (path.Length >= 2 && path[0] == '"' && path[^1] == '"') path = path[1..^1];
+        if (path.Length is 0 or > 2048 || path.Any(char.IsControl)) return null;
+        return path;
+    }
+
+    private void ApplyWorkingDirectory(string path, bool isSsh)
+    {
+        if (string.Equals(Profile.LiveWorkingDirectory, path, StringComparison.Ordinal)
+            && Profile.LiveWorkingDirectoryIsSsh == isSsh) return;
+        Profile.LiveWorkingDirectory = path;
+        Profile.LiveWorkingDirectoryIsSsh = isSsh;
+        Profile.NotifyDirectoryChanged();
+        commandStateChanged();
     }
 
     private static void AppendBoundedRecoveryOutput(StringBuilder buffer, string output)
@@ -2455,6 +2701,7 @@ public partial class TerminalPane : UserControl
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
             script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
+            script += "; " + BuildPowerShellDirectoryHook();
             if (resumeSsh) script += "; " + sshResumeCommand;
             else if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
             if (script.Length == 0) return command;
@@ -2465,6 +2712,13 @@ public partial class TerminalPane : UserControl
             return $"codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
         return command;
     }
+
+    internal static string BuildPowerShellDirectoryHook()
+        => "$global:__PowerShellPlusOriginalPrompt = $function:prompt; function global:prompt { "
+            + "$__pspLocation = $executionContext.SessionState.Path.CurrentLocation.ProviderPath; "
+            + "$__pspLocationMarker = \"`e]9;9;`\"$__pspLocation`\"`a\"; "
+            + "$__pspRenderedPrompt = & $global:__PowerShellPlusOriginalPrompt; "
+            + "return $__pspLocationMarker + ($__pspRenderedPrompt -join '') }";
 
     internal static bool ProfileStartupWatchdogWorksForTest()
     {
@@ -2550,6 +2804,7 @@ public partial class TerminalPane : UserControl
         return false;
     }
     private void QuickAccessClick(object sender, RoutedEventArgs e) { ShowQuickAccessMenu(); e.Handled = true; }
+    private void AutomationButtonClick(object sender, RoutedEventArgs e) { ShowAutomationMenu(); e.Handled = true; }
     private void CommandHistoryClick(object sender, RoutedEventArgs e) { SetCommandHistoryVisible(CommandHistoryPanel.Visibility != Visibility.Visible); e.Handled = true; }
     private void ClearCommandHistoryClick(object sender, RoutedEventArgs e)
     {

@@ -36,12 +36,13 @@ internal static class TerminalHoverDetailsBuilder
         {
             rows.Add(new("SSH destination", destination));
             if (FindIdentityFile(normalized) is { } identity) rows.Add(new("SSH key", identity));
-            var remoteDirectory = remoteCodex ? recovery?.RemoteCodexWorkingDirectory : null;
+            var remoteDirectory = profile.LiveWorkingDirectoryIsSsh ? profile.LiveWorkingDirectory
+                : remoteCodex ? recovery?.RemoteCodexWorkingDirectory : null;
             if (!string.IsNullOrWhiteSpace(remoteDirectory)) rows.Add(new("Remote folder", remoteDirectory!));
         }
 
         rows.Add(new("Shell", DescribeShell(profile.CommandLine)));
-        rows.Add(new("Working folder", profile.WorkingDirectory));
+        rows.Add(new(profile.LiveWorkingDirectoryIsSsh ? "SSH folder" : "Working folder", profile.Subtitle));
         rows.Add(new("Queue", $"{profile.PendingCommands?.Count ?? 0} command{(profile.PendingCommands?.Count == 1 ? string.Empty : "s")}"));
         if (!string.IsNullOrWhiteSpace(profile.CommandDraft)) rows.Add(new("Draft", "Saved"));
         return new TerminalHoverDetails(profile.Name, rows);

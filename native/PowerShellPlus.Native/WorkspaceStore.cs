@@ -16,13 +16,22 @@ public static class WorkspaceStore
             if (File.Exists(FilePath))
             {
                 var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(FilePath), JsonOptions);
-            if (loaded is not null && loaded.Version is >= 3 and <= 7)
+            if (loaded is not null && loaded.Version is >= 3 and <= 8)
             {
                 var upgradedFromLegacy = loaded.Version <= 6;
-                loaded.Version = 7;
+                loaded.Version = 8;
                 loaded.Settings ??= new WorkspaceSettings();
                     if (string.Equals(loaded.Settings.SendToAllModifier, "Ctrl", StringComparison.OrdinalIgnoreCase)) loaded.Settings.SendToAllModifier = "Shift";
                 loaded.LayoutSizes ??= [];
+                loaded.Automations ??= [];
+                foreach (var automation in loaded.Automations)
+                {
+                    if (string.IsNullOrWhiteSpace(automation.Id)) automation.Id = Guid.NewGuid().ToString("N");
+                    automation.Name = string.IsNullOrWhiteSpace(automation.Name) ? "Automation" : automation.Name;
+                    automation.Command ??= string.Empty;
+                    automation.TargetSessionId = string.IsNullOrWhiteSpace(automation.TargetSessionId) ? "*" : automation.TargetSessionId;
+                }
+                var automationIds = loaded.Automations.Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
                 foreach (var session in loaded.Sessions)
                 {
                     session.AccentColor = WorkspaceAccentPalette.Normalize(session.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
@@ -47,6 +56,13 @@ public static class WorkspaceStore
                         var legacyCount = session.CommandHistory.Count - session.CommandHistoryTimestampsUtc.Count;
                         session.CommandHistoryTimestampsUtc.InsertRange(0, Enumerable.Repeat(DateTime.MinValue, legacyCount));
                     }
+                    session.LiveWorkingDirectory ??= string.Empty;
+                    session.AutomationBindings ??= [];
+                    session.AutomationBindings = session.AutomationBindings
+                        .Where(value => value is not null && automationIds.Contains(value.AutomationId))
+                        .GroupBy(value => value.AutomationId, StringComparer.Ordinal)
+                        .Select(value => value.First())
+                        .ToList();
                 }
                 loaded.TerminalSessions ??= [];
                 if (loaded.TerminalSessions.Count == 0)
@@ -132,7 +148,7 @@ public static class WorkspaceStore
             };
             File.WriteAllText(FilePath, JsonSerializer.Serialize(legacy, JsonOptions));
             var migrated = Load(terminalProfile);
-            return migrated.Version == 7
+            return migrated.Version == 8
                 && migrated.TerminalSessions.Count == 1
                 && migrated.TerminalSessions[0].Name == "Session 1"
                 && migrated.TerminalSessions[0].Layout == "Rows"

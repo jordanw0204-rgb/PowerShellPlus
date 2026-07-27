@@ -68,10 +68,10 @@ public static class WorkspaceAccentPalette
 
 public sealed class WorkspaceState
 {
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
     public string Name { get; set; } = "Main workspace";
     // Layout and ActiveSessionId are retained as version-6 compatibility
-    // fields. Version 7 stores those values per workspace session instead.
+    // fields. Version 7+ stores those values per workspace session instead.
     public string Layout { get; set; } = "Grid";
     public bool WorkspaceSidebarExpanded { get; set; } = true;
     public string? ActiveSessionId { get; set; }
@@ -127,8 +127,9 @@ public sealed class WorkspaceSettings
     public string SendToAllModifier { get; set; } = "Shift";
 }
 
-public sealed class SessionProfile
+public sealed class SessionProfile : INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "PowerShell";
     public string AccentColor { get; set; } = WorkspaceAccentPalette.DefaultTerminal;
@@ -143,11 +144,28 @@ public sealed class SessionProfile
     public List<string> PendingCommands { get; set; } = [];
     public List<string> CommandHistory { get; set; } = [];
     public List<DateTime> CommandHistoryTimestampsUtc { get; set; } = [];
-    [JsonIgnore] public string Subtitle => WorkingDirectory;
+    public List<TerminalAutomationBinding> AutomationBindings { get; set; } = [];
+    public string LiveWorkingDirectory { get; set; } = string.Empty;
+    public bool LiveWorkingDirectoryIsSsh { get; set; }
+    [JsonIgnore] public string Subtitle => string.IsNullOrWhiteSpace(LiveWorkingDirectory) ? WorkingDirectory : LiveWorkingDirectory;
+    [JsonIgnore] public string DirectoryPrefix => LiveWorkingDirectoryIsSsh ? "SSH · " : string.Empty;
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentHoverBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal, 54);
     [JsonIgnore] public Brush AccentSelectedBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal, 78);
+
+    public void NotifyDirectoryChanged()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Subtitle)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DirectoryPrefix)));
+    }
+}
+
+public sealed class TerminalAutomationBinding
+{
+    public string AutomationId { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
+    public bool AutoInsertAtEnd { get; set; }
 }
 
 public sealed class ComposerAttachmentState
@@ -170,16 +188,18 @@ public sealed class CommandSnippet
 
 public sealed class AutomationRule : INotifyPropertyChanged
 {
+    public const string NoTarget = "none";
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Automation";
     public string Command { get; set; } = string.Empty;
-    public string TargetSessionId { get; set; } = "*";
+    public string TargetSessionId { get; set; } = NoTarget;
     public string ScheduleType { get; set; } = "Interval";
     public int IntervalMinutes { get; set; } = 60;
     public string DailyTime { get; set; } = "09:00";
     public string ScheduledDate { get; set; } = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     public bool Enabled { get; set; } = true;
+    public bool ClearLine { get; set; }
     public bool HasRun { get; set; }
     public DateTime LastRunUtc { get; set; } = DateTime.UtcNow;
     [JsonIgnore] public string Subtitle => ScheduleType switch
@@ -201,7 +221,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
 
     public bool IsDue(DateTime utcNow, DateTime localNow)
     {
-        if (!Enabled || string.IsNullOrWhiteSpace(Command)) return false;
+        if (!Enabled || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return false;
         if (ScheduleType == "Interval") return utcNow - LastRunUtc >= TimeSpan.FromMinutes(Math.Max(1, IntervalMinutes));
         if (!TimeSpan.TryParseExact(DailyTime, @"hh\:mm", CultureInfo.InvariantCulture, out var time)) return false;
         if (ScheduleType == "Daily") return localNow >= localNow.Date.Add(time) && LastRunUtc.ToLocalTime().Date < localNow.Date;
@@ -211,7 +231,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
 
     public DateTime? GetNextRunLocal(DateTime utcNow, DateTime localNow)
     {
-        if (!Enabled || string.IsNullOrWhiteSpace(Command)) return null;
+        if (!Enabled || TargetSessionId == NoTarget || string.IsNullOrWhiteSpace(Command)) return null;
         if (ScheduleType == "Interval") return LastRunUtc.AddMinutes(Math.Max(1, IntervalMinutes)).ToLocalTime();
         if (!TimeSpan.TryParseExact(DailyTime, @"hh\:mm", CultureInfo.InvariantCulture, out var time)) return null;
         if (ScheduleType == "Daily")
@@ -227,6 +247,7 @@ public sealed class AutomationRule : INotifyPropertyChanged
     {
         if (ScheduleType == "Once" && HasRun) return "Completed";
         if (!Enabled) return "Paused";
+        if (TargetSessionId == NoTarget) return "Manual only";
         var next = GetNextRunLocal(utcNow, localNow);
         if (next is null) return "No schedule";
         var remaining = next.Value - localNow;

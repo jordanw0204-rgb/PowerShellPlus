@@ -64,6 +64,7 @@ public static class SshLaunchStore
         var markerPath = MarkerPath(paneId, directory);
         var escapedPaneId = EscapePowerShell(paneId);
         var escapedMarkerPath = EscapePowerShell(markerPath);
+        var escapedRemoteShellCommand = EscapePowerShell(BuildRemoteInteractiveShellCommand(paneId));
         return $$"""
 $global:__PowerShellPlusSshCommand = (Get-Command ssh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source;
 if ($global:__PowerShellPlusSshCommand) {
@@ -186,7 +187,7 @@ if ($global:__PowerShellPlusSshCommand) {
             for ($__pspCopyIndex = 0; $__pspCopyIndex -lt $__pspDestinationIndex; $__pspCopyIndex++) { $__pspInstrumented.Add([string]$__pspArgs[$__pspCopyIndex]) }
             $__pspInstrumented.Add('-tt');
             $__pspInstrumented.Add([string]$__pspArgs[$__pspDestinationIndex]);
-            $__pspInstrumented.Add('export POWERSHELLPLUS_PANE_ID=''{{escapedPaneId}}''; exec "${SHELL:-/bin/sh}" -l');
+            $__pspInstrumented.Add('{{escapedRemoteShellCommand}}');
             $__pspInvokeArgs = @($__pspInstrumented.ToArray());
         }
         try { & $global:__PowerShellPlusSshCommand @__pspInvokeArgs; $__pspExitCode = $LASTEXITCODE }
@@ -198,14 +199,24 @@ if ($global:__PowerShellPlusSshCommand) {
             }
         }
     }
+
 }
 """;
     }
+
+    internal static string BuildRemoteInteractiveShellCommand(string paneId)
+        => $"export POWERSHELLPLUS_PANE_ID='{EscapePosixSingleQuoted(paneId)}'; "
+            + "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
+            + "__psp_previous_prompt_command=\"${PROMPT_COMMAND:-}\"; "
+            + "PROMPT_COMMAND='printf \"\\033]9;9;\\\"%s\\\"\\007\" \"$PWD\"'; "
+            + "if [ -n \"$__psp_previous_prompt_command\" ]; then PROMPT_COMMAND=\"$PROMPT_COMMAND;$__psp_previous_prompt_command\"; fi; "
+            + "export PROMPT_COMMAND; fi; exec \"${SHELL:-/bin/sh}\" -l";
 
     private static string MarkerPath(string paneId, string? directoryPath = null)
         => Path.Combine(directoryPath ?? DirectoryPath, SessionRecoveryStore.SafeSessionId(paneId) + ".json");
 
     private static string EscapePowerShell(string value) => value.Replace("'", "''");
+    private static string EscapePosixSingleQuoted(string value) => value.Replace("'", "'\"'\"'");
 }
 
 public readonly record struct HermesRecoveryState(bool WasActive, string? SessionId, string? Model, bool UseTui);
@@ -358,7 +369,9 @@ public static class SshRecovery
             var hermesCommand = "exec " + string.Join(" ", hermesArguments.Select(QuotePosix));
             remoteCommand = $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(hermesCommand)}";
         }
-        else remoteCommand = RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery);
+        else remoteCommand = recovery.RemoteCodexWasActive
+            ? RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery)
+            : SshLaunchStore.BuildRemoteInteractiveShellCommand(paneId);
         commandArguments.Add(remoteCommand);
         var description = recovery.HermesWasActive ? "SSH and Hermes session"
             : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";

@@ -157,7 +157,7 @@
                         ToolTipService.ShowDuration="60000" ToolTipService.Placement="Right">
                     <Grid.ToolTip><ToolTip><TextBlock Text="Loading live terminal details…"/></ToolTip></Grid.ToolTip>
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
-                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"><Run Text="{Binding DirectoryPrefix, Mode=OneWay}" Foreground="#89B4FA" FontWeight="SemiBold"/><Run Text="{Binding Subtitle, Mode=OneWay}"/></TextBlock></StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionSurface}" Click="OpenCardMenuClick"/>
                   </Grid>
                   </Border>
@@ -398,6 +398,7 @@
                   <ComboBox x:Name="AutomationAmPmEdit" Width="76" Margin="8,0,0,0"><ComboBoxItem Content="AM"/><ComboBoxItem Content="PM"/></ComboBox>
                 </StackPanel>
               </StackPanel>
+              <CheckBox x:Name="AutomationClearLineEdit" Content="Clear the active input line before sending" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0"/>
               <CheckBox x:Name="AutomationEnabledEdit" Content="Enabled" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0"/>
             </StackPanel>
           </Grid>

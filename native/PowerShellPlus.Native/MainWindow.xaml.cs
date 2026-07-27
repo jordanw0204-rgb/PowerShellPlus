@@ -721,7 +721,8 @@ public partial class MainWindow : Window
         var previousOutput = recoveredOutputOverride ?? (state.Settings.SaveTerminalTranscripts ? SessionRecoveryStore.ReadTranscript(recovery) : string.Empty);
         var pane = new TerminalPane(profile, EffectiveAppearance(), recovery, previousOutput,
             () => state.Snippets, ScheduleSave, SendCommandToAllAsync,
-            () => state.Settings.SendToAllModifierEnabled, () => SendToAllModifier);
+            () => state.Settings.SendToAllModifierEnabled, () => SendToAllModifier,
+            () => state.Automations, OpenAutomationEditor);
         // A native terminal click already gives its HWND keyboard focus. Only
         // update application selection here so WPF does not steal that focus.
         pane.Activated += (_, _) => SelectPane(profile.Id, false);
@@ -1313,8 +1314,10 @@ public partial class MainWindow : Window
     {
         editorMode = EditorMode.Automation; editingValue = rule; EditorTitle.Text = rule is null ? "New automation" : "Edit automation";
         AutomationNameEdit.Text = rule?.Name ?? string.Empty; AutomationCommandEdit.Text = rule?.Command ?? string.Empty;
-        var targets = new ObservableCollection<SessionProfile>(state.Sessions); targets.Insert(0, new SessionProfile { Id = "*", Name = "All terminals", CommandLine = string.Empty });
-        AutomationTargetEdit.ItemsSource = targets; AutomationTargetEdit.SelectedValue = rule?.TargetSessionId ?? "*";
+        var targets = new ObservableCollection<SessionProfile>(state.Sessions);
+        targets.Insert(0, new SessionProfile { Id = "*", Name = "All terminals", CommandLine = string.Empty });
+        targets.Insert(0, new SessionProfile { Id = AutomationRule.NoTarget, Name = "None · manual only", CommandLine = string.Empty });
+        AutomationTargetEdit.ItemsSource = targets; AutomationTargetEdit.SelectedValue = rule?.TargetSessionId ?? AutomationRule.NoTarget;
         AutomationTypeEdit.SelectedIndex = rule?.ScheduleType switch { "Daily" => 1, "Once" => 2, _ => 0 };
         AutomationValueEdit.Text = (rule?.IntervalMinutes ?? 60).ToString(CultureInfo.InvariantCulture);
         var exactTime = TimeSpan.TryParseExact(rule?.DailyTime ?? "09:00", @"hh\:mm", CultureInfo.InvariantCulture, out var parsedTime) ? parsedTime : TimeSpan.FromHours(9);
@@ -1323,6 +1326,7 @@ public partial class MainWindow : Window
         AutomationMinuteEdit.SelectedItem = exactTime.Minutes.ToString("00", CultureInfo.InvariantCulture);
         AutomationAmPmEdit.SelectedIndex = exactTime.Hours >= 12 ? 1 : 0;
         AutomationDateEdit.SelectedDate = DateTime.TryParseExact(rule?.ScheduledDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date : DateTime.Today;
+        AutomationClearLineEdit.IsChecked = rule?.ClearLine ?? false;
         AutomationEnabledEdit.IsChecked = rule?.Enabled ?? true;
         ShowEditor(AutomationEditor); UpdateAutomationScheduleEditor();
     }
@@ -1418,7 +1422,7 @@ public partial class MainWindow : Window
             if (string.IsNullOrWhiteSpace(AutomationNameEdit.Text) || string.IsNullOrWhiteSpace(AutomationCommandEdit.Text)) return;
             var value = editingValue as AutomationRule ?? new AutomationRule();
             var previousScheduleType = value.ScheduleType; var previousTime = value.DailyTime;
-            value.Name = AutomationNameEdit.Text.Trim(); value.Command = AutomationCommandEdit.Text.Trim(); value.TargetSessionId = AutomationTargetEdit.SelectedValue?.ToString() ?? "*"; value.ScheduleType = AutomationTypeEdit.SelectedIndex switch { 1 => "Daily", 2 => "Once", _ => "Interval" }; value.Enabled = AutomationEnabledEdit.IsChecked == true;
+            value.Name = AutomationNameEdit.Text.Trim(); value.Command = AutomationCommandEdit.Text.Trim(); value.TargetSessionId = AutomationTargetEdit.SelectedValue?.ToString() ?? AutomationRule.NoTarget; value.ScheduleType = AutomationTypeEdit.SelectedIndex switch { 1 => "Daily", 2 => "Once", _ => "Interval" }; value.Enabled = AutomationEnabledEdit.IsChecked == true; value.ClearLine = AutomationClearLineEdit.IsChecked == true;
             if (value.ScheduleType == "Interval")
             {
                 if (!int.TryParse(AutomationValueEdit.Text, out var minutes)) { UpdateStatus("Enter a valid interval in minutes"); return; }
@@ -1496,6 +1500,7 @@ public partial class MainWindow : Window
     private void RunSnippet(bool all) { if (SnippetList.SelectedItem is CommandSnippet value) { if (all) foreach (var pane in panes.Values) pane.SendCommand(value.Command); else activePane?.SendCommand(value.Command); UpdateStatus($"Ran {value.Name}"); } }
     private List<TerminalPane> AutomationTargets(AutomationRule rule)
     {
+        if (rule.TargetSessionId == AutomationRule.NoTarget) return [];
         if (rule.TargetSessionId == "*") return panes.Values.ToList();
         return panes.TryGetValue(rule.TargetSessionId, out var pane) ? [pane] : [];
     }
@@ -1503,7 +1508,7 @@ public partial class MainWindow : Window
     private async Task<int> RunAutomationAsync(AutomationRule rule, bool recordRun)
     {
         var targets = AutomationTargets(rule);
-        var results = await Task.WhenAll(targets.Select(target => target.SendCommandAsync(rule.Command)));
+        var results = await Task.WhenAll(targets.Select(target => target.RunAutomationAsync(rule)));
         var accepted = results.Count(value => value);
         if (recordRun)
         {
@@ -2266,7 +2271,7 @@ public partial class MainWindow : Window
         catch { sshWrapperExecutesSafely = false; }
         finally { try { Directory.Delete(sshWrapperRuntimeRoot, true); } catch { } }
         var sshBannerTimeoutFallsBackInteractive = false;
-        const string sshBannerDiagnostic = "bounded fallback validated";
+        var sshBannerDiagnostic = "not run";
         var previousSshLaunchOverride = SshLaunchStore.DirectoryOverride;
         var timeoutFixtureRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "ssh-timeout-fixture");
         System.Net.Sockets.TcpListener? stalledSshServer = null;
@@ -2287,16 +2292,21 @@ public partial class MainWindow : Window
             };
             var timeoutScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, timeoutRecovery))
                 + "; Write-Output 'PSPLUS_SSH_RECOVERY_FALLBACK_OK'";
-            var encodedTimeoutScript = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(timeoutScript));
-            using var timeoutProcess = Process.Start(new ProcessStartInfo
+            var timeoutScriptPath = Path.Combine(timeoutFixtureRoot, "timeout-recovery.ps1");
+            File.WriteAllText(timeoutScriptPath, timeoutScript, new System.Text.UTF8Encoding(false));
+            var timeoutStartInfo = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = $"-NoLogo -NoProfile -EncodedCommand {encodedTimeoutScript}",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
-            });
+            };
+            timeoutStartInfo.ArgumentList.Add("-NoLogo");
+            timeoutStartInfo.ArgumentList.Add("-NoProfile");
+            timeoutStartInfo.ArgumentList.Add("-File");
+            timeoutStartInfo.ArgumentList.Add(timeoutScriptPath);
+            using var timeoutProcess = Process.Start(timeoutStartInfo);
             if (timeoutProcess is not null)
             {
                 var outputTask = timeoutProcess.StandardOutput.ReadToEndAsync();
@@ -2305,14 +2315,20 @@ public partial class MainWindow : Window
                 await timeoutProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
                 var timeoutOutput = await outputTask + await errorTask;
                 var timeoutMarker = SshLaunchStore.Load(profile.Id, timeoutFixtureRoot);
+                var restoreNotice = timeoutOutput.Contains("[PowerShellPlus] Restoring SSH session", StringComparison.Ordinal);
+                var fallbackWarning = timeoutOutput.Contains("Automatic recovery could not connect", StringComparison.Ordinal);
+                var interactiveFallback = timeoutOutput.Contains("PSPLUS_SSH_RECOVERY_FALLBACK_OK", StringComparison.Ordinal);
+                var failedMarker = timeoutMarker?.IsFailedRecovery == true;
                 sshBannerTimeoutFallsBackInteractive = timeoutProcess.ExitCode == 0
-                    && timeoutOutput.Contains("[PowerShellPlus] Restoring SSH session", StringComparison.Ordinal)
-                    && timeoutOutput.Contains("Automatic recovery could not connect", StringComparison.Ordinal)
-                    && timeoutOutput.Contains("PSPLUS_SSH_RECOVERY_FALLBACK_OK", StringComparison.Ordinal)
-                    && timeoutMarker?.IsFailedRecovery == true;
+                    && restoreNotice && fallbackWarning && interactiveFallback && failedMarker;
+                sshBannerDiagnostic = $"exit={timeoutProcess.ExitCode}; restore={restoreNotice}; warning={fallbackWarning}; interactive={interactiveFallback}; marker={failedMarker}";
             }
         }
-        catch { sshBannerTimeoutFallsBackInteractive = false; }
+        catch (Exception exception)
+        {
+            sshBannerTimeoutFallsBackInteractive = false;
+            sshBannerDiagnostic = exception.GetType().Name + ": " + exception.Message;
+        }
         finally
         {
             stalledSshClient?.Dispose();
@@ -2489,6 +2505,7 @@ public partial class MainWindow : Window
         var originalWorkspaceSidebarExpanded = state.WorkspaceSidebarExpanded;
         var added = new List<SessionProfile>();
         AutomationRule? countdownRefreshFixture = null;
+        AutomationRule? terminalAutomationFixture = null;
         CommandSnippet? quickAccessFixture = null;
         // The gate must pass regardless of how many sessions the user's saved
         // workspace already contains.
@@ -2969,7 +2986,7 @@ public partial class MainWindow : Window
                 && !string.Equals(RowsLayoutButton.Tag as string, "Active", StringComparison.Ordinal);
             WorkspaceStore.Save(state);
             var persistedWorkspace = WorkspaceStore.Load(terminalProfile);
-            var sessionContainersPersist = persistedWorkspace.Version == 7
+            var sessionContainersPersist = persistedWorkspace.Version == 8
                 && persistedWorkspace.TerminalSessions.Any(value => value.Id == alternateWorkspaceSession.Id
                     && value.TerminalIds.SequenceEqual([movedTerminal.Id]) && value.Layout == "Columns");
             var legacySessionsMigrateWithoutLosingTerminals = WorkspaceStore.VerifyLegacySessionMigrationForTest(
@@ -2981,11 +2998,15 @@ public partial class MainWindow : Window
             SetLayout("Grid");
 
             var scheduleNow = new DateTime(2026, 7, 12, 20, 36, 30, DateTimeKind.Local);
-            var dailyRule = new AutomationRule { Command = "Write-Output daily", ScheduleType = "Daily", DailyTime = "20:36", LastRunUtc = scheduleNow.AddDays(-1).ToUniversalTime() };
-            var repeatedDailyRule = new AutomationRule { Command = "Write-Output daily", ScheduleType = "Daily", DailyTime = "20:36", LastRunUtc = scheduleNow.ToUniversalTime() };
-            var onceRule = new AutomationRule { Command = "Write-Output once", ScheduleType = "Once", ScheduledDate = "2026-07-12", DailyTime = "20:36", LastRunUtc = scheduleNow.ToUniversalTime() };
-            var futureOnceRule = new AutomationRule { Command = "Write-Output once", ScheduleType = "Once", ScheduledDate = "2026-07-12", DailyTime = "20:37", LastRunUtc = scheduleNow.ToUniversalTime() };
+            var dailyRule = new AutomationRule { Command = "Write-Output daily", TargetSessionId = "*", ScheduleType = "Daily", DailyTime = "20:36", LastRunUtc = scheduleNow.AddDays(-1).ToUniversalTime() };
+            var repeatedDailyRule = new AutomationRule { Command = "Write-Output daily", TargetSessionId = "*", ScheduleType = "Daily", DailyTime = "20:36", LastRunUtc = scheduleNow.ToUniversalTime() };
+            var onceRule = new AutomationRule { Command = "Write-Output once", TargetSessionId = "*", ScheduleType = "Once", ScheduledDate = "2026-07-12", DailyTime = "20:36", LastRunUtc = scheduleNow.ToUniversalTime() };
+            var futureOnceRule = new AutomationRule { Command = "Write-Output once", TargetSessionId = "*", ScheduleType = "Once", ScheduledDate = "2026-07-12", DailyTime = "20:37", LastRunUtc = scheduleNow.ToUniversalTime() };
             var scheduleLogic = dailyRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow) && !repeatedDailyRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow) && onceRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow) && !futureOnceRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow);
+            var manualOnlyRule = new AutomationRule { Command = "Write-Output manual", TargetSessionId = AutomationRule.NoTarget, Enabled = true };
+            var manualOnlyScheduleStaysDormant = !manualOnlyRule.IsDue(scheduleNow.ToUniversalTime(), scheduleNow)
+                && manualOnlyRule.GetCountdownText(scheduleNow.ToUniversalTime(), scheduleNow) == "Manual only"
+                && AutomationTargets(manualOnlyRule).Count == 0;
             var countdownLogic = AutomationRule.FormatCountdown(TimeSpan.FromSeconds(61)) == "1m 1s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromHours(23) + TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(10)) == "23h 1m 10s"
                 && AutomationRule.FormatCountdown(TimeSpan.FromDays(1) + TimeSpan.FromHours(2) + TimeSpan.FromMinutes(30)) == "1d 2h";
@@ -3001,6 +3022,71 @@ public partial class MainWindow : Window
             AutomationList.UpdateLayout();
             var automationContainerAfter = AutomationList.ItemContainerGenerator.ContainerFromItem(countdownRefreshFixture);
             var automationHoverContainerStable = countdownNotified && automationContainerBefore is not null && ReferenceEquals(automationContainerBefore, automationContainerAfter);
+
+            terminalAutomationFixture = new AutomationRule
+            {
+                Name = "Terminal footer fixture",
+                Command = "Write-Output 'AUTOMATION_FOOTER'",
+                TargetSessionId = AutomationRule.NoTarget,
+                ClearLine = true,
+                Enabled = true
+            };
+            state.Automations.Add(terminalAutomationFixture);
+            var terminalStartsWithoutAutomations = activationTarget.AssignedAutomationCountForTest == 0;
+            var automationButtonReady = activationTarget.AutomationButtonReadyForTest;
+            var automationCanBeAddedPerTerminal = activationTarget.AddFirstAutomationForTest()
+                && activationTarget.AssignedAutomationCountForTest == 1;
+            var automationCanAutoInsert = activationTarget.ConfigureFirstAutomationForTest(true, true)
+                && activationTarget.AppendAutomationTextForTest("hello") == "hello\nWrite-Output 'AUTOMATION_FOOTER'";
+            var automationCanBeDisabled = activationTarget.ConfigureFirstAutomationForTest(false, true)
+                && activationTarget.AppendAutomationTextForTest("hello") == "hello";
+            activationTarget.ConfigureFirstAutomationForTest(true, true);
+            var automationMenuContractReady = activationTarget.AutomationMenuContractForTest();
+            var automationClearLineWorks = TerminalPane.AutomationClearLineInputWorksForTest();
+            OpenAutomationEditor(terminalAutomationFixture);
+            var automationEditorSupportsManualTargetAndClearLine = Equals(AutomationTargetEdit.SelectedValue, AutomationRule.NoTarget)
+                && AutomationClearLineEdit.IsChecked == true;
+            HideEditor();
+
+            var originalLiveDirectory = activationTarget.Profile.LiveWorkingDirectory;
+            var originalLiveDirectoryIsSsh = activationTarget.Profile.LiveWorkingDirectoryIsSsh;
+            activationTarget.SetWorkingDirectoryForTest(@"D:\Dev\live-folder", false);
+            var localDirectoryUpdates = activationTarget.Profile.Subtitle == @"D:\Dev\live-folder"
+                && activationTarget.Profile.DirectoryPrefix.Length == 0;
+            activationTarget.SetWorkingDirectoryForTest("/home/ubuntu/illest.bot", true);
+            var sshDirectoryUpdates = activationTarget.Profile.Subtitle == "/home/ubuntu/illest.bot"
+                && activationTarget.Profile.DirectoryPrefix == "SSH · ";
+            var workingDirectoryMarkersParse = TerminalPane.WorkingDirectoryMarkerParsingWorksForTest();
+            var localDirectoryHookReady = TerminalPane.BuildPowerShellDirectoryHook().Contains("]9;9;", StringComparison.Ordinal)
+                && TerminalPane.BuildPowerShellDirectoryHook().Contains("__PowerShellPlusOriginalPrompt", StringComparison.Ordinal);
+            var sshDirectoryHook = SshLaunchStore.BuildRemoteInteractiveShellCommand("fixture-pane");
+            var sshDirectoryHookReady = sshDirectoryHook.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
+                && sshDirectoryHook.Contains("$PWD", StringComparison.Ordinal)
+                && sshDirectoryHook.Contains("]9;9;", StringComparison.Ordinal);
+            var bareSshResumePlan = SshRecovery.BuildResumePlan(new SessionRecoveryEntry
+            {
+                SessionId = "directory-hook-fixture",
+                SshWasActive = true,
+                SshConnectionArguments = ["ubuntu@example.test"]
+            });
+            var bareSshRecoveryKeepsDirectoryHook = bareSshResumePlan?.Arguments.LastOrDefault() is { } bareSshRemoteCommand
+                && bareSshRemoteCommand.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
+                && bareSshRemoteCommand.Contains("]9;9;", StringComparison.Ordinal);
+            WorkspaceStore.Save(state);
+            var automationPersistenceWorkspace = WorkspaceStore.Load(terminalProfile);
+            var automationPersistenceProfile = automationPersistenceWorkspace.Sessions.First(value => value.Id == activationTarget.Profile.Id);
+            var automationPersistenceRule = automationPersistenceWorkspace.Automations.First(value => value.Id == terminalAutomationFixture.Id);
+            var terminalAutomationStatePersists = automationPersistenceProfile.AutomationBindings.Count == 1
+                && automationPersistenceProfile.AutomationBindings[0].AutomationId == terminalAutomationFixture.Id
+                && automationPersistenceProfile.AutomationBindings[0].Enabled
+                && automationPersistenceProfile.AutomationBindings[0].AutoInsertAtEnd
+                && automationPersistenceRule.TargetSessionId == AutomationRule.NoTarget
+                && automationPersistenceRule.ClearLine
+                && automationPersistenceProfile.LiveWorkingDirectory == "/home/ubuntu/illest.bot"
+                && automationPersistenceProfile.LiveWorkingDirectoryIsSsh;
+            activationTarget.Profile.LiveWorkingDirectory = originalLiveDirectory;
+            activationTarget.Profile.LiveWorkingDirectoryIsSsh = originalLiveDirectoryIsSsh;
+            activationTarget.Profile.NotifyDirectoryChanged();
 
             ShowSection(SessionsPanel);
             SelectPane(activationTarget.Profile.Id, false);
@@ -3058,7 +3144,13 @@ public partial class MainWindow : Window
                 && rows && columns && focus && grid && tabs && terminalTabsShowNamesOnly && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
-                && scheduleLogic && countdownLogic && automationHoverContainerStable && terminalRenamePreservesLiveState
+                && scheduleLogic && countdownLogic && automationHoverContainerStable && manualOnlyScheduleStaysDormant
+                && terminalStartsWithoutAutomations && automationButtonReady && automationCanBeAddedPerTerminal
+                && automationCanAutoInsert && automationCanBeDisabled && automationMenuContractReady && automationClearLineWorks
+                && automationEditorSupportsManualTargetAndClearLine && terminalAutomationStatePersists
+                && localDirectoryUpdates && sshDirectoryUpdates && workingDirectoryMarkersParse && localDirectoryHookReady && sshDirectoryHookReady
+                && bareSshRecoveryKeepsDirectoryHook
+                && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
@@ -3067,6 +3159,8 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
+            File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
+            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
@@ -3090,6 +3184,11 @@ public partial class MainWindow : Window
         }
         finally
         {
+            if (terminalAutomationFixture is not null)
+            {
+                foreach (var profile in state.Sessions) profile.AutomationBindings.RemoveAll(value => value.AutomationId == terminalAutomationFixture.Id);
+                state.Automations.Remove(terminalAutomationFixture);
+            }
             if (countdownRefreshFixture is not null) state.Automations.Remove(countdownRefreshFixture);
             if (quickAccessFixture is not null) state.Snippets.Remove(quickAccessFixture);
             state.Settings.SendToAllModifierEnabled = originalSendAllEnabled;

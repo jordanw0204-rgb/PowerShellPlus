@@ -16,7 +16,7 @@ public partial class MainWindow
 
     private IReadOnlyList<LanRemoteSession> GetLanRemoteSessions() => state.Sessions
         .Where(profile => panes.TryGetValue(profile.Id, out _))
-        .Select(profile => new LanRemoteSession(profile.Id, profile.Name, profile.WorkingDirectory, panes[profile.Id]))
+        .Select(profile => new LanRemoteSession(profile.Id, profile.Name, profile.Subtitle, panes[profile.Id]))
         .ToArray();
 
     private async void OpenLanRemoteClick(object sender, RoutedEventArgs e)
