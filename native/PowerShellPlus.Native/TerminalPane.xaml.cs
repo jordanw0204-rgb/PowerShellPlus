@@ -492,6 +492,10 @@ public partial class TerminalPane : UserControl
         queueSelectionIndex = null;
         queueNavigationDraft = string.Empty;
         CommandInput.Text = command;
+        // History is another composer input source. Re-run the canonical
+        // attachment discovery so saved paths regain tokens, pills, previews,
+        // and SSH-transfer behavior just like pasted or dropped paths.
+        PromotePastedLocalFiles(command);
         CommandInput.CaretIndex = CommandInput.Text.Length;
         SetCommandHistoryVisible(false);
         CommandInput.Focus();
@@ -1682,6 +1686,7 @@ public partial class TerminalPane : UserControl
     {
         if (Profile.CommandHistory.Count > 0) RestoreCommandHistory(Profile.CommandHistory[^1]);
     }
+    public void RestoreCommandHistoryForTest(string command) => RestoreCommandHistory(command);
     public void QueueCommandForTest() => QueueCurrentCommand();
     public void ClearQueuedCommandsForTest()
     {
@@ -2181,6 +2186,15 @@ public partial class TerminalPane : UserControl
             _ => "idle"
         };
         var accessibleStatus = $"{agentName} is {stateLabel}";
+        Profile.UpdateAgentStatus(state switch
+        {
+            AgentActivityState.Working => "working",
+            AgentActivityState.Waiting => "waiting",
+            AgentActivityState.Stopped => "stopped",
+            AgentActivityState.Error => "error",
+            AgentActivityState.Starting => "starting",
+            _ => "idle"
+        }, accessibleStatus);
         AgentStatusIcon.ToolTip = accessibleStatus;
         AutomationProperties.SetName(AgentStatusIcon, accessibleStatus);
         StateText.Text = $"  {agentName} · {stateLabel}";

@@ -149,6 +149,16 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public bool LiveWorkingDirectoryIsSsh { get; set; }
     [JsonIgnore] public string Subtitle => string.IsNullOrWhiteSpace(LiveWorkingDirectory) ? WorkingDirectory : LiveWorkingDirectory;
     [JsonIgnore] public string DirectoryPrefix => LiveWorkingDirectoryIsSsh ? "SSH · " : string.Empty;
+    [JsonIgnore] public string AgentStatusState { get; private set; } = "starting";
+    [JsonIgnore] public string AgentStatusText { get; private set; } = "Terminal is starting";
+    [JsonIgnore] public Brush AgentStatusBrush => AgentStatusState switch
+    {
+        "working" => new SolidColorBrush(Color.FromRgb(137, 180, 250)),
+        "waiting" => new SolidColorBrush(Color.FromRgb(249, 226, 175)),
+        "error" => new SolidColorBrush(Color.FromRgb(243, 139, 168)),
+        "stopped" => new SolidColorBrush(Color.FromRgb(108, 112, 134)),
+        _ => new SolidColorBrush(Color.FromRgb(166, 227, 161))
+    };
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentTintBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);
     [JsonIgnore] public Brush AccentHoverBrush => WorkspaceAccentPalette.TintFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal, 54);
@@ -158,6 +168,16 @@ public sealed class SessionProfile : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Subtitle)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DirectoryPrefix)));
+    }
+
+    public void UpdateAgentStatus(string state, string accessibleText)
+    {
+        if (AgentStatusState == state && AgentStatusText == accessibleText) return;
+        AgentStatusState = state;
+        AgentStatusText = accessibleText;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusState)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusBrush)));
     }
 }
 

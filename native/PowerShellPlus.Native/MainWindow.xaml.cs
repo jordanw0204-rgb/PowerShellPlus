@@ -2664,14 +2664,21 @@ public partial class MainWindow : Window
             var composerChromeStaysCompact = activationTarget.ComposerChromeStaysCompactForTest;
             activationTarget.SetCommandInputForTest(string.Empty);
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Working);
+            var terminalTabShowsWorkingAgent = activationTarget.Profile.AgentStatusState == "working"
+                && activationTarget.Profile.AgentStatusText == "Codex is working";
             var agentWorkingStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Working
                 && activationTarget.AgentStatusTextForTest.Contains("Codex · working", StringComparison.Ordinal);
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Waiting);
+            var terminalTabShowsWaitingAgent = activationTarget.Profile.AgentStatusState == "waiting"
+                && activationTarget.Profile.AgentStatusText == "Codex is waiting for you";
             var agentWaitingStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Waiting
                 && activationTarget.AgentStatusTextForTest.Contains("Codex · waiting for you", StringComparison.Ordinal);
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Idle);
+            var terminalTabShowsIdleAgent = activationTarget.Profile.AgentStatusState == "idle"
+                && activationTarget.Profile.AgentStatusText == "Codex is idle";
             var agentIdleStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Idle
                 && activationTarget.AgentStatusTextForTest.Contains("Codex · idle", StringComparison.Ordinal);
+            var terminalTabAgentStateMirrorsPane = terminalTabShowsWorkingAgent && terminalTabShowsWaitingAgent && terminalTabShowsIdleAgent;
             var inputEchoDoesNotActivateAgent = TerminalPane.ActivityTrackerRejectsInputEchoForTest();
             var codexTurnEventsDriveAgent = CodexSessionLocator.ActivityRecordsClassifyForTest();
             var agentActivityClassificationExact = TerminalPane.AgentActivityClassificationForTest();
@@ -2858,6 +2865,20 @@ public partial class MainWindow : Window
             activationTarget.RestoreLatestCommandHistoryForTest();
             var commandHistoryRestoresInput = activationTarget.CommandInputTextForTest == "Write-Output 'QUEUE_SECOND'"
                 && !activationTarget.CommandHistoryPanelVisibleForTest;
+            var historyAttachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "history-attachment-fixture.png");
+            File.WriteAllBytes(historyAttachmentFixture, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+            var historyAttachmentCommand = $"inspect {historyAttachmentFixture}";
+            activationTarget.ClearComposerAttachmentsForTest();
+            activationTarget.AddCommandHistoryForTest(historyAttachmentCommand);
+            activationTarget.ShowCommandHistoryForTest();
+            activationTarget.RestoreLatestCommandHistoryForTest();
+            var historyAttachmentsRehydrate = activationTarget.CommandInputTextForTest.Contains(historyAttachmentFixture, StringComparison.OrdinalIgnoreCase)
+                && activationTarget.ComposerAttachmentCountForTest == 1
+                && activationTarget.AttachmentStripVisibleForTest
+                && activationTarget.ComposerTokensMatchCanonicalPathsForTest
+                && !activationTarget.CommandHistoryPanelVisibleForTest;
+            activationTarget.ClearComposerAttachmentsForTest();
+            try { File.Delete(historyAttachmentFixture); } catch { }
             WorkspaceStore.Save(state);
             var persistedHistoryProfile = WorkspaceStore.Load(terminalProfile).Sessions.First(value => value.Id == activationTarget.Profile.Id);
             var commandHistoryPersists = persistedHistoryProfile.CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory)
@@ -2911,8 +2932,8 @@ public partial class MainWindow : Window
             var terminalTabContainer = TerminalTabList.ItemContainerGenerator.ContainerFromIndex(0) as ListBoxItem;
             var workspaceTabSurface = workspaceTabContainer is null ? null : FindContextMenuSurface(workspaceTabContainer);
             var terminalTabSurface = terminalTabContainer is null ? null : FindContextMenuSurface(terminalTabContainer);
-            var terminalTabsShowNamesOnly = terminalTabContainer is not null
-                && FindVisualDescendant<System.Windows.Shapes.Ellipse>(terminalTabContainer) is null
+            var terminalTabsShowAgentAndName = terminalTabContainer is not null
+                && FindVisualDescendant<System.Windows.Shapes.Ellipse>(terminalTabContainer) is not null
                 && FindVisualDescendant<TextBlock>(terminalTabContainer)?.Text == ((SessionProfile)TerminalTabList.Items[0]).Name;
             var tabContextMenusWork = workspaceTabSurface?.ContextMenu is { } workspaceTabMenu
                 && workspaceTabMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
@@ -3123,7 +3144,7 @@ public partial class MainWindow : Window
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
-                && commandHistoryRestoresInput && commandHistoryPersists && commandHistoryIsPerTerminal
+                && commandHistoryRestoresInput && historyAttachmentsRehydrate && commandHistoryPersists && commandHistoryIsPerTerminal
                 && clearHistoryRequiresConfirmation && clearHistoryButtonReady && clearHistoryWorks && clearHistoryPersists
                 && ctrlUDeletesToLineStart && ctrlKDeletesToLineEnd && ctrlJAddsLine && shiftEnterAddsLine
                 && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerTypingLatencyBounded;
@@ -3141,9 +3162,10 @@ public partial class MainWindow : Window
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && tabs && terminalTabsShowNamesOnly && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && rows && columns && focus && grid && tabs && terminalTabsShowAgentAndName && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
-                && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
+                && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && terminalTabAgentStateMirrorsPane
+                && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && scheduleLogic && countdownLogic && automationHoverContainerStable && manualOnlyScheduleStaysDormant
                 && terminalStartsWithoutAutomations && automationButtonReady && automationCanBeAddedPerTerminal
                 && automationCanAutoInsert && automationCanBeDisabled && automationMenuContractReady && automationClearLineWorks
@@ -3155,9 +3177,9 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}");
-            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowNamesOnly={terminalTabsShowNamesOnly}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
-            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
