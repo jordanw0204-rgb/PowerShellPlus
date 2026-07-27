@@ -9,13 +9,14 @@ namespace PowerShellPlus.Native;
 
 public sealed class SshLaunchMarker
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public string PaneId { get; set; } = string.Empty;
     public DateTime StartedUtc { get; set; }
     public int? ShellProcessId { get; set; }
     public string WorkingDirectory { get; set; } = string.Empty;
     public string[] ConnectionArguments { get; set; } = [];
     public bool RecoveryAttempt { get; set; }
+    public bool PersistentSessionRequested { get; set; }
     public int? ExitCode { get; set; }
     public DateTime? EndedUtc { get; set; }
     public bool IsActive => EndedUtc is null && StartedUtc > DateTime.UnixEpoch;
@@ -35,7 +36,7 @@ public static class SshLaunchStore
             var path = MarkerPath(paneId, directoryPath);
             if (!File.Exists(path)) return null;
             var marker = JsonSerializer.Deserialize<SshLaunchMarker>(File.ReadAllText(path), JsonOptions);
-            if (marker is null || marker.Version is not (1 or 2) || marker.PaneId != paneId
+            if (marker is null || marker.Version is not (1 or 2 or 3) || marker.PaneId != paneId
                 || !SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _)) return null;
             marker.ConnectionArguments = normalized;
             return marker;
@@ -48,7 +49,7 @@ public static class SshLaunchStore
         if (!SshRecovery.TryNormalizeConnectionArguments(marker.ConnectionArguments, out var normalized, out _))
             throw new InvalidOperationException("Refusing to save an unsafe SSH recovery marker.");
         marker.ConnectionArguments = normalized;
-        marker.Version = 2;
+        marker.Version = 3;
         var directory = directoryPath ?? DirectoryPath;
         Directory.CreateDirectory(directory);
         var path = MarkerPath(marker.PaneId, directory);
@@ -168,13 +169,14 @@ if ($global:__PowerShellPlusSshCommand) {
         $__pspMarker = $null;
         if ($__pspValid -and $__pspDestinationSeen) {
             $__pspMarker = [ordered]@{
-                Version = 2;
+                Version = 3;
                 PaneId = '{{escapedPaneId}}';
                 StartedUtc = [DateTime]::UtcNow.ToString('O');
                 ShellProcessId = $PID;
                 WorkingDirectory = (Get-Location).ProviderPath;
                 ConnectionArguments = @($__pspSafe.ToArray());
                 RecoveryAttempt = [bool]$global:__PowerShellPlusSshRecoveryActive;
+                PersistentSessionRequested = $true;
                 ExitCode = $null;
                 EndedUtc = $null
             };
@@ -205,8 +207,12 @@ if ($global:__PowerShellPlusSshCommand) {
     }
 
     internal static string BuildRemoteInteractiveShellCommand(string paneId)
-        => $"export POWERSHELLPLUS_PANE_ID='{EscapePosixSingleQuoted(paneId)}'; "
-            + "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
+    {
+        return RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, BuildRemoteInteractiveWorkload());
+    }
+
+    internal static string BuildRemoteInteractiveWorkload()
+        => "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
             + "__psp_previous_prompt_command=\"${PROMPT_COMMAND:-}\"; "
             + "PROMPT_COMMAND='printf \"\\033]9;9;\\\"%s\\\"\\007\" \"$PWD\"'; "
             + "if [ -n \"$__psp_previous_prompt_command\" ]; then PROMPT_COMMAND=\"$PROMPT_COMMAND;$__psp_previous_prompt_command\"; fi; "
@@ -350,7 +356,22 @@ public static class SshRecovery
         commandArguments.Add("-tt");
         commandArguments.Add(destination);
         var paneId = SessionRecoveryStore.SafeSessionId(recovery.SessionId);
-        string remoteCommand;
+        var workload = BuildRemoteWorkloadCommand(recovery);
+        if (workload is null) return null;
+        var remoteCommand = recovery.RemoteTmuxManaged
+            ? RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, workload)
+            : workload;
+        commandArguments.Add(remoteCommand);
+        var description = recovery.HermesWasActive ? "SSH and Hermes session"
+            : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";
+        return new SshResumePlan(commandArguments.ToArray(), destination, description);
+    }
+
+    internal static string? BuildRemoteWorkloadCommand(SessionRecoveryEntry? recovery)
+    {
+        if (recovery?.SshWasActive != true
+            || !TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out _, out _)) return null;
+        var paneId = SessionRecoveryStore.SafeSessionId(recovery.SessionId);
         if (recovery.HermesWasActive)
         {
             var hermesArguments = new List<string> { "hermes" };
@@ -367,15 +388,11 @@ public static class SshRecovery
             }
             else hermesArguments.Add("--continue");
             var hermesCommand = "exec " + string.Join(" ", hermesArguments.Select(QuotePosix));
-            remoteCommand = $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(hermesCommand)}";
+            return $"export POWERSHELLPLUS_PANE_ID='{paneId}'; exec \"${{SHELL:-/bin/sh}}\" -lc {QuotePosix(hermesCommand)}";
         }
-        else remoteCommand = recovery.RemoteCodexWasActive
+        return recovery.RemoteCodexWasActive
             ? RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery)
-            : SshLaunchStore.BuildRemoteInteractiveShellCommand(paneId);
-        commandArguments.Add(remoteCommand);
-        var description = recovery.HermesWasActive ? "SSH and Hermes session"
-            : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";
-        return new SshResumePlan(commandArguments.ToArray(), destination, description);
+            : $"export POWERSHELLPLUS_PANE_ID='{paneId}'; " + SshLaunchStore.BuildRemoteInteractiveWorkload();
     }
 
     public static bool ShouldKeepPendingRecovery(SessionRecoveryEntry? previous, SshLaunchMarker? launch, bool sshProcessActive)
@@ -399,6 +416,8 @@ public static class SshRecovery
             entry.HermesModel = null;
             entry.HermesUseTui = false;
             RemoteCodexRecovery.Clear(entry);
+            entry.RemoteTmuxManaged = false;
+            entry.RemoteTmuxSessionName = null;
             return;
         }
         entry.SshConnectionArguments = normalized;
@@ -414,6 +433,14 @@ public static class SshRecovery
             if (!HermesRecovery.IsSafeModel(entry.HermesModel)) entry.HermesModel = null;
         }
         RemoteCodexRecovery.Sanitize(entry);
+        if (!entry.RemoteTmuxManaged)
+        {
+            entry.RemoteTmuxSessionName = null;
+        }
+        else
+        {
+            entry.RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName(entry.SessionId);
+        }
     }
 
     private static bool IsSafeOptionValue(string option, string value)

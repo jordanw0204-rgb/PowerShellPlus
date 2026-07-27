@@ -9,13 +9,20 @@ internal static class TerminalHoverDetailsBuilder
         AgentActivityState agentState, bool localCodexActive, bool sshActive, string[]? sshArguments,
         SessionRecoveryEntry? recovery, CodexLaunchMarker? codexLaunch)
     {
+        var detachedRemote = profile.IsRemoteDetached && recovery?.RemoteTmuxManaged == true;
+        var effectiveSshActive = sshActive || detachedRemote;
         var rows = new List<TerminalDetailRow>
         {
-            new("Status", rootProcessId is int pid ? $"Running · PID {pid}" : "Starting or stopped"),
-            new("Agent", DescribeAgent(agentKind, agentState, localCodexActive, sshActive, recovery)),
+            new("Status", detachedRemote
+                ? "Detached · running remotely"
+                : rootProcessId is int pid ? $"Running · PID {pid}" : "Starting or stopped"),
+            new("Agent", DescribeAgent(agentKind, agentState, localCodexActive, effectiveSshActive, recovery)),
         };
 
-        var remoteCodex = sshActive && recovery?.RemoteCodexWasActive == true;
+        if (detachedRemote && !string.IsNullOrWhiteSpace(recovery?.RemoteTmuxSessionName))
+            rows.Add(new("Remote session", recovery.RemoteTmuxSessionName!));
+
+        var remoteCodex = effectiveSshActive && recovery?.RemoteCodexWasActive == true;
         var codexModel = remoteCodex ? recovery?.RemoteCodexModel : recovery?.CodexModel ?? codexLaunch?.Model;
         var codexThread = remoteCodex ? recovery?.RemoteCodexSessionId : recovery?.CodexSessionId ?? codexLaunch?.SessionId;
         var permissionProfile = remoteCodex ? recovery?.RemoteCodexPermissionProfile : recovery?.CodexPermissionProfile ?? codexLaunch?.PermissionProfile;
@@ -32,7 +39,7 @@ internal static class TerminalHoverDetailsBuilder
             if (!string.IsNullOrWhiteSpace(reviewer)) rows.Add(new("Reviewer", reviewer!));
         }
 
-        if (sshActive && SshRecovery.TryNormalizeConnectionArguments(sshArguments ?? [], out var normalized, out var destination))
+        if (effectiveSshActive && SshRecovery.TryNormalizeConnectionArguments(sshArguments ?? recovery?.SshConnectionArguments ?? [], out var normalized, out var destination))
         {
             rows.Add(new("SSH destination", destination));
             if (FindIdentityFile(normalized) is { } identity) rows.Add(new("SSH key", identity));
@@ -113,10 +120,18 @@ internal static class TerminalHoverDetailsBuilder
         };
         var details = Build(profile, 42, AgentKind.Codex, AgentActivityState.Working, false, true,
             recovery.SshConnectionArguments, recovery, null);
+        profile.SetRemoteDetached(true);
+        recovery.RemoteTmuxManaged = true;
+        recovery.RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName(profile.Id);
+        var detached = Build(profile, null, AgentKind.Codex, AgentActivityState.Idle, false, false,
+            null, recovery, null);
         return details.Rows.Any(value => value.Label == "Agent" && value.Value == "Codex · working")
             && details.Rows.Any(value => value.Label == "SSH destination" && value.Value == "ubuntu@15.204.82.129")
             && details.Rows.Any(value => value.Label == "SSH key" && value.Value.EndsWith("vps_key", StringComparison.Ordinal))
             && details.Rows.Any(value => value.Label == "Model" && value.Value == "gpt-5.6-sol")
-            && details.Rows.Any(value => value.Label == "Queue" && value.Value == "1 command");
+            && details.Rows.Any(value => value.Label == "Queue" && value.Value == "1 command")
+            && detached.Rows.Any(value => value.Label == "Status" && value.Value == "Detached · running remotely")
+            && detached.Rows.Any(value => value.Label == "Remote session" && value.Value == recovery.RemoteTmuxSessionName)
+            && detached.Rows.Any(value => value.Label == "SSH destination" && value.Value == "ubuntu@15.204.82.129");
     }
 }

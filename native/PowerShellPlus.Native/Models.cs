@@ -147,8 +147,9 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public List<TerminalAutomationBinding> AutomationBindings { get; set; } = [];
     public string LiveWorkingDirectory { get; set; } = string.Empty;
     public bool LiveWorkingDirectoryIsSsh { get; set; }
+    [JsonIgnore] public bool IsRemoteDetached { get; private set; }
     [JsonIgnore] public string Subtitle => string.IsNullOrWhiteSpace(LiveWorkingDirectory) ? WorkingDirectory : LiveWorkingDirectory;
-    [JsonIgnore] public string DirectoryPrefix => LiveWorkingDirectoryIsSsh ? "SSH · " : string.Empty;
+    [JsonIgnore] public string DirectoryPrefix => IsRemoteDetached ? "SSH · detached · " : LiveWorkingDirectoryIsSsh ? "SSH · " : string.Empty;
     [JsonIgnore] public string AgentStatusState { get; private set; } = "starting";
     [JsonIgnore] public string AgentStatusText { get; private set; } = "Terminal is starting";
     [JsonIgnore] public Brush AgentStatusBrush => AgentStatusState switch
@@ -178,6 +179,15 @@ public sealed class SessionProfile : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusState)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(AgentStatusBrush)));
+    }
+
+    public void SetRemoteDetached(bool detached)
+    {
+        if (IsRemoteDetached == detached) return;
+        IsRemoteDetached = detached;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsRemoteDetached)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DirectoryPrefix)));
+        if (detached) UpdateAgentStatus("stopped", "SSH terminal detached; remote session is still running");
     }
 }
 

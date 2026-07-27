@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private bool windowsTerminalDropVisible;
     private bool topmostBeforeWindowsTerminalDrop;
     private readonly object recoveryCaptureSync = new();
+    private readonly HashSet<string> remoteDetachOperations = new(StringComparer.Ordinal);
     private int recoveryCaptureInProgress;
     private int layoutTransitionVersion;
     private string terminalEditorAccentColor = WorkspaceAccentPalette.DefaultTerminal;
@@ -445,6 +446,13 @@ public partial class MainWindow : Window
                 foreach (var capture in captures)
                 {
                     previous.Sessions.TryGetValue(capture.SessionId, out var oldEntry);
+                    var profile = state.Sessions.FirstOrDefault(value => value.Id == capture.SessionId);
+                    if (profile?.IsRemoteDetached == true && oldEntry?.RemoteTmuxManaged == true)
+                    {
+                        oldEntry.CapturedUtc = DateTime.UtcNow;
+                        snapshot.Sessions[capture.SessionId] = oldEntry;
+                        continue;
+                    }
                     var codex = capture.RootProcessId is int rootProcessId ? ProcessTreeInspector.FindCodexProcess(rootProcessId) : default;
                     var launch = CodexLaunchStore.Load(capture.SessionId);
                     if (!codex.IsActive && launch?.IsActive == true && launch.ShellProcessId is > 0)
@@ -528,6 +536,8 @@ public partial class MainWindow : Window
                         : keepPendingSshRecovery ? oldEntry!.SshConnectionArguments : [];
                     var samePreviousSsh = sshRestorable && oldEntry?.SshWasActive == true
                         && oldEntry.SshConnectionArguments.SequenceEqual(sshArguments, StringComparer.Ordinal);
+                    var remoteTmuxManaged = sshRestorable
+                        && (sshLaunch?.PersistentSessionRequested == true || samePreviousSsh && oldEntry?.RemoteTmuxManaged == true);
                     var previousHermes = samePreviousSsh
                         ? new HermesRecoveryState(oldEntry!.HermesWasActive, oldEntry.HermesSessionId, oldEntry.HermesModel, oldEntry.HermesUseTui)
                         : default;
@@ -577,6 +587,8 @@ public partial class MainWindow : Window
                         RemoteCodexApprovalPolicy = remoteCodex.ApprovalPolicy,
                         RemoteCodexPermissionProfile = remoteCodex.PermissionProfile,
                         RemoteCodexApprovalsReviewer = remoteCodex.ApprovalsReviewer,
+                        RemoteTmuxManaged = remoteTmuxManaged,
+                        RemoteTmuxSessionName = remoteTmuxManaged ? RemoteTmuxSession.GetSessionName(capture.SessionId) : null,
                         CapturedUtc = DateTime.UtcNow
                     };
                 }
@@ -726,7 +738,7 @@ public partial class MainWindow : Window
         // A native terminal click already gives its HWND keyboard focus. Only
         // update application selection here so WPF does not steal that focus.
         pane.Activated += (_, _) => SelectPane(profile.Id, false);
-        pane.CloseRequested += (_, _) => RemoveSession(profile);
+        pane.CloseRequested += async (_, _) => await CloseTerminalAsync(profile);
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
         pane.DetachRequested += (_, _) => DetachSessionToWindowsTerminal(profile, pane);
         panes[profile.Id] = pane;
@@ -735,6 +747,11 @@ public partial class MainWindow : Window
     private void SelectPane(string sessionId, bool focus = true)
     {
         if (!panes.TryGetValue(sessionId, out var pane)) return;
+        if (pane.Profile.IsRemoteDetached)
+        {
+            _ = ReattachRemoteTerminalAsync(pane, focus);
+            return;
+        }
         var owner = state.TerminalSessions.FirstOrDefault(value => value.TerminalIds.Contains(sessionId, StringComparer.Ordinal));
         if (owner is not null && owner != activeWorkspaceSession) SelectWorkspaceSession(owner.Id, false);
         activePane = pane;
@@ -823,7 +840,7 @@ public partial class MainWindow : Window
         CaptureLayoutSizing();
         TerminalHost.Children.Clear(); TerminalHost.RowDefinitions.Clear(); TerminalHost.ColumnDefinitions.Clear();
         var workspaceSession = activeWorkspaceSession;
-        var ordered = workspaceSession?.TerminalIds.Where(value => panes.ContainsKey(value)).Select(value => panes[value]).ToList() ?? [];
+        var ordered = workspaceSession?.TerminalIds.Where(value => panes.TryGetValue(value, out var pane) && !pane.Profile.IsRemoteDetached).Select(value => panes[value]).ToList() ?? [];
         activeLayoutSizeKey = null;
         TerminalTabBar.Visibility = workspaceSession?.Layout == "Tabs" ? Visibility.Visible : Visibility.Collapsed;
         if (ordered.Count == 0) { UpdateCounts(); return; }
@@ -1447,6 +1464,188 @@ public partial class MainWindow : Window
         HideEditor(); ScheduleSave(); UpdateCounts();
     }
 
+    private async Task CloseTerminalAsync(SessionProfile profile)
+    {
+        if (!panes.ContainsKey(profile.Id) || remoteDetachOperations.Contains(profile.Id)) return;
+        CaptureRecoverySnapshot();
+        var snapshot = SessionRecoveryStore.Load();
+        if (!snapshot.Sessions.TryGetValue(profile.Id, out var recovery) || recovery.SshWasActive != true)
+        {
+            RemoveSession(profile);
+            return;
+        }
+
+        var choice = PowerShellPlusDialog.ShowActions(this,
+            $"{profile.Name} is connected through SSH.\n\nKeep running detaches this PowerShellPlus terminal while its remote shell, Codex, or Hermes process continues inside a managed tmux session. Selecting the terminal again reconnects to the exact live process.\n\nStop & remove closes the remote process and deletes this terminal.",
+            "Close SSH terminal?", PowerShellPlusDialogKind.Question,
+            "Keep running", "Stop & remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: false);
+        if (choice == PowerShellPlusDialogResult.Primary) await DetachRemoteTerminalAsync(profile, recovery);
+        else if (choice == PowerShellPlusDialogResult.Secondary) await StopRemoteAndRemoveAsync(profile, recovery);
+    }
+
+    private async Task DetachRemoteTerminalAsync(SessionProfile profile, SessionRecoveryEntry? suppliedRecovery = null)
+    {
+        if (!panes.TryGetValue(profile.Id, out var pane) || !remoteDetachOperations.Add(profile.Id)) return;
+        SessionRecoveryEntry? recoveryForReconnect = suppliedRecovery;
+        var paneWasStopped = false;
+        try
+        {
+            CaptureRecoverySnapshot();
+            var snapshot = SessionRecoveryStore.Load();
+            var recovery = suppliedRecovery;
+            if (snapshot.Sessions.TryGetValue(profile.Id, out var latest)) recovery = latest;
+            recoveryForReconnect = recovery;
+            if (recovery?.SshWasActive != true)
+            {
+                PowerShellPlusDialog.ShowMessage(this, "This terminal does not currently have a verified SSH connection to detach.",
+                    "Nothing to detach", PowerShellPlusDialogKind.Information);
+                return;
+            }
+
+            UpdateStatus($"Checking the persistent remote session for {profile.Name}…");
+            var remote = await RemoteTmuxSession.ProbeAsync(recovery);
+            if (!remote.TmuxAvailable)
+            {
+                PowerShellPlusDialog.ShowMessage(this,
+                    remote.Message + "\n\nInstall tmux on the remote machine (for Ubuntu/Debian: sudo apt-get install tmux), then reconnect this SSH terminal once. PowerShellPlus will manage it automatically.",
+                    "Remote persistence unavailable", PowerShellPlusDialogKind.Warning);
+                UpdateStatus("Remote terminal left open — tmux was not available");
+                return;
+            }
+
+            if (!remote.SessionExists)
+            {
+                var migrate = PowerShellPlusDialog.Confirm(this,
+                    "This SSH connection was created before managed remote persistence was enabled.\n\nPowerShellPlus can close the current SSH client, resume the saved Codex or Hermes chat inside tmux, and leave it running in the background. The transcript, model, and permissions are preserved, but an in-progress response may need to be sent again.",
+                    "Move this session into tmux?", PowerShellPlusDialogKind.Question,
+                    "Move & keep running", "Cancel", defaultToPrimary: true);
+                if (!migrate) return;
+                pane.Stop();
+                paneWasStopped = true;
+                await Task.Delay(700);
+                recovery.RemoteTmuxManaged = true;
+                recovery.RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName(profile.Id);
+                var ensured = await RemoteTmuxSession.EnsureDetachedAsync(recovery);
+                if (!ensured.SessionExists)
+                {
+                    profile.SetRemoteDetached(false);
+                    await pane.RestartAsync(recovery);
+                    PowerShellPlusDialog.ShowMessage(this,
+                        ensured.Message + "\n\nPowerShellPlus reconnected the terminal instead, so the saved session was not discarded.",
+                        "Could not keep the remote process running", PowerShellPlusDialogKind.Error);
+                    UpdateStatus("Remote migration failed — terminal reconnected safely");
+                    return;
+                }
+            }
+            else
+            {
+                pane.Stop();
+                paneWasStopped = true;
+            }
+
+            recovery.RemoteTmuxManaged = true;
+            recovery.RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName(profile.Id);
+            recovery.CapturedUtc = DateTime.UtcNow;
+            snapshot.Sessions[profile.Id] = recovery;
+            loadedRecovery.Sessions[profile.Id] = recovery;
+            SessionRecoveryStore.Save(snapshot);
+            MarkTerminalDetached(profile, pane);
+            UpdateStatus($"{profile.Name} detached — its remote process is still running");
+        }
+        catch (Exception exception)
+        {
+            LogNativeError("Remote tmux detach", exception);
+            if (paneWasStopped && recoveryForReconnect is not null)
+            {
+                try
+                {
+                    profile.SetRemoteDetached(false);
+                    await pane.RestartAsync(recoveryForReconnect);
+                }
+                catch (Exception reconnectException)
+                {
+                    LogNativeError("Remote tmux detach recovery", reconnectException);
+                }
+            }
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "Could not detach remote terminal", PowerShellPlusDialogKind.Error);
+        }
+        finally { remoteDetachOperations.Remove(profile.Id); }
+    }
+
+    private void MarkTerminalDetached(SessionProfile profile, TerminalPane pane)
+    {
+        profile.SetRemoteDetached(true);
+        if (activePane == pane)
+        {
+            var next = activeWorkspaceSession?.TerminalIds
+                .Where(value => value != profile.Id && panes.TryGetValue(value, out var candidate) && !candidate.Profile.IsRemoteDetached)
+                .Select(value => panes[value]).FirstOrDefault();
+            activePane = next;
+            if (activeWorkspaceSession is not null) activeWorkspaceSession.ActiveTerminalId = next?.Profile.Id;
+            SessionList.SelectedItem = next?.Profile;
+            terminalTabSelectionSync = true;
+            TerminalTabList.SelectedItem = next?.Profile;
+            terminalTabSelectionSync = false;
+        }
+        pane.SetActive(false);
+        ApplyLayout();
+        ScheduleSave();
+    }
+
+    private async Task ReattachRemoteTerminalAsync(TerminalPane pane, bool focus)
+    {
+        var profile = pane.Profile;
+        if (!profile.IsRemoteDetached || !remoteDetachOperations.Add(profile.Id)) return;
+        try
+        {
+            var snapshot = SessionRecoveryStore.Load();
+            if (!snapshot.Sessions.TryGetValue(profile.Id, out var recovery) || !recovery.RemoteTmuxManaged)
+                throw new InvalidOperationException("The saved remote tmux identity is missing.");
+            UpdateStatus($"Reattaching {profile.Name} to its remote process…");
+            profile.SetRemoteDetached(false);
+            await pane.RestartAsync(recovery);
+            SelectPane(profile.Id, focus);
+            ApplyLayout();
+            UpdateStatus($"Reattached {profile.Name} to {recovery.RemoteTmuxSessionName}");
+        }
+        catch (Exception exception)
+        {
+            profile.SetRemoteDetached(true);
+            ApplyLayout();
+            LogNativeError("Remote tmux reattach", exception);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "Remote session could not be reattached", PowerShellPlusDialogKind.Error);
+        }
+        finally { remoteDetachOperations.Remove(profile.Id); }
+    }
+
+    private async Task<bool> StopRemoteAndRemoveAsync(SessionProfile profile, SessionRecoveryEntry recovery)
+    {
+        if (!remoteDetachOperations.Add(profile.Id)) return false;
+        try
+        {
+            var remote = await RemoteTmuxSession.ProbeAsync(recovery);
+            if (!remote.CommandSucceeded)
+            {
+                PowerShellPlusDialog.ShowMessage(this,
+                    remote.Message + "\n\nNothing was removed. Reconnect the SSH host and try again so PowerShellPlus can verify that the remote process is stopped.",
+                    "Remote process could not be verified", PowerShellPlusDialogKind.Error);
+                return false;
+            }
+            if (remote.SessionExists)
+            {
+                var stopped = await RemoteTmuxSession.KillAsync(recovery);
+                if (!stopped.CommandSucceeded)
+                {
+                    PowerShellPlusDialog.ShowMessage(this, stopped.Message,
+                        "Remote process could not be stopped", PowerShellPlusDialogKind.Error);
+                    return false;
+                }
+            }
+            return RemoveSession(profile, alreadyConfirmed: true);
+        }
+        finally { remoteDetachOperations.Remove(profile.Id); }
+    }
+
     private bool RemoveSession(SessionProfile profile, bool alreadyConfirmed = false, bool stopPane = true)
     {
         if (!panes.TryGetValue(profile.Id, out var pane)) return false;
@@ -1917,6 +2116,21 @@ public partial class MainWindow : Window
             && normalScript.Contains(profile.Id, StringComparison.Ordinal);
         var sshWrapperInstalled = normalScript.Contains("function global:ssh", StringComparison.OrdinalIgnoreCase)
             && normalScript.Contains("ConnectionArguments", StringComparison.Ordinal);
+        var managedSshShellCommand = SshLaunchStore.BuildRemoteInteractiveShellCommand(profile.Id);
+        var managedTmuxSessionName = RemoteTmuxSession.GetSessionName(profile.Id);
+        var managedSshShellUsesTmux = managedSshShellCommand.StartsWith($"export POWERSHELLPLUS_PANE_ID='{profile.Id}';", StringComparison.Ordinal)
+            && managedSshShellCommand.Contains("command -v tmux", StringComparison.Ordinal)
+            && managedSshShellCommand.Contains("tmux attach-session", StringComparison.Ordinal)
+            && managedSshShellCommand.Contains("tmux new-session", StringComparison.Ordinal)
+            && managedSshShellCommand.Contains(managedTmuxSessionName, StringComparison.Ordinal)
+            && managedSshShellCommand.Contains("tmux is not installed", StringComparison.Ordinal);
+        var unsafeTmuxName = RemoteTmuxSession.GetSessionName("pane'; touch /tmp/unsafe; #");
+        var tmuxNamesAreBoundedAndSafe = RemoteTmuxSession.IsSafeSessionName(managedTmuxSessionName)
+            && RemoteTmuxSession.IsSafeSessionName(unsafeTmuxName)
+            && unsafeTmuxName.IndexOfAny(['\'', ';', '/', ' ', '#']) < 0
+            && RemoteTmuxSession.BuildEnsureDetachedCommand(profile.Id, "exec codex resume safe-session") is { } detachedCommand
+            && detachedCommand.Contains("tmux new-session -d", StringComparison.Ordinal)
+            && detachedCommand.Contains("PSP_TMUX_READY", StringComparison.Ordinal);
         var sshKeyPath = Path.Combine(Path.GetDirectoryName(reportPath)!, "vps recovery key");
         var safeSshAccepted = SshRecovery.TryNormalizeConnectionArguments(["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"], out var safeSshArguments, out var safeSshDestination)
             && safeSshDestination == "deploy@vps.example" && safeSshArguments.SequenceEqual(["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"]);
@@ -1957,6 +2171,24 @@ public partial class MainWindow : Window
             && sshHermesScript.Contains(hermesSessionId, StringComparison.Ordinal)
             && sshHermesScript.Contains(hermesModel, StringComparison.Ordinal)
             && sshHermesScript.Contains("hermes", StringComparison.Ordinal);
+        var managedHermesRecovery = new SessionRecoveryEntry
+        {
+            SessionId = profile.Id,
+            SshWasActive = true,
+            SshConnectionArguments = sshHermesRecovery.SshConnectionArguments,
+            HermesWasActive = true,
+            HermesSessionId = hermesSessionId,
+            HermesModel = hermesModel,
+            HermesUseTui = true,
+            RemoteTmuxManaged = true,
+            RemoteTmuxSessionName = managedTmuxSessionName
+        };
+        var managedHermesPlan = SshRecovery.BuildResumePlan(managedHermesRecovery);
+        var persistentAgentResumeUsesTmux = managedHermesPlan?.Arguments.LastOrDefault() is { } managedHermesCommand
+            && managedHermesCommand.Contains("tmux attach-session", StringComparison.Ordinal)
+            && managedHermesCommand.Contains("tmux new-session", StringComparison.Ordinal)
+            && managedHermesCommand.Contains(managedTmuxSessionName, StringComparison.Ordinal)
+            && managedHermesCommand.Contains(hermesSessionId, StringComparison.Ordinal);
         var sshRecoveryIsBoundedAndVisible = sshHermesScript.Contains("[PowerShellPlus] Restoring SSH and Hermes session", StringComparison.Ordinal)
             && sshHermesScript.Contains("$global:__PowerShellPlusSshRecoveryActive = $true", StringComparison.Ordinal)
             && sshHermesScript.Contains("saved session was kept", StringComparison.Ordinal)
@@ -2222,6 +2454,7 @@ public partial class MainWindow : Window
         var sshWrapperRecordsSafeConnectionOnly = sshWrapperScript.Contains("function global:ssh", StringComparison.OrdinalIgnoreCase)
             && sshWrapperScript.Contains("ConnectionArguments", StringComparison.Ordinal)
             && sshWrapperScript.Contains("RecoveryAttempt", StringComparison.Ordinal)
+            && sshWrapperScript.Contains("PersistentSessionRequested", StringComparison.Ordinal)
             && sshWrapperScript.Contains("ExitCode", StringComparison.Ordinal)
             && sshWrapperScript.Contains("EndedUtc", StringComparison.Ordinal)
             && !sshWrapperScript.Contains("ProxyCommand", StringComparison.OrdinalIgnoreCase)
@@ -2262,7 +2495,7 @@ public partial class MainWindow : Window
             var validWrapperExited = RunSshWrapper("runtime-pane", "$global:__PowerShellPlusSshRecoveryActive = $true; ssh '-o' 'ConnectTimeout=1' 'deploy@vps.example'");
             var runtimeMarker = SshLaunchStore.Load("runtime-pane", runtimeMarkers);
             var validWrapperMarker = validWrapperExited && runtimeMarker?.IsActive == false
-                && runtimeMarker.RecoveryAttempt && runtimeMarker.ExitCode is not null
+                && runtimeMarker.RecoveryAttempt && runtimeMarker.PersistentSessionRequested && runtimeMarker.ExitCode is not null
                 && runtimeMarker.ConnectionArguments.SequenceEqual(["deploy@vps.example"]);
             var unsafeWrapperExited = RunSshWrapper("unsafe-runtime-pane", "ssh 'ssh://deploy:password@vps.example'");
             var unsafeMarkerPath = Path.Combine(runtimeMarkers, SessionRecoveryStore.SafeSessionId("unsafe-runtime-pane") + ".json");
@@ -2371,7 +2604,8 @@ public partial class MainWindow : Window
             RemoteCodexWasActive = true, RemoteCodexSessionId = remoteCodexId,
             RemoteCodexWorkingDirectory = remoteCodexDirectory, RemoteCodexModel = savedModel,
             RemoteCodexSandboxMode = savedSandboxMode, RemoteCodexApprovalPolicy = savedApprovalPolicy,
-            RemoteCodexApprovalsReviewer = savedApprovalsReviewer
+            RemoteCodexApprovalsReviewer = savedApprovalsReviewer,
+            RemoteTmuxManaged = true, RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName("test-session")
         };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
@@ -2387,6 +2621,7 @@ public partial class MainWindow : Window
             && reloadedEntry.RemoteCodexWorkingDirectory == remoteCodexDirectory && reloadedEntry.RemoteCodexModel == savedModel
             && reloadedEntry.RemoteCodexSandboxMode == savedSandboxMode && reloadedEntry.RemoteCodexApprovalPolicy == savedApprovalPolicy
             && reloadedEntry.RemoteCodexApprovalsReviewer == savedApprovalsReviewer
+            && reloadedEntry.RemoteTmuxManaged && reloadedEntry.RemoteTmuxSessionName == RemoteTmuxSession.GetSessionName("test-session")
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -2394,7 +2629,7 @@ public partial class MainWindow : Window
         legacyFixture.Sessions["legacy-session"] = new SessionRecoveryEntry { SessionId = "legacy-session", CodexWasActive = true, CodexSessionId = "99999999-8888-7777-6666-555555555555", WorkingDirectory = profile.WorkingDirectory };
         SessionRecoveryStore.Save(legacyFixture, legacyRoot);
         var migratedLegacy = SessionRecoveryStore.Load(legacyRoot);
-        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 10 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
+        var unsafeLegacyIdDiscarded = migratedLegacy.Version == 11 && migratedLegacy.Sessions["legacy-session"].CodexSessionId is null;
         try { Directory.Delete(legacyRoot, true); } catch { }
 
         var importedCodexTranscript = $"OpenAI Codex (fixture){Environment.NewLine}model: {savedModel}{Environment.NewLine}directory: {actualCodexDirectory}{Environment.NewLine}";
@@ -2486,13 +2721,13 @@ public partial class MainWindow : Window
         var sameLiveProcess = rootBefore is not null && rootBefore == rootWhileHidden && rootBefore == rootAfter;
         var terminalHoverDetailsWork = TerminalHoverDetailsBuilder.WorksForTest();
         var success = workspaceTestIsolated && composerDraftSurvivesStore && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && startupCommandIsBounded && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
-            && sshWrapperInstalled && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
+            && sshWrapperInstalled && managedSshShellUsesTmux && tmuxNamesAreBoundedAndSafe && persistentAgentResumeUsesTmux && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
             && codexSessionMapped && latestModelMapped && latestPermissionsMapped && currentTurnContextPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && activeThreadIdsRemainProcessBound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
             && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
             && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe && fileBridgeIsBoundedAndSafe && terminalHoverDetailsWork;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
         File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nCurrentTurnContextPermissionsMapped={currentTurnContextPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nActiveThreadIdsRemainProcessBound={activeThreadIdsRemainProcessBound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}\nFileBridgeIsBoundedAndSafe={fileBridgeIsBoundedAndSafe}");
-        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}\nTerminalHoverDetailsWork={terminalHoverDetailsWork}\nStartupCommandIsBounded={startupCommandIsBounded}");
+        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}\nTerminalHoverDetailsWork={terminalHoverDetailsWork}\nStartupCommandIsBounded={startupCommandIsBounded}\nManagedSshShellUsesTmux={managedSshShellUsesTmux}\nTmuxNamesAreBoundedAndSafe={tmuxNamesAreBoundedAndSafe}\nPersistentAgentResumeUsesTmux={persistentAgentResumeUsesTmux}");
         return success;
     }
 
@@ -3406,7 +3641,7 @@ public partial class MainWindow : Window
     {
         if (ItemFromSender<TerminalSession>(sender) is { } value) OpenWorkspaceSessionEditor(value);
     }
-    private void WorkspaceSessionRemoveClick(object sender, RoutedEventArgs e)
+    private async void WorkspaceSessionRemoveClick(object sender, RoutedEventArgs e)
     {
         if (ItemFromSender<TerminalSession>(sender) is not { } value) return;
         if (state.TerminalSessions.Count <= 1)
@@ -3418,9 +3653,22 @@ public partial class MainWindow : Window
         if (!PowerShellPlusDialog.Confirm(this,
                 $"Remove {value.Name}?\n\nIts {terminalCount} live terminal{(terminalCount == 1 ? string.Empty : "s")} will be closed. Other Sessions keep running.",
                 "Remove session?", PowerShellPlusDialogKind.Question, "Remove", "Cancel", true, true)) return;
+        CaptureRecoverySnapshot();
+        var recoverySnapshot = SessionRecoveryStore.Load();
         foreach (var terminalId in value.TerminalIds.ToArray())
-            if (state.Sessions.FirstOrDefault(item => item.Id == terminalId) is { } profile)
-                RemoveSession(profile, true);
+        {
+            if (state.Sessions.FirstOrDefault(item => item.Id == terminalId) is not { } profile) continue;
+            var removed = recoverySnapshot.Sessions.TryGetValue(profile.Id, out var recovery)
+                && recovery.SshWasActive && recovery.RemoteTmuxManaged
+                ? await StopRemoteAndRemoveAsync(profile, recovery)
+                : RemoveSession(profile, true);
+            if (!removed)
+            {
+                RefreshWorkspaceSessionViews();
+                ScheduleSave();
+                return;
+            }
+        }
         state.TerminalSessions.Remove(value);
         var next = state.TerminalSessions.First();
         SelectWorkspaceSession(next.Id, false);
@@ -3429,7 +3677,7 @@ public partial class MainWindow : Window
     }
     private void EditSessionClick(object sender, RoutedEventArgs e) { if (SessionList.SelectedItem is SessionProfile value) OpenSessionEditor(value); }
     private async void RestartSessionClick(object sender, RoutedEventArgs e) { if (activePane is not null) await activePane.RestartAsync(); }
-    private void RemoveSessionClick(object sender, RoutedEventArgs e) { if (SessionList.SelectedItem is SessionProfile value) RemoveSession(value); }
+    private async void RemoveSessionClick(object sender, RoutedEventArgs e) { if (SessionList.SelectedItem is SessionProfile value) await CloseTerminalAsync(value); }
     private void MoveSessionUpClick(object sender, RoutedEventArgs e) => MoveSelectedSession(-1);
     private void MoveSessionDownClick(object sender, RoutedEventArgs e) => MoveSelectedSession(1);
     private void MoveSelectedSession(int offset)
@@ -3574,10 +3822,11 @@ public partial class MainWindow : Window
         menu.VerticalOffset = 0;
     }
     private void SessionItemEditClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; OpenSessionEditor(value); } }
-    private async void SessionItemRestartClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value && panes.TryGetValue(value.Id, out var pane)) { SessionList.SelectedItem = value; await pane.RestartAsync(); } }
+    private async void SessionItemRestartClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value && panes.TryGetValue(value.Id, out var pane)) { SessionList.SelectedItem = value; if (value.IsRemoteDetached) await ReattachRemoteTerminalAsync(pane, true); else await pane.RestartAsync(); } }
+    private async void SessionItemDetachRemoteClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; await DetachRemoteTerminalAsync(value); } }
     private void SessionItemUpClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) MoveSession(value, -1); }
     private void SessionItemDownClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) MoveSession(value, 1); }
-    private void SessionItemRemoveClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; RemoveSession(value); } }
+    private async void SessionItemRemoveClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; await CloseTerminalAsync(value); } }
     private void NewSnippetClick(object sender, RoutedEventArgs e) => OpenSnippetEditor(null);
     private void EditSnippetClick(object sender, RoutedEventArgs e) { if (SnippetList.SelectedItem is CommandSnippet value) OpenSnippetEditor(value); }
     private void DeleteSnippetClick(object sender, RoutedEventArgs e) { if (SnippetList.SelectedItem is CommandSnippet value) { state.Snippets.Remove(value); ScheduleSave(); } }

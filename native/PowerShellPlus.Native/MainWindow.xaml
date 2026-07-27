@@ -31,6 +31,7 @@
                  DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="&#x270E;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="&#x21BB;" FontSize="15"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Detach and keep running remotely" Click="SessionItemDetachRemoteClick"><MenuItem.Icon><TextBlock Text="&#x21F1;" FontSize="14" Foreground="#94E2D5"/></MenuItem.Icon></MenuItem>
       <Separator/>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="&#x2191;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="&#x2193;" FontSize="14"/></MenuItem.Icon></MenuItem>

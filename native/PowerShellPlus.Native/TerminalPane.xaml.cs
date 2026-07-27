@@ -1132,9 +1132,10 @@ public partial class TerminalPane : UserControl
         if (persist) commandStateChanged();
     }
 
-    public async Task RestartAsync()
+    public async Task RestartAsync(SessionRecoveryEntry? recoveryOverride = null)
     {
-        var sshRecovery = startupRecovery?.SshWasActive == true ? startupRecovery : null;
+        var sshRecovery = recoveryOverride?.SshWasActive == true ? recoveryOverride
+            : startupRecovery?.SshWasActive == true ? startupRecovery : null;
         StateText.Text = sshRecovery is null ? "  Restarting…" : "  Retrying SSH recovery…";
         startupRecovery = sshRecovery;
         hermesExitObserved = false;
