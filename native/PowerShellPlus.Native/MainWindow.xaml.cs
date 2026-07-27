@@ -2167,10 +2167,13 @@ public partial class MainWindow : Window
             WorkingDirectory = profile.WorkingDirectory
         };
         var sshHermesScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, sshHermesRecovery));
-        var sshHermesExactResume = sshHermesScript.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
-            && sshHermesScript.Contains(hermesSessionId, StringComparison.Ordinal)
-            && sshHermesScript.Contains(hermesModel, StringComparison.Ordinal)
-            && sshHermesScript.Contains("hermes", StringComparison.Ordinal);
+        var sshHermesPlan = SshRecovery.BuildResumePlan(sshHermesRecovery);
+        var sshHermesExactResume = sshHermesPlan?.Arguments.LastOrDefault() is { } sshHermesCommand
+            && SshRecovery.TryDecodePowerShellSafeRemoteCommand(sshHermesCommand, out var decodedSshHermesCommand)
+            && decodedSshHermesCommand.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
+            && decodedSshHermesCommand.Contains(hermesSessionId, StringComparison.Ordinal)
+            && decodedSshHermesCommand.Contains(hermesModel, StringComparison.Ordinal)
+            && decodedSshHermesCommand.Contains("hermes", StringComparison.Ordinal);
         var managedHermesRecovery = new SessionRecoveryEntry
         {
             SessionId = profile.Id,
@@ -2185,25 +2188,29 @@ public partial class MainWindow : Window
         };
         var managedHermesPlan = SshRecovery.BuildResumePlan(managedHermesRecovery);
         var persistentAgentResumeUsesTmux = managedHermesPlan?.Arguments.LastOrDefault() is { } managedHermesCommand
-            && managedHermesCommand.Contains("tmux attach-session", StringComparison.Ordinal)
-            && managedHermesCommand.Contains("tmux new-session", StringComparison.Ordinal)
-            && managedHermesCommand.Contains(managedTmuxSessionName, StringComparison.Ordinal)
-            && managedHermesCommand.Contains(hermesSessionId, StringComparison.Ordinal);
+            && SshRecovery.TryDecodePowerShellSafeRemoteCommand(managedHermesCommand, out var decodedManagedHermesCommand)
+            && decodedManagedHermesCommand.Contains("tmux attach-session", StringComparison.Ordinal)
+            && decodedManagedHermesCommand.Contains("tmux new-session", StringComparison.Ordinal)
+            && decodedManagedHermesCommand.Contains(managedTmuxSessionName, StringComparison.Ordinal)
+            && decodedManagedHermesCommand.Contains(hermesSessionId, StringComparison.Ordinal);
         var sshRecoveryIsBoundedAndVisible = sshHermesScript.Contains("[PowerShellPlus] Restoring SSH and Hermes session", StringComparison.Ordinal)
             && sshHermesScript.Contains("$global:__PowerShellPlusSshRecoveryActive = $true", StringComparison.Ordinal)
             && sshHermesScript.Contains("saved session was kept", StringComparison.Ordinal)
             && sshHermesScript.Contains("PowerShell prompt remains interactive", StringComparison.Ordinal);
-        var sshHermesFallbackScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
+        var sshHermesFallbackRecovery = new SessionRecoveryEntry
         {
             SessionId = profile.Id,
             SshWasActive = true,
             SshConnectionArguments = ["deploy@vps.example"],
             HermesWasActive = true,
             HermesModel = changedHermesModel
-        }));
-        var sshHermesFallbackResume = sshHermesFallbackScript.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
-            && sshHermesFallbackScript.Contains(changedHermesModel, StringComparison.Ordinal)
-            && sshHermesFallbackScript.Contains("--continue", StringComparison.Ordinal);
+        };
+        var sshHermesFallbackPlan = SshRecovery.BuildResumePlan(sshHermesFallbackRecovery);
+        var sshHermesFallbackResume = sshHermesFallbackPlan?.Arguments.LastOrDefault() is { } sshHermesFallbackCommand
+            && SshRecovery.TryDecodePowerShellSafeRemoteCommand(sshHermesFallbackCommand, out var decodedSshHermesFallbackCommand)
+            && decodedSshHermesFallbackCommand.Contains("${SHELL:-/bin/sh}", StringComparison.Ordinal)
+            && decodedSshHermesFallbackCommand.Contains(changedHermesModel, StringComparison.Ordinal)
+            && decodedSshHermesFallbackCommand.Contains("--continue", StringComparison.Ordinal);
         var unsafeHermesModelScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, new SessionRecoveryEntry
         {
             SessionId = profile.Id,
@@ -2679,10 +2686,12 @@ public partial class MainWindow : Window
             && remoteImportedRecovery.SshConnectionArguments.SequenceEqual(importedSshCapture.ConnectionArguments)
             && remoteImportedRecovery.RemoteCodexWasActive && remoteImportedRecovery.RemoteCodexSessionId == remoteCodexId
             && remoteImportedRecovery.RemoteCodexModel == savedModel && remoteImportedRecovery.RemoteCodexPermissionProfile == savedPermissionProfile;
-        var remoteImportedScript = TerminalPane.DecodePowerShellStartupScript(TerminalPane.BuildCommandLine(profile, remoteImportedRecovery));
-        var importRestoresSshAndRemoteCodex = remoteImportedScript.Contains("ubuntu@15.204.82.129", StringComparison.Ordinal)
-            && remoteImportedScript.Contains(remoteCodexId, StringComparison.Ordinal)
-            && remoteImportedScript.Contains(savedModel, StringComparison.Ordinal);
+        var remoteImportedPlan = SshRecovery.BuildResumePlan(remoteImportedRecovery);
+        var importRestoresSshAndRemoteCodex = remoteImportedPlan?.Arguments.Contains("ubuntu@15.204.82.129", StringComparer.Ordinal) == true
+            && remoteImportedPlan.Arguments.LastOrDefault() is { } remoteImportedCommand
+            && SshRecovery.TryDecodePowerShellSafeRemoteCommand(remoteImportedCommand, out var decodedRemoteImportedCommand)
+            && decodedRemoteImportedCommand.Contains(remoteCodexId, StringComparison.Ordinal)
+            && decodedRemoteImportedCommand.Contains(savedModel, StringComparison.Ordinal);
         var parsedSshCommand = WindowsTerminalImportService.TryParseSshCommandLine(4242,
             $"\"C:\\Windows\\System32\\OpenSSH\\ssh.exe\" -i \"{expandedHomeIdentity}\" ubuntu@15.204.82.129");
         var importParsesQuotedSshIdentity = parsedSshCommand?.ProcessId == 4242
@@ -3341,8 +3350,9 @@ public partial class MainWindow : Window
                 SshConnectionArguments = ["ubuntu@example.test"]
             });
             var bareSshRecoveryKeepsDirectoryHook = bareSshResumePlan?.Arguments.LastOrDefault() is { } bareSshRemoteCommand
-                && bareSshRemoteCommand.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
-                && bareSshRemoteCommand.Contains("]9;9;", StringComparison.Ordinal);
+                && SshRecovery.TryDecodePowerShellSafeRemoteCommand(bareSshRemoteCommand, out var decodedBareSshRemoteCommand)
+                && decodedBareSshRemoteCommand.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
+                && decodedBareSshRemoteCommand.Contains("]9;9;", StringComparison.Ordinal);
             WorkspaceStore.Save(state);
             var automationPersistenceWorkspace = WorkspaceStore.Load(terminalProfile);
             var automationPersistenceProfile = automationPersistenceWorkspace.Sessions.First(value => value.Id == activationTarget.Profile.Id);

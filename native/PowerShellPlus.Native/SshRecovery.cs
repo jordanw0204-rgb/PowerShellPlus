@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -65,7 +66,7 @@ public static class SshLaunchStore
         var markerPath = MarkerPath(paneId, directory);
         var escapedPaneId = EscapePowerShell(paneId);
         var escapedMarkerPath = EscapePowerShell(markerPath);
-        var escapedRemoteShellCommand = EscapePowerShell(BuildRemoteInteractiveShellCommand(paneId));
+        var escapedRemoteShellCommand = EscapePowerShell(SshRecovery.BuildPowerShellSafeRemoteCommand(BuildRemoteInteractiveShellCommand(paneId)));
         return $$"""
 $global:__PowerShellPlusSshCommand = (Get-Command ssh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source;
 if ($global:__PowerShellPlusSshCommand) {
@@ -159,8 +160,8 @@ if ($global:__PowerShellPlusSshCommand) {
         }
         $__pspInternalRemoteCommand = $false;
         if ($__pspDestinationSeen -and $__pspIndex -ne $__pspArgs.Count) {
-            $__pspExpectedRemotePrefix = 'export POWERSHELLPLUS_PANE_ID=''{{escapedPaneId}}''; ';
-            if ([bool]$global:__PowerShellPlusSshRecoveryActive -and $__pspIndex -eq $__pspArgs.Count - 1 -and ([string]$__pspArgs[$__pspIndex]).StartsWith($__pspExpectedRemotePrefix, [StringComparison]::Ordinal)) {
+            $__pspExpectedRemotePattern = '^umask 077; f=\$\(mktemp\) \|\| exit 125; printf %s [A-Za-z0-9+/]{16,}={0,2} \| base64 -d >\$f; sh \$f; r=\$\?; rm -f \$f; exit \$r$';
+            if ([bool]$global:__PowerShellPlusSshRecoveryActive -and $__pspIndex -eq $__pspArgs.Count - 1 -and ([string]$__pspArgs[$__pspIndex]) -match $__pspExpectedRemotePattern) {
                 $__pspInternalRemoteCommand = $true;
                 $__pspIndex++;
             }
@@ -216,10 +217,17 @@ if ($global:__PowerShellPlusSshCommand) {
         var directory = Path.Combine(Path.GetTempPath(), "PowerShellPlus-ssh-wrapper-" + Guid.NewGuid().ToString("N"));
         try
         {
+            var remote = BuildRemoteInteractiveShellCommand("pty-fixture");
+            var transported = SshRecovery.BuildPowerShellSafeRemoteCommand(remote);
             var wrapper = BuildPowerShellWrapper("pty-fixture", directory);
             return wrapper.Contains("$__pspInstrumented.Add('-tt')", StringComparison.Ordinal)
                 && wrapper.Contains("$__pspInstrumented.Add([string]$__pspArgs[$__pspDestinationIndex])", StringComparison.Ordinal)
-                && wrapper.Contains("@__pspInvokeArgs", StringComparison.Ordinal);
+                && wrapper.Contains("@__pspInvokeArgs", StringComparison.Ordinal)
+                && wrapper.Contains("base64 -d", StringComparison.Ordinal)
+                && SshRecovery.TryDecodePowerShellSafeRemoteCommand(transported, out var decoded)
+                && decoded == remote
+                && !transported.Contains('"')
+                && !transported.Contains('\\');
         }
         finally
         {
@@ -377,7 +385,7 @@ public static class SshRecovery
         var remoteCommand = recovery.RemoteTmuxManaged
             ? RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, workload)
             : workload;
-        commandArguments.Add(remoteCommand);
+        commandArguments.Add(BuildPowerShellSafeRemoteCommand(remoteCommand));
         var description = recovery.HermesWasActive ? "SSH and Hermes session"
             : recovery.RemoteCodexWasActive ? "SSH and Codex session" : "SSH session";
         return new SshResumePlan(commandArguments.ToArray(), destination, description);
@@ -409,6 +417,28 @@ public static class SshRecovery
         return recovery.RemoteCodexWasActive
             ? RemoteCodexRecovery.BuildRemoteCommand(paneId, recovery)
             : $"export POWERSHELLPLUS_PANE_ID='{paneId}'; " + SshLaunchStore.BuildRemoteInteractiveWorkload();
+    }
+
+    internal static string BuildPowerShellSafeRemoteCommand(string remoteCommand)
+    {
+        if (string.IsNullOrWhiteSpace(remoteCommand)) throw new ArgumentException("A remote command is required.", nameof(remoteCommand));
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(remoteCommand));
+        return $"umask 077; f=$(mktemp) || exit 125; printf %s {payload} | base64 -d >$f; sh $f; r=$?; rm -f $f; exit $r";
+    }
+
+    internal static bool TryDecodePowerShellSafeRemoteCommand(string? transportedCommand, out string remoteCommand)
+    {
+        remoteCommand = string.Empty;
+        var match = Regex.Match(transportedCommand ?? string.Empty,
+            "^umask 077; f=\\$\\(mktemp\\) \\|\\| exit 125; printf %s (?<payload>[A-Za-z0-9+/]{16,}={0,2}) \\| base64 -d >\\$f; sh \\$f; r=\\$\\?; rm -f \\$f; exit \\$r$",
+            RegexOptions.CultureInvariant);
+        if (!match.Success) return false;
+        try
+        {
+            remoteCommand = Encoding.UTF8.GetString(Convert.FromBase64String(match.Groups["payload"].Value));
+            return remoteCommand.Length > 0;
+        }
+        catch (FormatException) { return false; }
     }
 
     public static bool ShouldKeepPendingRecovery(SessionRecoveryEntry? previous, SshLaunchMarker? launch, bool sshProcessActive)
