@@ -468,6 +468,26 @@ public static class SshRecovery
         => previous?.SshWasActive == true && launch?.RecoveryAttempt == true
             && (sshProcessActive || launch.IsFailedRecovery);
 
+    public static bool IsRestorableLaunch(SessionRecoveryEntry? previous, SshLaunchMarker? launch, bool sshProcessActive)
+        // The wrapper writes EndedUtc in its finally block. Until that durable exit
+        // marker exists, a launch remains restorable even when a WMI process-tree
+        // sample momentarily misses ssh.exe during shutdown or heavy startup load.
+        => launch?.IsActive == true || ShouldKeepPendingRecovery(previous, launch, sshProcessActive);
+
+    internal static bool ActiveLaunchSurvivesTransientProcessMissForTest()
+    {
+        var launch = new SshLaunchMarker
+        {
+            PaneId = "ssh-race-fixture",
+            StartedUtc = DateTime.UtcNow,
+            ConnectionArguments = ["example@example.com"]
+        };
+        var activeIsRestorable = IsRestorableLaunch(null, launch, false);
+        launch.EndedUtc = DateTime.UtcNow;
+        launch.ExitCode = 0;
+        return activeIsRestorable && !IsRestorableLaunch(null, launch, false);
+    }
+
     public static bool ShouldPreserveTranscript(SessionRecoveryEntry? previous, SshLaunchMarker? launch,
         bool sshProcessActive, string? currentOutput)
         => ShouldKeepPendingRecovery(previous, launch, sshProcessActive)

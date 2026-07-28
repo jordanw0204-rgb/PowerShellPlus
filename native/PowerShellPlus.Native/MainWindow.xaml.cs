@@ -69,14 +69,18 @@ public partial class MainWindow : Window
     private bool accentFieldDragging;
     private bool accentHueDragging;
 
-    public MainWindow(bool automationMode = false)
+    public MainWindow(bool automationMode = false, Action<StartupProgress>? startupProgress = null)
     {
         this.automationMode = automationMode;
+        startupProgress?.Invoke(new StartupProgress("Reading terminal profile", "Loading Windows Terminal appearance and shell defaults", 0, 4));
         var loadedTerminalProfile = WindowsTerminalProfile.Load();
         terminalProfile = automationMode ? loadedTerminalProfile.ForAutomation() : loadedTerminalProfile;
+        startupProgress?.Invoke(new StartupProgress("Loading workspace", "Reading sessions, terminals, drafts, and layouts", 1, 4));
         state = WorkspaceStore.Load(terminalProfile);
+        startupProgress?.Invoke(new StartupProgress("Reading recovery state", "Checking saved transcripts, SSH connections, and agent sessions", 2, 4));
         loadedRecovery = automationMode || !state.Settings.RestoreSessionsAfterRestart ? new SessionRecoverySnapshot() : SessionRecoveryStore.Load();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) ReconcileCodexRecovery();
+        startupProgress?.Invoke(new StartupProgress("Building workspace", $"Preparing {state.TerminalSessions.Count} sessions and {state.Sessions.Count} terminals", 3, 4));
         InitializeComponent();
         ConfigureLayoutControls();
         WorkspaceSessionList.ItemsSource = state.TerminalSessions;
@@ -101,7 +105,13 @@ public partial class MainWindow : Window
         recoveryTimer.Tick += async (_, _) => await CaptureRecoverySnapshotAsync();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
-        foreach (var profile in state.Sessions) CreatePane(profile);
+        var terminalIndex = 0;
+        foreach (var profile in state.Sessions)
+        {
+            startupProgress?.Invoke(new StartupProgress("Creating terminals", profile.Name, terminalIndex, Math.Max(1, state.Sessions.Count)));
+            CreatePane(profile);
+            terminalIndex++;
+        }
         var initialSession = state.TerminalSessions.FirstOrDefault(value => value.Id == state.ActiveTerminalSessionId)
             ?? state.TerminalSessions.First();
         SelectWorkspaceSession(initialSession.Id, false);
@@ -115,6 +125,39 @@ public partial class MainWindow : Window
             await CheckForUpdatesAsync(manual: false);
         };
     }
+
+    internal async Task WaitForTerminalStartupAsync(Action<StartupProgress>? report, TimeSpan? timeout = null)
+    {
+        var pending = panes.Values.Select(async pane => (Pane: pane, Ready: await pane.StartupReady)).ToList();
+        if (pending.Count == 0)
+        {
+            report?.Invoke(new StartupProgress("Workspace ready", "No terminals need to be started", 1, 1));
+            return;
+        }
+
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(30));
+        var completed = 0;
+        while (pending.Count > 0 && DateTime.UtcNow < deadline)
+        {
+            var remaining = deadline - DateTime.UtcNow;
+            var timeoutTask = Task.Delay(remaining);
+            var completion = await Task.WhenAny(pending.Cast<Task>().Append(timeoutTask));
+            if (ReferenceEquals(completion, timeoutTask)) break;
+            var terminalCompletion = (Task<(TerminalPane Pane, bool Ready)>)completion;
+            pending.Remove(terminalCompletion);
+            var result = await terminalCompletion;
+            completed++;
+            report?.Invoke(new StartupProgress(result.Ready ? "Terminal ready" : "Terminal needs attention",
+                result.Pane.Profile.Name, completed, panes.Count));
+        }
+
+        if (pending.Count > 0)
+            report?.Invoke(new StartupProgress("Opening workspace", $"{pending.Count} terminals are still starting in the background", completed, panes.Count));
+        else
+            report?.Invoke(new StartupProgress("Workspace ready", $"Started {completed} terminals", completed, panes.Count));
+    }
+
+    internal int TerminalCountForStartup => panes.Count;
 
     public void RestoreFromTray() => RestoreWindow(true);
 
@@ -534,10 +577,11 @@ public partial class MainWindow : Window
                     var sshProcess = capture.RootProcessId is int sshRootProcessId ? ProcessTreeInspector.FindSshProcess(sshRootProcessId) : default;
                     if (!sshProcess.IsActive && sshLaunch?.IsActive == true && sshLaunch.ShellProcessId is > 0)
                         sshProcess = ProcessTreeInspector.FindSshProcess(sshLaunch.ShellProcessId.Value);
-                    var sshIsActive = sshLaunch?.IsActive == true && sshProcess.IsActive;
+                    var sshLaunchIsActive = sshLaunch?.IsActive == true;
+                    var sshIsObserved = sshLaunchIsActive && sshProcess.IsActive;
                     var keepPendingSshRecovery = SshRecovery.ShouldKeepPendingRecovery(oldEntry, sshLaunch, sshProcess.IsActive);
-                    var sshRestorable = sshIsActive || keepPendingSshRecovery;
-                    var sshArguments = sshIsActive ? sshLaunch!.ConnectionArguments
+                    var sshRestorable = SshRecovery.IsRestorableLaunch(oldEntry, sshLaunch, sshProcess.IsActive);
+                    var sshArguments = sshLaunchIsActive ? sshLaunch!.ConnectionArguments
                         : keepPendingSshRecovery ? oldEntry!.SshConnectionArguments : [];
                     var samePreviousSsh = sshRestorable && oldEntry?.SshWasActive == true
                         && oldEntry.SshConnectionArguments.SequenceEqual(sshArguments, StringComparer.Ordinal);
@@ -546,14 +590,14 @@ public partial class MainWindow : Window
                     var previousHermes = samePreviousSsh
                         ? new HermesRecoveryState(oldEntry!.HermesWasActive, oldEntry.HermesSessionId, oldEntry.HermesModel, oldEntry.HermesUseTui)
                         : default;
-                    var hermes = sshIsActive ? HermesRecovery.Detect(capture.Output, previousHermes)
-                        : keepPendingSshRecovery ? previousHermes : default;
+                    var hermes = sshIsObserved ? HermesRecovery.Detect(capture.Output, previousHermes)
+                        : samePreviousSsh ? previousHermes : default;
                     var previousRemoteCodex = samePreviousSsh
                         ? new RemoteCodexRecoveryState(oldEntry!.RemoteCodexWasActive, oldEntry.RemoteCodexSessionId,
                             oldEntry.RemoteCodexWorkingDirectory, oldEntry.RemoteCodexModel, oldEntry.RemoteCodexSandboxMode,
                             oldEntry.RemoteCodexApprovalPolicy, oldEntry.RemoteCodexPermissionProfile, oldEntry.RemoteCodexApprovalsReviewer)
                         : default;
-                    var remoteCodexProbe = sshIsActive && !hermes.WasActive
+                    var remoteCodexProbe = sshIsObserved && !hermes.WasActive
                         ? RemoteCodexRecovery.Probe(capture.SessionId, sshArguments)
                         : default;
                     var remoteCodex = remoteCodexProbe.Succeeded ? remoteCodexProbe.State
@@ -568,7 +612,7 @@ public partial class MainWindow : Window
                     {
                         SessionId = capture.SessionId,
                         WorkingDirectory = codexDirectory ?? (codexIsActive && launch is not null ? launch.WorkingDirectory
-                            : sshIsActive ? sshLaunch!.WorkingDirectory
+                            : sshLaunchIsActive ? sshLaunch!.WorkingDirectory
                             : keepPendingSshRecovery ? oldEntry!.WorkingDirectory : capture.WorkingDirectory),
                         TranscriptFile = transcriptFile,
                         CodexWasActive = codexIsActive,
@@ -1813,6 +1857,13 @@ public partial class MainWindow : Window
         }
 
         await Task.Delay(1200);
+        var startupSnapshot = new StartupWindow { ShowActivated = false, ShowInTaskbar = false };
+        startupSnapshot.Show();
+        startupSnapshot.Report(new StartupProgress("Restoring terminals", "Connecting saved SSH sessions and terminal 3 of 8", 3, 8));
+        await Settle();
+        Render((FrameworkElement)startupSnapshot.Content, "ui-startup-loading.png");
+        startupSnapshot.Close();
+        await Settle();
         var root = (FrameworkElement)Content;
         root.UpdateLayout();
         var layoutButtons = LayoutButtons().Select(value => value.Button).ToArray();
@@ -2610,6 +2661,7 @@ public partial class MainWindow : Window
                 ExitCode = 0,
                 EndedUtc = DateTime.UtcNow
             }, false);
+        var activeSshLaunchSurvivesTransientProcessMiss = SshRecovery.ActiveLaunchSurvivesTransientProcessMissForTest();
         var recoveryRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "session-recovery-fixture");
         var transcriptFile = SessionRecoveryStore.SaveTranscript("test-session", "previous terminal output", recoveryRoot);
         var recoveryFixture = new SessionRecoverySnapshot();
@@ -2744,11 +2796,11 @@ public partial class MainWindow : Window
         var success = workspaceTestIsolated && composerDraftSurvivesStore && hidden && restored && sameLiveProcess && normalDoesNotResumeCodex && startupCommandIsBounded && codexResumesExactSession && codexResumesSavedModel && codexResumesSavedPermissions && codexResumesSavedPermissionProfile && unsafeModelRejected && unsafePermissionsRejected && ambiguousCodexUsesPicker && powershellWrapperInstalled
             && sshWrapperInstalled && managedSshShellUsesTmux && tmuxNamesAreBoundedAndSafe && persistentAgentResumeUsesTmux && safeSshAccepted && quotedHomeIdentityAccepted && safeSshReliabilityOptionsAccepted && unsafeSshRejected && hermesExactSessionDetected && hermesModelChangeDetected && unsafeHermesModelRejected && exitedHermesNotRestored && sshHermesExactResume && sshRecoveryIsBoundedAndVisible && sshHermesFallbackResume && unsafeHermesModelNotInjected && remoteProbeParsed && remoteCodexExactResume && unsafeRemoteProbeRejected && sshLoginOnlyRestored && unsafeSshResumeRejected
             && codexSessionMapped && latestModelMapped && latestPermissionsMapped && currentTurnContextPermissionsMapped && partialRolloutIgnored && changedDirectoryRestored && inTuiResumeRebound && activeThreadIdsRemainProcessBound && liveRolloutSharedRead && launchTimeFallbackRebound && exactLaunchBindingPersisted && normalCodexExitRecorded && wrapperRecordsPaneAndLifecycle
-            && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
+            && sshLaunchBindingPersisted && normalSshExitRecorded && sshWrapperRecordsSafeConnectionOnly && sshWrapperExecutesSafely && sshBannerTimeoutFallsBackInteractive && failedRecoveryStateRetained && activeSshLaunchSurvivesTransientProcessMiss && recoveryRoundTrip && unsafeLegacyIdDiscarded && importPreservesStableTabNames && importExtractsWorkingDirectories && importAutoMatchesExactCodexThread && importCarriesExactCodexPermissions && importResumeCommandIsExact && descendantDirectoryMatchesSessionRoot && ambiguousImportRequiresChoice
             && importCapturesSshAndRemoteCodex && importRestoresSshAndRemoteCodex && importParsesQuotedSshIdentity && imageBridgeIsBoundedAndSafe && fileBridgeIsBoundedAndSafe && terminalHoverDetailsWork;
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
         File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Live panes survived hide/restore; recovery resumed local and remote Codex, SSH, and Hermes with validated durable state.\nWorkspaceTestIsolated={workspaceTestIsolated}\nHidden={hidden}\nRestored={restored}\nSameLiveProcess={sameLiveProcess}\nNormalDoesNotResumeCodex={normalDoesNotResumeCodex}\nCodexResumesExactSession={codexResumesExactSession}\nCodexResumesSavedModel={codexResumesSavedModel}\nCodexResumesSavedPermissions={codexResumesSavedPermissions}\nCodexResumesSavedPermissionProfile={codexResumesSavedPermissionProfile}\nUnsafeModelRejected={unsafeModelRejected}\nUnsafePermissionsRejected={unsafePermissionsRejected}\nAmbiguousCodexUsesPicker={ambiguousCodexUsesPicker}\nPowerShellWrapperInstalled={powershellWrapperInstalled}\nSshWrapperInstalled={sshWrapperInstalled}\nSafeSshAccepted={safeSshAccepted}\nQuotedHomeIdentityAccepted={quotedHomeIdentityAccepted}\nSafeSshReliabilityOptionsAccepted={safeSshReliabilityOptionsAccepted}\nUnsafeSshRejected={unsafeSshRejected}\nHermesExactSessionDetected={hermesExactSessionDetected}\nHermesModelChangeDetected={hermesModelChangeDetected}\nUnsafeHermesModelRejected={unsafeHermesModelRejected}\nExitedHermesNotRestored={exitedHermesNotRestored}\nSshHermesExactResume={sshHermesExactResume}\nSshRecoveryIsBoundedAndVisible={sshRecoveryIsBoundedAndVisible}\nSshHermesFallbackResume={sshHermesFallbackResume}\nUnsafeHermesModelNotInjected={unsafeHermesModelNotInjected}\nRemoteProbeParsed={remoteProbeParsed}\nRemoteCodexExactResume={remoteCodexExactResume}\nUnsafeRemoteProbeRejected={unsafeRemoteProbeRejected}\nSshLoginOnlyRestored={sshLoginOnlyRestored}\nUnsafeSshResumeRejected={unsafeSshResumeRejected}\nCodexSessionMappedAcrossChangedDirectory={codexSessionMapped}\nLatestModelMapped={latestModelMapped}\nLatestPermissionsMapped={latestPermissionsMapped}\nCurrentTurnContextPermissionsMapped={currentTurnContextPermissionsMapped}\nPartialRolloutIgnored={partialRolloutIgnored}\nChangedDirectoryRestored={changedDirectoryRestored}\nInTuiResumeRebound={inTuiResumeRebound}\nActiveThreadIdsRemainProcessBound={activeThreadIdsRemainProcessBound}\nLiveRolloutSharedRead={liveRolloutSharedRead}\nLaunchTimeFallbackRebound={launchTimeFallbackRebound}\nExactLaunchBindingPersisted={exactLaunchBindingPersisted}\nNormalCodexExitRecorded={normalCodexExitRecorded}\nWrapperRecordsPaneAndLifecycle={wrapperRecordsPaneAndLifecycle}\nSshLaunchBindingPersisted={sshLaunchBindingPersisted}\nNormalSshExitRecorded={normalSshExitRecorded}\nSshWrapperRecordsSafeConnectionOnly={sshWrapperRecordsSafeConnectionOnly}\nSshWrapperExecutesSafely={sshWrapperExecutesSafely}\nSshWrapperDiagnostic={sshWrapperDiagnostic}\nSshBannerTimeoutFallsBackInteractive={sshBannerTimeoutFallsBackInteractive}\nSshBannerDiagnostic={sshBannerDiagnostic}\nFailedRecoveryStateRetained={failedRecoveryStateRetained}\nRecoveryRoundTrip={recoveryRoundTrip}\nUnsafeLegacyIdDiscarded={unsafeLegacyIdDiscarded}\nImportPreservesStableTabNames={importPreservesStableTabNames}\nImportExtractsWorkingDirectories={importExtractsWorkingDirectories}\nImportAutoMatchesExactCodexThread={importAutoMatchesExactCodexThread}\nImportCarriesExactCodexPermissions={importCarriesExactCodexPermissions}\nImportResumeCommandIsExact={importResumeCommandIsExact}\nDescendantDirectoryMatchesSessionRoot={descendantDirectoryMatchesSessionRoot}\nAmbiguousImportRequiresChoice={ambiguousImportRequiresChoice}\nImportCapturesSshAndRemoteCodex={importCapturesSshAndRemoteCodex}\nImportRestoresSshAndRemoteCodex={importRestoresSshAndRemoteCodex}\nImportParsesQuotedSshIdentity={importParsesQuotedSshIdentity}\nImageBridgeIsBoundedAndSafe={imageBridgeIsBoundedAndSafe}\nFileBridgeIsBoundedAndSafe={fileBridgeIsBoundedAndSafe}");
-        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}\nTerminalHoverDetailsWork={terminalHoverDetailsWork}\nStartupCommandIsBounded={startupCommandIsBounded}\nManagedSshShellUsesTmux={managedSshShellUsesTmux}\nTmuxNamesAreBoundedAndSafe={tmuxNamesAreBoundedAndSafe}\nPersistentAgentResumeUsesTmux={persistentAgentResumeUsesTmux}");
+        File.AppendAllText(reportPath, $"\nComposerDraftSurvivesStore={composerDraftSurvivesStore}\nTerminalHoverDetailsWork={terminalHoverDetailsWork}\nStartupCommandIsBounded={startupCommandIsBounded}\nManagedSshShellUsesTmux={managedSshShellUsesTmux}\nTmuxNamesAreBoundedAndSafe={tmuxNamesAreBoundedAndSafe}\nPersistentAgentResumeUsesTmux={persistentAgentResumeUsesTmux}\nActiveSshLaunchSurvivesTransientProcessMiss={activeSshLaunchSurvivesTransientProcessMiss}");
         return success;
     }
 
@@ -2851,6 +2903,10 @@ public partial class MainWindow : Window
             var terminalScrollbarsThemed = panes.Values.All(pane => pane.IsNativeScrollbarThemed());
             var terminalScrollbarsInteractive = panes.Values.All(pane => pane.NativeScrollbarInteractiveForTest);
             var terminalScrollbarBridgesStable = panes.Values.All(pane => pane.TerminalScrollbarBridgeStableForTest);
+            var startupLoadingWindow = new StartupWindow { ShowActivated = false, ShowInTaskbar = false };
+            startupLoadingWindow.Report(new StartupProgress("Starting terminals", "Smoke terminal", 1, 2));
+            var startupLoadingScreenReady = startupLoadingWindow.ContractIsValidForTest;
+            startupLoadingWindow.Close();
             var activationTarget = panes[added[0].Id];
             SelectPane(panes.Values.First().Profile.Id, false);
             var paneCommandInputTakesFocus = activationTarget.FocusCommandInputForTest();
@@ -3487,7 +3543,7 @@ public partial class MainWindow : Window
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
                 && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
-                && settingsScrollbarThemed && updateUiContractReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
+                && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
@@ -3516,6 +3572,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
+            File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");

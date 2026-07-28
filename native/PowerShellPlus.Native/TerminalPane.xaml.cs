@@ -239,14 +239,21 @@ public partial class TerminalPane : UserControl
     private bool attachmentDragOccurred;
     private Visibility terminalVisibilityBeforeAttachmentPreview = Visibility.Visible;
     private bool startupProfileFallbackAttempted;
+    private readonly TaskCompletionSource<bool> startupReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int attachmentPillRefreshCount;
     private bool commandInputFileDropHandlersInstalled;
     private ScrollBar? nativeScrollbar;
+    private TerminalContainer? nativeScrollContainer;
+    private Delegate? nativeTerminalScrolledHandler;
+    private bool nativeTerminalScrollCallbackObserved;
     private bool terminalScrollbarBridgeAttached;
     private bool terminalScrollbarUpdating;
     private (double Value, double Maximum, double ViewportSize)? terminalScrollbarState;
     private int terminalScrollbarRefreshPending;
     private volatile bool terminalScrollbarRangeObserved;
+    private static readonly EventInfo? NativeTerminalScrolledEvent = typeof(TerminalContainer).GetEvent("TerminalScrolled", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly MethodInfo? NativeTerminalUserScrollMethod = typeof(TerminalContainer).GetMethod("UserScroll", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly MethodInfo? NativeTerminalWheelMethod = typeof(TerminalControl).GetMethod("TermControl_UserScrolled", BindingFlags.Instance | BindingFlags.NonPublic);
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -339,6 +346,7 @@ public partial class TerminalPane : UserControl
                     SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
                     Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
                     File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] {exception}\n");
+                    startupReady.TrySetResult(false);
                     return;
                 }
             }
@@ -347,12 +355,14 @@ public partial class TerminalPane : UserControl
             RefreshRemoteDimensions();
             ConfigureRecoveryView();
             await RecoverFromStalledPowerShellProfileAsync();
+            startupReady.TrySetResult(Terminal.ConPTYTerm?.TermProcIsStarted == true);
         };
         Unloaded += (_, _) =>
         {
             FlushComposerState();
             agentStatusTimer.Stop();
             UnregisterTerminalThreadMessageHook();
+            DetachNativeTerminalScrollBridge();
         };
     }
 
@@ -361,6 +371,8 @@ public partial class TerminalPane : UserControl
         PaneBorder.BorderBrush = active ? WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal) : new SolidColorBrush(Color.FromRgb(49, 50, 68));
         PaneBorder.BorderThickness = active ? new Thickness(1.5) : new Thickness(1);
     }
+
+    internal Task<bool> StartupReady => startupReady.Task;
 
     private void ApplyAccent()
     {
@@ -1585,6 +1597,8 @@ public partial class TerminalPane : UserControl
         && (!TerminalViewportScrollbar.IsEnabled
             || TerminalViewportScrollbar.InputHitTest(new Point(TerminalViewportScrollbar.ActualWidth / 2, TerminalViewportScrollbar.ActualHeight / 2)) is not null);
     public bool TerminalScrollbarBridgeStableForTest => terminalScrollbarBridgeAttached && terminalContainer is not null
+        && nativeScrollContainer is not null && nativeTerminalScrolledHandler is not null
+        && NativeTerminalUserScrollMethod is not null && NativeTerminalWheelMethod is not null
         && TerminalViewportScrollbar.Orientation == Orientation.Vertical
         && TerminalViewportScrollbar.ActualWidth <= TerminalScrollbarGutter.ActualWidth
         && nativeScrollbar is { IsHitTestVisible: false, Opacity: 0 }
@@ -1595,6 +1609,7 @@ public partial class TerminalPane : UserControl
     public string TerminalScrollbarBridgeDiagnosticForTest => string.Join(", ", new[]
     {
         $"Attached={terminalScrollbarBridgeAttached}",
+        $"NativeCallback={nativeTerminalScrolledHandler is not null}/{nativeTerminalScrollCallbackObserved}",
         $"Container={terminalContainer is not null}",
         $"External={TerminalViewportScrollbar.ActualWidth:F1}x{TerminalViewportScrollbar.ActualHeight:F1}",
         $"Gutter={TerminalScrollbarGutter.ActualWidth:F1}",
@@ -1627,11 +1642,13 @@ public partial class TerminalPane : UserControl
     public bool TerminalScrollbarRebindsReplacementForTest()
     {
         var original = nativeScrollbar;
+        var callbackObserved = nativeTerminalScrollCallbackObserved;
         if (original is null) return false;
         var first = new ScrollBar { Minimum = 0, Maximum = 40, ViewportSize = 10, Value = 4 };
         var second = new ScrollBar { Minimum = 0, Maximum = 80, ViewportSize = 12, Value = 8 };
         try
         {
+            nativeTerminalScrollCallbackObserved = false;
             BindNativeScrollbar(first);
             first.Value = 15;
             var firstFollowed = Math.Abs(TerminalViewportScrollbar.Value - 15) < .5;
@@ -1645,8 +1662,10 @@ public partial class TerminalPane : UserControl
         }
         finally
         {
+            nativeTerminalScrollCallbackObserved = false;
             BindNativeScrollbar(original);
             SynchronizeTerminalViewportScrollbar();
+            nativeTerminalScrollCallbackObserved = callbackObserved;
         }
     }
     public bool RecoveryOverlayVisibleForTest => RecoveryOverlay.Visibility == Visibility.Visible;
@@ -1845,6 +1864,7 @@ public partial class TerminalPane : UserControl
 
     private void ConfigureNativeScrollbar()
     {
+        AttachNativeTerminalScrollBridge();
         var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
         if (scrollbar is null)
         {
@@ -1877,8 +1897,47 @@ public partial class TerminalPane : UserControl
         scrollbar.IsHitTestVisible = false;
         scrollbar.Focusable = false;
         AttachTerminalScrollbarBridge();
-        UpdateTerminalViewportScrollbar((int)Math.Round(scrollbar.Value), (int)Math.Round(scrollbar.ViewportSize),
-            (int)Math.Round(scrollbar.Maximum + scrollbar.ViewportSize));
+        if (!nativeTerminalScrollCallbackObserved)
+            UpdateTerminalViewportScrollbar((int)Math.Round(scrollbar.Value), (int)Math.Round(scrollbar.ViewportSize),
+                (int)Math.Round(scrollbar.Maximum + scrollbar.ViewportSize));
+    }
+
+    private void AttachNativeTerminalScrollBridge()
+    {
+        var container = FindVisualChild<TerminalContainer>(Terminal.Terminal);
+        if (ReferenceEquals(nativeScrollContainer, container) && nativeTerminalScrolledHandler is not null) return;
+        DetachNativeTerminalScrollBridge();
+        nativeScrollContainer = container;
+        if (container is null || NativeTerminalScrolledEvent?.GetAddMethod(true) is not { } addMethod) return;
+        try
+        {
+            EventHandler<(int viewTop, int viewHeight, int bufferSize)> handler = NativeTerminalScrolled;
+            addMethod.Invoke(container, [handler]);
+            nativeTerminalScrolledHandler = handler;
+        }
+        catch
+        {
+            nativeTerminalScrolledHandler = null;
+        }
+    }
+
+    private void DetachNativeTerminalScrollBridge()
+    {
+        if (nativeScrollContainer is not null && nativeTerminalScrolledHandler is not null
+            && NativeTerminalScrolledEvent?.GetRemoveMethod(true) is { } removeMethod)
+        {
+            try { removeMethod.Invoke(nativeScrollContainer, [nativeTerminalScrolledHandler]); } catch { }
+        }
+        nativeTerminalScrolledHandler = null;
+        nativeScrollContainer = null;
+        nativeTerminalScrollCallbackObserved = false;
+    }
+
+    private void NativeTerminalScrolled(object? sender, (int viewTop, int viewHeight, int bufferSize) state)
+    {
+        nativeTerminalScrollCallbackObserved = true;
+        terminalScrollbarState = (state.viewTop, Math.Max(0, state.bufferSize - state.viewHeight), state.viewHeight);
+        UpdateTerminalViewportScrollbar(state.viewTop, state.viewHeight, state.bufferSize);
     }
 
     private void AttachTerminalScrollbarBridge()
@@ -1909,6 +1968,7 @@ public partial class TerminalPane : UserControl
         // ready a few frames later than the visual tree, so restore both as one
         // post-restart binding operation.
         terminalScrollbarRangeObserved = false;
+        nativeTerminalScrollCallbackObserved = false;
         for (var attempt = 0; attempt < 40; attempt++)
         {
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
@@ -1932,7 +1992,7 @@ public partial class TerminalPane : UserControl
 
     private void SynchronizeTerminalViewportScrollbar()
     {
-        if (nativeScrollbar is null) return;
+        if (nativeScrollbar is null || nativeTerminalScrollCallbackObserved) return;
         var state = (nativeScrollbar.Value, nativeScrollbar.Maximum, nativeScrollbar.ViewportSize);
         if (terminalScrollbarState == state) return;
         terminalScrollbarState = state;
@@ -1982,7 +2042,9 @@ public partial class TerminalPane : UserControl
     private bool TryScrollTerminalViewport(int wheelDelta)
     {
         ConfigureNativeScrollbar();
-        if (!TerminalViewportScrollbar.IsEnabled || nativeScrollbar is null || wheelDelta == 0) return false;
+        if (wheelDelta == 0) return false;
+        if (!TerminalViewportScrollbar.IsEnabled || TerminalViewportScrollbar.Maximum <= 0)
+            return TryForwardNativeWheelDelta(wheelDelta);
         var configuredLines = SystemParameters.WheelScrollLines;
         var lines = configuredLines > 0 ? configuredLines : Math.Max(1, (int)TerminalViewportScrollbar.ViewportSize - 1);
         var target = Math.Clamp(TerminalViewportScrollbar.Value - Math.Sign(wheelDelta) * lines,
@@ -1996,14 +2058,36 @@ public partial class TerminalPane : UserControl
 
     private void ForwardTerminalScroll(double target, ScrollEventType eventType)
     {
+        var normalized = Math.Clamp(target, TerminalViewportScrollbar.Minimum, TerminalViewportScrollbar.Maximum);
+        if (nativeScrollContainer is not null && NativeTerminalUserScrollMethod is not null)
+        {
+            try
+            {
+                NativeTerminalUserScrollMethod.Invoke(nativeScrollContainer, [(int)Math.Round(normalized)]);
+                if (nativeScrollbar is not null) nativeScrollbar.Value = Math.Clamp(normalized, nativeScrollbar.Minimum, nativeScrollbar.Maximum);
+                return;
+            }
+            catch { }
+        }
         if (nativeScrollbar is null) return;
-        var normalized = Math.Clamp(target, nativeScrollbar.Minimum, nativeScrollbar.Maximum);
-        nativeScrollbar.Value = normalized;
-        nativeScrollbar.RaiseEvent(new ScrollEventArgs(eventType, normalized)
+        var nativeValue = Math.Clamp(normalized, nativeScrollbar.Minimum, nativeScrollbar.Maximum);
+        nativeScrollbar.Value = nativeValue;
+        nativeScrollbar.RaiseEvent(new ScrollEventArgs(eventType, nativeValue)
         {
             RoutedEvent = ScrollBar.ScrollEvent,
             Source = nativeScrollbar
         });
+    }
+
+    private bool TryForwardNativeWheelDelta(int wheelDelta)
+    {
+        if (NativeTerminalWheelMethod is null) return false;
+        try
+        {
+            NativeTerminalWheelMethod.Invoke(Terminal.Terminal, [Terminal.Terminal, wheelDelta]);
+            return true;
+        }
+        catch { return false; }
     }
 
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject

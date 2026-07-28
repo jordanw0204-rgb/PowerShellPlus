@@ -1,0 +1,68 @@
+<Window x:Class="PowerShellPlus.Native.StartupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PowerShellPlus" Icon="Assets/PowerShellPlus.ico"
+        Width="520" Height="310" WindowStartupLocation="CenterScreen"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
+        Background="Transparent" ShowInTaskbar="True" Topmost="True">
+  <Border Background="#F211111B" BorderBrush="#585B70" BorderThickness="1" CornerRadius="14">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="28" ShadowDepth="8" Opacity="0.55" Color="#05050A"/>
+    </Border.Effect>
+    <Grid Margin="32,28">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+        <Grid Width="54" Height="54">
+          <Border x:Name="LogoGlow" Background="#202D5D87" CornerRadius="14"/>
+          <Border Margin="5" Background="#181825" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="10">
+            <Viewbox Margin="9">
+              <Grid Width="24" Height="24">
+                <Path Data="M4,6 L10,12 L4,18 M12,18 H20" Stroke="#89B4FA" StrokeThickness="2.2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/>
+              </Grid>
+            </Viewbox>
+          </Border>
+        </Grid>
+        <StackPanel Grid.Column="1" Margin="16,3,0,0">
+          <TextBlock Text="PowerShellPlus" FontSize="22" FontWeight="SemiBold" Foreground="#CDD6F4"/>
+          <TextBlock Text="Restoring your workspace" FontSize="11" Foreground="#89B4FA" Margin="0,4,0,0"/>
+        </StackPanel>
+      </Grid>
+
+      <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,12,0,10">
+        <TextBlock x:Name="StageText" Text="Starting PowerShellPlus" FontSize="16" FontWeight="SemiBold" Foreground="#CDD6F4"/>
+        <TextBlock x:Name="DetailText" Text="Preparing the application" FontSize="11" Foreground="#A6ADC8"
+                   TextTrimming="CharacterEllipsis" Margin="0,7,0,0"/>
+      </StackPanel>
+
+      <Grid Grid.Row="2">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <ProgressBar x:Name="StartupProgressBar" Height="5" Minimum="0" Maximum="1" Value="0"
+                     BorderThickness="0" Background="#313244" Foreground="#89B4FA">
+          <ProgressBar.Template>
+            <ControlTemplate TargetType="ProgressBar">
+              <Grid ClipToBounds="True">
+                <Border Background="{TemplateBinding Background}" CornerRadius="3"/>
+                <Border x:Name="PART_Track"/>
+                <Border x:Name="PART_Indicator" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}" CornerRadius="3">
+                  <Border.Effect><DropShadowEffect BlurRadius="8" ShadowDepth="0" Opacity="0.7" Color="#89B4FA"/></Border.Effect>
+                </Border>
+              </Grid>
+            </ControlTemplate>
+          </ProgressBar.Template>
+        </ProgressBar>
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+          <TextBlock Text="Sessions, SSH connections, and agent state are restored without recreating your work."
+                     FontSize="9" Foreground="#6C7086"/>
+          <TextBlock x:Name="ProgressText" Text="Initializing" HorizontalAlignment="Right" FontSize="9" Foreground="#A6ADC8"/>
+        </Grid>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

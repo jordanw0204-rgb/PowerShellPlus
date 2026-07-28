@@ -11,7 +11,7 @@ public partial class App : Application
     private EventWaitHandle? activationEvent;
     private CancellationTokenSource? activationCancellation;
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         var automationMode = e.Args.Any(IsAutomationArgument);
@@ -27,7 +27,29 @@ public partial class App : Application
             return;
         }
 
-        var window = new MainWindow(automationMode);
+        StartupWindow? startupWindow = null;
+        if (!automationMode)
+        {
+            startupWindow = new StartupWindow();
+            startupWindow.Show();
+            startupWindow.Report(new StartupProgress("Starting PowerShellPlus", "Preparing the native terminal workspace", 0, 1));
+        }
+
+        MainWindow window;
+        try
+        {
+            window = new MainWindow(automationMode, startupWindow is null ? null : startupWindow.Report);
+        }
+        catch (Exception exception)
+        {
+            if (startupWindow is not null)
+            {
+                startupWindow.Report(new StartupProgress("Startup failed", exception.Message, 1, 1));
+                await Task.Delay(2500);
+                startupWindow.Close();
+            }
+            throw;
+        }
         MainWindow = window;
         if (!automationMode) StartActivationListener(window);
 
@@ -92,6 +114,14 @@ public partial class App : Application
             };
         }
         window.Show();
+        if (startupWindow is not null)
+        {
+            startupWindow.Report(new StartupProgress("Starting terminals", "Connecting shells and restoring saved sessions", 0, Math.Max(1, window.TerminalCountForStartup)));
+            await window.WaitForTerminalStartupAsync(startupWindow.Report);
+            await Task.Delay(220);
+            startupWindow.Close();
+            window.Activate();
+        }
     }
 
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
