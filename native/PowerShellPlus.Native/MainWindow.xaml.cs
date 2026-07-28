@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private const string TrayQuitLabel = "Quit PowerShellPlus";
     private const string TrayRestartLabel = "Restart PowerShellPlus";
     private const string TrayFullQuitLabel = "Fully Quit PowerShellPlus && Tmux Terminals";
+    private const string TerminalDragDataFormat = "PowerShellPlus.TerminalOrder";
     private sealed record RecoveryPaneSource(string SessionId, string WorkingDirectory, TerminalPane Pane, int? RootProcessId);
     private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId);
     private const double WorkspaceSidebarWidth = 278;
@@ -34,6 +35,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer automationTimer;
     private readonly DispatcherTimer recoveryTimer;
     private readonly DispatcherTimer workspaceSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer terminalDragSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly bool automationMode;
     private readonly SessionRecoverySnapshot loadedRecovery;
     private System.Windows.Forms.NotifyIcon? trayIcon;
@@ -52,6 +54,12 @@ public partial class MainWindow : Window
     private bool terminalTabSelectionSync;
     private Point? terminalOrderDragStart;
     private string? terminalOrderDragId;
+    private string? terminalDragSourceId;
+    private string? terminalDragOriginSessionId;
+    private string? terminalDragHoverSessionId;
+    private ListBoxItem? terminalDragHoverSessionContainer;
+    private TerminalPane? terminalDropIndicatorPane;
+    private bool terminalDragMoveCompleted;
     private TerminalSession? workspaceSessionHoverCandidate;
     private TerminalSession? workspaceSessionHoverOrigin;
     private bool workspaceSessionHoverPreviewActive;
@@ -96,6 +104,7 @@ public partial class MainWindow : Window
         SessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
         WorkspaceSessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
         workspaceSessionHoverTimer.Tick += WorkspaceSessionHoverTimerTick;
+        terminalDragSessionHoverTimer.Tick += TerminalDragSessionHoverTimerTick;
         SnippetList.ItemsSource = state.Snippets;
         AutomationList.ItemsSource = state.Automations;
         InitializeAutomationTimeUi();
@@ -209,6 +218,7 @@ public partial class MainWindow : Window
         automationTimer.Stop();
         recoveryTimer.Stop();
         workspaceSessionHoverTimer.Stop();
+        terminalDragSessionHoverTimer.Stop();
         saveTimer.Stop();
         windowsTerminalDragMonitor?.Dispose();
         windowsTerminalDragMonitor = null;
@@ -568,6 +578,7 @@ public partial class MainWindow : Window
     {
         if (automationMode || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
         CaptureRecoverySnapshotCore(MaterializeRecoveryPaneCaptures(CollectRecoveryPaneSources()), state.Settings.SaveTerminalTranscripts);
+        RefreshTmuxTerminalIndicators(SessionRecoveryStore.Load());
     }
 
     private async Task CaptureRecoverySnapshotAsync()
@@ -583,6 +594,7 @@ public partial class MainWindow : Window
                 var captures = MaterializeRecoveryPaneCaptures(sources);
                 CaptureRecoverySnapshotCore(captures, saveTerminalTranscripts);
             });
+            RefreshTmuxTerminalIndicators(SessionRecoveryStore.Load());
         }
         finally
         {
@@ -598,6 +610,13 @@ public partial class MainWindow : Window
         .Select(source => new RecoveryPaneCapture(source.SessionId, source.WorkingDirectory,
             source.Pane.GetRecoveryOutputForSnapshot(), source.RootProcessId))
         .ToList();
+
+    private void RefreshTmuxTerminalIndicators(SessionRecoverySnapshot snapshot)
+    {
+        foreach (var profile in state.Sessions)
+            profile.SetTmuxTerminal(snapshot.Sessions.TryGetValue(profile.Id, out var recovery)
+                && recovery.SshWasActive && recovery.RemoteTmuxManaged);
+    }
 
     private void CaptureRecoverySnapshotCore(IReadOnlyList<RecoveryPaneCapture> captures, bool saveTerminalTranscripts)
     {
@@ -703,7 +722,8 @@ public partial class MainWindow : Window
                     var samePreviousSsh = sshRestorable && oldEntry?.SshWasActive == true
                         && oldEntry.SshConnectionArguments.SequenceEqual(sshArguments, StringComparer.Ordinal);
                     var remoteTmuxManaged = sshRestorable
-                        && (sshLaunch?.PersistentSessionRequested == true || samePreviousSsh && oldEntry?.RemoteTmuxManaged == true);
+                        && (sshLaunch?.PersistentSessionRequested == true || samePreviousSsh && oldEntry?.RemoteTmuxManaged == true)
+                        && !capture.Output.Contains("tmux is not installed", StringComparison.OrdinalIgnoreCase);
                     var previousHermes = samePreviousSsh
                         ? new HermesRecoveryState(oldEntry!.HermesWasActive, oldEntry.HermesSessionId, oldEntry.HermesModel, oldEntry.HermesUseTui)
                         : default;
@@ -907,6 +927,11 @@ public partial class MainWindow : Window
         pane.CloseRequested += async (_, _) => await CloseTerminalAsync(profile);
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
         pane.DetachRequested += (_, _) => DetachSessionToWindowsTerminal(profile, pane);
+        pane.DragRequested += (_, _) => BeginTerminalDrag(profile.Id);
+        pane.AllowDrop = true;
+        pane.DragOver += TerminalLayoutDragOver;
+        pane.DragLeave += TerminalLayoutDragLeave;
+        pane.Drop += TerminalLayoutDrop;
         panes[profile.Id] = pane;
     }
 
@@ -1744,6 +1769,7 @@ public partial class MainWindow : Window
 
     private void MarkTerminalDetached(SessionProfile profile, TerminalPane pane)
     {
+        profile.SetTmuxTerminal(true);
         profile.SetRemoteDetached(true);
         if (activePane == pane)
         {
@@ -3415,6 +3441,24 @@ public partial class MainWindow : Window
             MoveTerminalToDropPosition(tabReorderSource, tabReorderTarget, false);
             var terminalReorderSynchronizes = activeWorkspaceSession.TerminalIds[0] == tabReorderSource.Id
                 && activeSessionTerminals[0].Id == tabReorderSource.Id && ReferenceEquals(TerminalTabList.Items[0], tabReorderSource);
+            var moveSourceFixture = new TerminalSession { Name = "Drag source", TerminalIds = ["drag-a", "drag-b"], ActiveTerminalId = "drag-b" };
+            var moveTargetFixture = new TerminalSession { Name = "Drag target", TerminalIds = ["drag-c"], ActiveTerminalId = "drag-c" };
+            var terminalMovesAcrossSessions = MoveTerminalBetweenSessions(moveSourceFixture, moveTargetFixture, "drag-b", "drag-c", false)
+                && moveSourceFixture.TerminalIds.SequenceEqual(["drag-a"])
+                && moveSourceFixture.ActiveTerminalId == "drag-a"
+                && moveTargetFixture.TerminalIds.SequenceEqual(["drag-b", "drag-c"])
+                && moveTargetFixture.ActiveTerminalId == "drag-b"
+                && MoveTerminalBetweenSessions(moveTargetFixture, moveTargetFixture, "drag-c", "drag-b", false)
+                && moveTargetFixture.TerminalIds.SequenceEqual(["drag-c", "drag-b"]);
+            var tmuxBadgeFixture = new SessionProfile();
+            var tmuxBadgeTracksManagedState = !tmuxBadgeFixture.IsTmuxTerminal;
+            tmuxBadgeFixture.SetTmuxTerminal(true);
+            tmuxBadgeTracksManagedState = tmuxBadgeTracksManagedState && tmuxBadgeFixture.IsTmuxTerminal;
+            tmuxBadgeFixture.SetTmuxTerminal(false);
+            tmuxBadgeTracksManagedState = tmuxBadgeTracksManagedState && !tmuxBadgeFixture.IsTmuxTerminal;
+            var terminalDragInteractionReady = TerminalHost.AllowDrop && WorkspaceSessionTabs.AllowDrop
+                && terminalDragSessionHoverTimer.Interval == TimeSpan.FromMilliseconds(500)
+                && activationTarget.HeaderDragContractPassesForTest;
             activeWorkspaceSession.TerminalIds = originalTerminalOrder.ToList();
             RefreshActiveTerminalList();
             SelectPane(tabReorderTarget.Id, false);
@@ -3680,7 +3724,9 @@ public partial class MainWindow : Window
                 && profileStartupWatchdogWorks
                 && attachmentPreviewKindsWork && removingPathRemovesPill && composerSshPathsRewrite
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
-                && rows && columns && focus && grid && tabs && terminalTabsShowAgentAndName && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && rows && columns && focus && grid && tabs && terminalTabsShowAgentAndName && tabContextMenusWork && terminalReorderSynchronizes
+                && terminalMovesAcrossSessions && tmuxBadgeTracksManagedState && terminalDragInteractionReady
+                && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && plainPowerShellHeaderVisible && terminalTabAgentStateMirrorsPane
                 && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
@@ -3697,7 +3743,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
-            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
@@ -4012,21 +4058,45 @@ public partial class MainWindow : Window
         var current = e.GetPosition(list);
         if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
             && Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
-        var data = new DataObject("PowerShellPlus.TerminalOrder", terminalId);
-        DragDrop.DoDragDrop(list, data, DragDropEffects.Move);
+        BeginTerminalDrag(terminalId);
         terminalOrderDragStart = null;
         terminalOrderDragId = null;
     }
 
+    private void BeginTerminalDrag(string terminalId)
+    {
+        if (terminalDragSourceId is not null || !panes.ContainsKey(terminalId)) return;
+        var owner = state.TerminalSessions.FirstOrDefault(value => value.TerminalIds.Contains(terminalId, StringComparer.Ordinal));
+        if (owner is null) return;
+        CancelWorkspaceSessionHoverPreview(true);
+        terminalDragSourceId = terminalId;
+        terminalDragOriginSessionId = owner.Id;
+        terminalDragMoveCompleted = false;
+        var data = new DataObject(TerminalDragDataFormat, terminalId);
+        try { DragDrop.DoDragDrop(this, data, DragDropEffects.Move); }
+        finally
+        {
+            terminalDragSessionHoverTimer.Stop();
+            terminalDragHoverSessionId = null;
+            SetTerminalDragSessionIndicator(null);
+            SetTerminalDropIndicator(null, false);
+            if (!terminalDragMoveCompleted && terminalDragOriginSessionId is { } originId
+                && !string.Equals(state.ActiveTerminalSessionId, originId, StringComparison.Ordinal))
+                SelectWorkspaceSession(originId, false);
+            terminalDragSourceId = null;
+            terminalDragOriginSessionId = null;
+        }
+    }
+
     private void TerminalOrderDragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent("PowerShellPlus.TerminalOrder") ? DragDropEffects.Move : DragDropEffects.None;
+        e.Effects = e.Data.GetDataPresent(TerminalDragDataFormat) ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
 
     private void TerminalOrderDrop(object sender, DragEventArgs e)
     {
-        if (sender is not ListBox list || e.Data.GetData("PowerShellPlus.TerminalOrder") is not string sourceId
+        if (sender is not ListBox list || e.Data.GetData(TerminalDragDataFormat) is not string sourceId
             || activeWorkspaceSession is null || state.Sessions.FirstOrDefault(value => value.Id == sourceId) is not { } source) return;
         var container = ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) as ListBoxItem;
         var target = container?.DataContext as SessionProfile;
@@ -4034,27 +4104,173 @@ public partial class MainWindow : Window
         var after = container is not null && (ReferenceEquals(list, TerminalTabList)
             ? position.X >= container.ActualWidth / 2
             : position.Y >= container.ActualHeight / 2);
-        MoveTerminalToDropPosition(source, target, after);
+        terminalDragMoveCompleted = MoveTerminalToSessionPosition(source, activeWorkspaceSession, target, after);
+        e.Effects = terminalDragMoveCompleted ? DragDropEffects.Move : DragDropEffects.None;
         e.Handled = true;
     }
 
     private void MoveTerminalToDropPosition(SessionProfile source, SessionProfile? target, bool after)
     {
-        if (activeWorkspaceSession is null) return;
-        var ids = activeWorkspaceSession.TerminalIds;
-        var current = ids.IndexOf(source.Id);
-        if (current < 0) return;
-        var insertion = target is null ? ids.Count : ids.IndexOf(target.Id) + (after ? 1 : 0);
-        if (insertion < 0) return;
-        ids.RemoveAt(current);
-        if (current < insertion) insertion--;
-        insertion = Math.Clamp(insertion, 0, ids.Count);
-        ids.Insert(insertion, source.Id);
+        if (activeWorkspaceSession is not null) MoveTerminalToSessionPosition(source, activeWorkspaceSession, target, after);
+    }
+
+    private bool MoveTerminalToSessionPosition(SessionProfile source, TerminalSession targetSession, SessionProfile? target, bool after)
+    {
+        var sourceSession = state.TerminalSessions.FirstOrDefault(value => value.TerminalIds.Contains(source.Id, StringComparer.Ordinal));
+        if (sourceSession is null || !MoveTerminalBetweenSessions(sourceSession, targetSession, source.Id, target?.Id, after)) return false;
+        if (!ReferenceEquals(activeWorkspaceSession, targetSession)) SelectWorkspaceSession(targetSession.Id, false);
         RefreshActiveTerminalList();
+        RefreshWorkspaceSessionViews();
         ApplyLayout();
         SelectPane(source.Id, false);
         ScheduleSave();
-        UpdateStatus($"Reordered {source.Name}");
+        UpdateStatus(ReferenceEquals(sourceSession, targetSession)
+            ? $"Reordered {source.Name}"
+            : $"Moved {source.Name} to {targetSession.Name}");
+        return true;
+    }
+
+    private static bool MoveTerminalBetweenSessions(TerminalSession sourceSession, TerminalSession targetSession,
+        string terminalId, string? targetTerminalId, bool after)
+    {
+        var current = sourceSession.TerminalIds.IndexOf(terminalId);
+        if (current < 0 || targetSession.TerminalIds.Contains(terminalId, StringComparer.Ordinal)
+            && !ReferenceEquals(sourceSession, targetSession)) return false;
+        var insertion = targetTerminalId is null ? targetSession.TerminalIds.Count : targetSession.TerminalIds.IndexOf(targetTerminalId);
+        if (insertion < 0) return false;
+        if (targetTerminalId is not null && after) insertion++;
+        sourceSession.TerminalIds.RemoveAt(current);
+        if (ReferenceEquals(sourceSession, targetSession) && current < insertion) insertion--;
+        insertion = Math.Clamp(insertion, 0, targetSession.TerminalIds.Count);
+        targetSession.TerminalIds.Insert(insertion, terminalId);
+        if (sourceSession.ActiveTerminalId == terminalId && !ReferenceEquals(sourceSession, targetSession))
+            sourceSession.ActiveTerminalId = sourceSession.TerminalIds.FirstOrDefault();
+        targetSession.ActiveTerminalId = terminalId;
+        return true;
+    }
+
+    private void WorkspaceSessionTerminalDragOver(object sender, DragEventArgs e)
+    {
+        if (sender is not ListBox list || e.Data.GetData(TerminalDragDataFormat) is not string
+            || ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) is not ListBoxItem container
+            || container.DataContext is not TerminalSession targetSession)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        SetTerminalDragSessionIndicator(container);
+        if (!string.Equals(terminalDragHoverSessionId, targetSession.Id, StringComparison.Ordinal))
+        {
+            terminalDragSessionHoverTimer.Stop();
+            terminalDragHoverSessionId = targetSession.Id;
+            if (!string.Equals(state.ActiveTerminalSessionId, targetSession.Id, StringComparison.Ordinal))
+                terminalDragSessionHoverTimer.Start();
+        }
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void WorkspaceSessionTerminalDragLeave(object sender, DragEventArgs e)
+    {
+        terminalDragSessionHoverTimer.Stop();
+        terminalDragHoverSessionId = null;
+        SetTerminalDragSessionIndicator(null);
+        e.Handled = true;
+    }
+
+    private void WorkspaceSessionTerminalDrop(object sender, DragEventArgs e)
+    {
+        terminalDragSessionHoverTimer.Stop();
+        if (sender is ListBox list && e.Data.GetData(TerminalDragDataFormat) is string sourceId
+            && state.Sessions.FirstOrDefault(value => value.Id == sourceId) is { } source
+            && ItemsControl.ContainerFromElement(list, e.OriginalSource as DependencyObject) is ListBoxItem container
+            && container.DataContext is TerminalSession targetSession)
+        {
+            terminalDragMoveCompleted = MoveTerminalToSessionPosition(source, targetSession, null, true);
+            e.Effects = terminalDragMoveCompleted ? DragDropEffects.Move : DragDropEffects.None;
+        }
+        SetTerminalDragSessionIndicator(null);
+        terminalDragHoverSessionId = null;
+        e.Handled = true;
+    }
+
+    private void TerminalDragSessionHoverTimerTick(object? sender, EventArgs e)
+    {
+        terminalDragSessionHoverTimer.Stop();
+        if (terminalDragSourceId is null || terminalDragHoverSessionId is not { } sessionId
+            || string.Equals(state.ActiveTerminalSessionId, sessionId, StringComparison.Ordinal)) return;
+        SelectWorkspaceSession(sessionId, false);
+        if (state.Sessions.FirstOrDefault(value => value.Id == terminalDragSourceId) is { } profile
+            && state.TerminalSessions.FirstOrDefault(value => value.Id == sessionId) is { } target)
+            UpdateStatus($"Move {profile.Name} to {target.Name} · choose its position");
+    }
+
+    private void SetTerminalDragSessionIndicator(ListBoxItem? container)
+    {
+        if (ReferenceEquals(terminalDragHoverSessionContainer, container)) return;
+        if (terminalDragHoverSessionContainer is not null) terminalDragHoverSessionContainer.Tag = null;
+        terminalDragHoverSessionContainer = container;
+        if (container is not null) container.Tag = true;
+    }
+
+    private void TerminalLayoutDragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(TerminalDragDataFormat) is not string || activeWorkspaceSession is null)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        var (target, after) = ResolveTerminalLayoutDropTarget(e.GetPosition(TerminalHost));
+        SetTerminalDropIndicator(target, after);
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void TerminalLayoutDragLeave(object sender, DragEventArgs e)
+    {
+        var point = e.GetPosition(TerminalHost);
+        if (point.X >= 0 && point.Y >= 0 && point.X <= TerminalHost.ActualWidth && point.Y <= TerminalHost.ActualHeight) return;
+        SetTerminalDropIndicator(null, false);
+        e.Handled = true;
+    }
+
+    private void TerminalLayoutDrop(object sender, DragEventArgs e)
+    {
+        var (targetPane, after) = ResolveTerminalLayoutDropTarget(e.GetPosition(TerminalHost));
+        if (e.Data.GetData(TerminalDragDataFormat) is string sourceId && activeWorkspaceSession is not null
+            && state.Sessions.FirstOrDefault(value => value.Id == sourceId) is { } source)
+            terminalDragMoveCompleted = MoveTerminalToSessionPosition(source, activeWorkspaceSession, targetPane?.Profile, after);
+        SetTerminalDropIndicator(null, false);
+        e.Effects = terminalDragMoveCompleted ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private (TerminalPane? Pane, bool After) ResolveTerminalLayoutDropTarget(Point point)
+    {
+        var candidates = TerminalHost.Children.OfType<TerminalPane>()
+            .Where(value => value.Visibility == Visibility.Visible && value.ActualWidth > 0 && value.ActualHeight > 0)
+            .Select(value => (Pane: value, Origin: value.TranslatePoint(new Point(), TerminalHost)))
+            .ToArray();
+        if (candidates.Length == 0) return (null, false);
+        var candidate = candidates.FirstOrDefault(value => new Rect(value.Origin, value.Pane.RenderSize).Contains(point));
+        if (candidate.Pane is null)
+            candidate = candidates.MinBy(value => Math.Pow(point.X - value.Origin.X - value.Pane.ActualWidth / 2, 2)
+                + Math.Pow(point.Y - value.Origin.Y - value.Pane.ActualHeight / 2, 2));
+        var local = new Point(point.X - candidate.Origin.X, point.Y - candidate.Origin.Y);
+        var after = activeWorkspaceSession?.Layout == "Rows"
+            ? local.Y >= candidate.Pane.ActualHeight / 2
+            : local.X >= candidate.Pane.ActualWidth / 2;
+        return (candidate.Pane, after);
+    }
+
+    private void SetTerminalDropIndicator(TerminalPane? pane, bool after)
+    {
+        if (terminalDropIndicatorPane is not null && !ReferenceEquals(terminalDropIndicatorPane, pane))
+            terminalDropIndicatorPane.SetDropTargetIndicator(false, false);
+        terminalDropIndicatorPane = pane;
+        pane?.SetDropTargetIndicator(true, after);
     }
     private static T? ItemFromSender<T>(object sender) where T : class => (sender as FrameworkElement)?.DataContext as T;
     private void SelectCard(object? value)

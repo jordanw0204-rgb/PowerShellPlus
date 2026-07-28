@@ -174,8 +174,11 @@ public partial class TerminalPane : UserControl
     public event EventHandler? CloseRequested;
     public event EventHandler? EditRequested;
     public event EventHandler? DetachRequested;
+    public event EventHandler? DragRequested;
     public event Action<TerminalPane, string>? RawOutputReceived;
     private SessionRecoveryEntry? startupRecovery;
+    private Point? paneHeaderDragStart;
+    private bool paneIsActive;
     private string previousOutput = string.Empty;
     private TerminalContainer? terminalContainer;
     private HwndSourceHook? terminalInternalMessageHook;
@@ -270,6 +273,7 @@ public partial class TerminalPane : UserControl
         Func<IEnumerable<AutomationRule>>? automationProvider = null, Action<AutomationRule>? automationEditRequested = null)
     {
         Profile = profile;
+        Profile.SetTmuxTerminal(recovery is { SshWasActive: true, RemoteTmuxManaged: true });
         currentAppearance = appearance;
         terminalWindowSubclassProc = TerminalWindowSubclassProc;
         startupRecovery = recovery;
@@ -391,9 +395,29 @@ public partial class TerminalPane : UserControl
 
     public void SetActive(bool active)
     {
+        paneIsActive = active;
         PaneBorder.BorderBrush = active ? WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal) : new SolidColorBrush(Color.FromRgb(49, 50, 68));
         PaneBorder.BorderThickness = active ? new Thickness(1.5) : new Thickness(1);
     }
+
+    public void SetDropTargetIndicator(bool visible, bool after)
+    {
+        PaneDropMarker.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        PaneDropMarker.HorizontalAlignment = after ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        PaneDropMarker.Margin = after ? new Thickness(0, 3, -8, 3) : new Thickness(-8, 3, 0, 3);
+        PaneHeader.Background = visible
+            ? new SolidColorBrush(Color.FromRgb(36, 36, 56))
+            : new SolidColorBrush(Color.FromRgb(24, 24, 37));
+        if (visible)
+        {
+            PaneBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(203, 166, 247));
+            PaneBorder.BorderThickness = new Thickness(2);
+        }
+        else SetActive(paneIsActive);
+    }
+
+    internal bool HeaderDragContractPassesForTest => PaneHeader.Cursor == Cursors.SizeAll
+        && PaneHeaderActions.Cursor == Cursors.Arrow && PaneDropMarker.IsHitTestVisible == false;
 
     internal Task<bool> StartupReady => startupReady.Task;
 
@@ -1229,6 +1253,7 @@ public partial class TerminalPane : UserControl
             : startupRecovery?.SshWasActive == true ? startupRecovery : null;
         SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
         startupRecovery = sshRecovery;
+        Profile.SetTmuxTerminal(sshRecovery is { SshWasActive: true, RemoteTmuxManaged: true });
         DisposeTmuxScrollbackClient();
         Interlocked.Increment(ref tmuxScrollbarGeneration);
         tmuxScrollbackState = default;
@@ -1600,6 +1625,7 @@ public partial class TerminalPane : UserControl
     {
         Profile = profile;
         startupRecovery = null;
+        Profile.SetTmuxTerminal(false);
         TitleText.Text = profile.Name;
         ApplyAccent();
         Terminal.StartupCommandLine = BuildCommandLine(profile, null);
@@ -3879,6 +3905,35 @@ public partial class TerminalPane : UserControl
     }
     private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
+    private void PaneHeaderDragStart(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || e.OriginalSource is not DependencyObject source
+            || IsWithin(source, PaneHeaderActions)) return;
+        paneHeaderDragStart = e.GetPosition(PaneHeader);
+        PaneHeader.CaptureMouse();
+    }
+    private void PaneHeaderDragEnd(object sender, MouseButtonEventArgs e)
+    {
+        paneHeaderDragStart = null;
+        if (ReferenceEquals(Mouse.Captured, PaneHeader)) Mouse.Capture(null);
+    }
+    private void PaneHeaderDragLeave(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Released) return;
+        paneHeaderDragStart = null;
+        if (ReferenceEquals(Mouse.Captured, PaneHeader)) Mouse.Capture(null);
+    }
+    private void PaneHeaderDragMove(object sender, MouseEventArgs e)
+    {
+        if (paneHeaderDragStart is not Point start || e.LeftButton != MouseButtonState.Pressed) return;
+        var current = e.GetPosition(PaneHeader);
+        if (Math.Abs(current.X - start.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(current.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        paneHeaderDragStart = null;
+        if (ReferenceEquals(Mouse.Captured, PaneHeader)) Mouse.Capture(null);
+        DragRequested?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
+    }
     private void ToggleCommandBarClick(object sender, RoutedEventArgs e) { SetCommandBarExpanded(!Profile.CommandBarExpanded, true, true); e.Handled = true; }
     private void PreviousOutputClick(object sender, RoutedEventArgs e) => ConfigureRecoveryView(true);
     private void CloseRecoveryClick(object sender, RoutedEventArgs e) { SetRecoverySurfaceVisible(false); Terminal.Focus(); }

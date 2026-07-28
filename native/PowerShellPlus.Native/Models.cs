@@ -150,6 +150,7 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public string LiveWorkingDirectory { get; set; } = string.Empty;
     public bool LiveWorkingDirectoryIsSsh { get; set; }
     [JsonIgnore] public bool IsRemoteDetached { get; private set; }
+    [JsonIgnore] public bool IsTmuxTerminal { get; private set; }
     [JsonIgnore] public string Subtitle => string.IsNullOrWhiteSpace(LiveWorkingDirectory) ? WorkingDirectory : LiveWorkingDirectory;
     [JsonIgnore] public string DirectoryPrefix => IsRemoteDetached ? "SSH · detached · " : LiveWorkingDirectoryIsSsh ? "SSH · " : string.Empty;
     [JsonIgnore] public string AgentStatusState { get; private set; } = "starting";
@@ -169,6 +170,13 @@ public sealed class SessionProfile : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Subtitle)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DirectoryPrefix)));
+    }
+
+    public void SetTmuxTerminal(bool managed)
+    {
+        if (IsTmuxTerminal == managed) return;
+        IsTmuxTerminal = managed;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsTmuxTerminal)));
     }
 
     public void UpdateAgentStatus(string state, string accessibleText)

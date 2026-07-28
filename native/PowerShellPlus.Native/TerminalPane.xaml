@@ -7,7 +7,9 @@
   <Border x:Name="PaneBorder" Background="#11111B" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4" PreviewMouseLeftButtonDown="ActivatePane">
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Border x:Name="PaneHeader" Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1">
+      <Border x:Name="PaneHeader" Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1"
+              Cursor="SizeAll" PreviewMouseLeftButtonDown="PaneHeaderDragStart" PreviewMouseLeftButtonUp="PaneHeaderDragEnd"
+              PreviewMouseMove="PaneHeaderDragMove" MouseLeave="PaneHeaderDragLeave">
         <Grid Margin="10,0,5,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Border x:Name="PaneAccentBar" Grid.ColumnSpan="3" Width="3" CornerRadius="2" HorizontalAlignment="Left" Margin="-10,5,0,5"/>
@@ -38,7 +40,7 @@
             <TextBlock x:Name="TitleText" FontSize="11" FontWeight="SemiBold"/>
             <TextBlock x:Name="StateText" Text="  Windows PowerShell" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
           </StackPanel>
-          <StackPanel Grid.Column="2" Orientation="Horizontal">
+          <StackPanel x:Name="PaneHeaderActions" Grid.Column="2" Orientation="Horizontal" Cursor="Arrow">
             <Button x:Name="PreviousOutputButton" Content="◷" ToolTip="Previous session output" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed" Click="PreviousOutputClick"/>
             <Button Content="⌫" ToolTip="Clear" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="ClearClick"/>
             <Button Content="■" ToolTip="Stop" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="StopClick"/>
@@ -47,6 +49,8 @@
             <Button Content="•••" ToolTip="Edit" Width="32" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="EditClick"/>
             <Button Content="×" ToolTip="Close" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#F38BA8" Click="CloseClick"/>
           </StackPanel>
+          <Border x:Name="PaneDropMarker" Grid.ColumnSpan="3" Width="4" Margin="-8,3" HorizontalAlignment="Left"
+                  Background="#CBA6F7" CornerRadius="2" Panel.ZIndex="8" Visibility="Collapsed" IsHitTestVisible="False"/>
         </Grid>
       </Border>
       <Grid x:Name="TerminalSurfaceGrid" Grid.Row="1">
