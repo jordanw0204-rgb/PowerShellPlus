@@ -3274,8 +3274,11 @@ public partial class MainWindow : Window
             };
             state.TerminalSessions.Add(alternateWorkspaceSession);
             BeginWorkspaceSessionHoverPreviewForTest(alternateWorkspaceSession);
-            await Task.Delay(650);
-            var hoverPreviewSwitchesAfterDelay = WorkspaceSessionHoverPreviewActiveForTest
+            var hoverPreviewWaitsForDelay = !WorkspaceSessionHoverPreviewActiveForTest;
+            await Task.Delay(30);
+            CompleteWorkspaceSessionHoverDelayForTest();
+            var hoverPreviewSwitchesAfterDelay = hoverPreviewWaitsForDelay && WorkspaceSessionHoverDelayConfiguredForTest
+                && WorkspaceSessionHoverPreviewActiveForTest
                 && ReferenceEquals(activeWorkspaceSession, alternateWorkspaceSession)
                 && state.ActiveTerminalSessionId == primaryWorkspaceSession.Id
                 && TerminalHost.Children.OfType<TerminalPane>().Count() == 1;
@@ -3704,6 +3707,8 @@ public partial class MainWindow : Window
         UpdateStatus($"{origin.Name} · {origin.Subtitle}");
     }
     internal void BeginWorkspaceSessionHoverPreviewForTest(TerminalSession session) => BeginWorkspaceSessionHoverPreview(session);
+    internal void CompleteWorkspaceSessionHoverDelayForTest() => WorkspaceSessionHoverTimerTick(null, EventArgs.Empty);
+    internal bool WorkspaceSessionHoverDelayConfiguredForTest => workspaceSessionHoverTimer.Interval == TimeSpan.FromMilliseconds(500);
     internal void EndWorkspaceSessionHoverPreviewForTest() => CancelWorkspaceSessionHoverPreview(true);
     internal bool WorkspaceSessionHoverPreviewActiveForTest => workspaceSessionHoverPreviewActive;
     private void NewWorkspaceSessionClick(object sender, RoutedEventArgs e)

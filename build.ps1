@@ -44,6 +44,7 @@ function Invoke-NativeGate([string]$Executable, [string]$ArgumentName, [string]$
     if (-not (Test-Path -LiteralPath $report)) { throw "$ArgumentName did not produce a report." }
     Get-Content -LiteralPath $report -TotalCount 8
     if ($process.ExitCode -ne 0 -or (Get-Content -LiteralPath $report -TotalCount 1) -notlike 'PASS*') {
+        Get-Content -LiteralPath $report
         throw "$ArgumentName failed with exit code $($process.ExitCode)."
     }
 }
