@@ -20,6 +20,8 @@ internal enum PowerShellPlusDialogResult
     Cancel
 }
 
+internal sealed record UpdatePromptChoice(bool Accepted, bool DontShowAgain);
+
 public partial class PowerShellPlusDialog : Window
 {
     private PowerShellPlusDialogResult result = PowerShellPlusDialogResult.Cancel;
@@ -92,6 +94,22 @@ public partial class PowerShellPlusDialog : Window
         return dialog.result;
     }
 
+    internal static UpdatePromptChoice ShowUpdate(Window? owner, UpdateRelease release)
+    {
+        var notes = string.IsNullOrWhiteSpace(release.Notes) ? "This release includes improvements and fixes."
+            : release.Notes;
+        var dialog = new PowerShellPlusDialog($"PowerShellPlus {release.DisplayVersion} is available",
+            $"You have {ApplicationUpdater.CurrentVersionText}.\n\n{notes}", PowerShellPlusDialogKind.Information,
+            "Update now", null, "Not now", defaultToPrimary: true, primaryIsDangerous: false);
+        dialog.OptionCheckBox.Content = "Don't show update notifications again";
+        dialog.OptionCheckBox.Visibility = Visibility.Visible;
+        if (owner?.IsVisible == true) dialog.Owner = owner;
+        else dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        _ = dialog.ShowDialog();
+        return new UpdatePromptChoice(dialog.result == PowerShellPlusDialogResult.Primary,
+            dialog.OptionCheckBox.IsChecked == true);
+    }
+
     internal static bool ValidateThemeContract()
     {
         var dialog = new PowerShellPlusDialog("Theme contract", "Wrapped body copy", PowerShellPlusDialogKind.Warning,
@@ -104,7 +122,25 @@ public partial class PowerShellPlusDialog : Window
             && dialog.PrimaryActionButton.Content?.ToString() == "Continue"
             && dialog.SecondaryActionButton.Visibility == Visibility.Visible
             && dialog.CancelActionButton.IsDefault
+            && dialog.OptionCheckBox.Visibility == Visibility.Collapsed
             && dialog.PrimaryActionButton.Foreground is SolidColorBrush;
+    }
+
+    internal static bool ValidateUpdatePromptContract()
+    {
+        var release = new UpdateRelease(new Version(99, 1, 0), "v99.1.0", "99.1.0", "Release notes",
+            new Uri("https://github.com/jordanw0204-rgb/PowerShellPlus/releases/tag/v99.1.0"),
+            new Uri("https://github.com/jordanw0204-rgb/PowerShellPlus/releases/download/v99.1.0/PowerShellPlus-Setup-x64.exe"),
+            100, new string('a', 64));
+        var dialog = new PowerShellPlusDialog($"PowerShellPlus {release.DisplayVersion} is available",
+            "You have 1.0.0.\n\nRelease notes", PowerShellPlusDialogKind.Information,
+            "Update now", null, "Not now", true, false);
+        dialog.OptionCheckBox.Content = "Don't show update notifications again";
+        dialog.OptionCheckBox.Visibility = Visibility.Visible;
+        return dialog.OptionCheckBox.Visibility == Visibility.Visible
+            && dialog.OptionCheckBox.Content?.ToString() == "Don't show update notifications again"
+            && dialog.PrimaryActionButton.Content?.ToString() == "Update now"
+            && dialog.CancelActionButton.Content?.ToString() == "Not now";
     }
 
     internal static PowerShellPlusDialog CreateSnapshotDialog() => new(

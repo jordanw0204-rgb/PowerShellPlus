@@ -44,6 +44,8 @@
             <TextBlock x:Name="MessageText" Foreground="#A6ADC8" FontSize="13" LineHeight="20"
                        TextWrapping="Wrap"/>
           </ScrollViewer>
+          <CheckBox x:Name="OptionCheckBox" Visibility="Collapsed" Margin="0,16,0,0"
+                    Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
         </StackPanel>
       </Grid>
 

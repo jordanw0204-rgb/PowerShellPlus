@@ -271,6 +271,13 @@
                 <CheckBox x:Name="SettingsSaveTranscripts" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Save previous terminal output locally" TextWrapping="Wrap" Width="178"/></CheckBox>
                 <TextBlock Text="Keeps up to 500,000 characters per pane in your PowerShellPlus data folder. Terminal output can contain private information." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
+                <TextBlock Text="APPLICATION UPDATES" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock x:Name="SettingsInstalledVersion" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                <CheckBox x:Name="SettingsAutomaticUpdates" Style="{StaticResource ToggleSwitch}" Click="SettingsUpdatesChanged"><TextBlock Text="Notify me when updates are available" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Checks the latest stable GitHub Release when PowerShellPlus starts. No update is installed until you approve it." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
+                <Button x:Name="SettingsCheckForUpdatesButton" Content="Check for updates" HorizontalAlignment="Stretch" Click="CheckForUpdatesClick"/>
+                <TextBlock x:Name="SettingsUpdateStatus" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,7,0,0"/>
+
                 <TextBlock Text="WORKSPACE DATA" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <Button Content="Open workspace data folder" HorizontalAlignment="Stretch" Margin="0,0,0,6" Click="OpenDataFolderClick"/>
                 <Button Content="Reset appearance to WT profile" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="SettingsResetClick" ToolTip="Clear overrides and use the Windows Terminal profile appearance"/>

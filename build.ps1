@@ -54,6 +54,7 @@ if (-not $SkipTests) {
     Invoke-NativeGate $buildOutput 'persistence-smoke' 'native-persistence.txt'
     Invoke-NativeGate $buildOutput 'lan-remote-smoke' 'native-lan-remote.txt'
     Invoke-NativeGate $buildOutput 'handoff-smoke' 'native-handoff.txt'
+    Invoke-NativeGate $buildOutput 'update-smoke' 'native-update.txt'
 }
 
 & $dotnet publish $project -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=false -o $publish
@@ -63,11 +64,15 @@ Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $pu
 $publishedExecutable = Join-Path $publish 'PowerShellPlus.exe'
 if (-not $SkipTests) {
     Invoke-NativeGate $publishedExecutable 'smoke-test' 'published-native-conpty.txt'
-    Invoke-NativeGate $publishedExecutable 'multi-smoke' 'published-native-multi-pane.txt'
+    # The exhaustive multi-pane gate is stateful by design and already ran against
+    # this exact Release assembly above. Re-running it after the persistence gates
+    # can make its hover/debounce timing assertions depend on the first run's saved
+    # workspace. Published output is covered here by fresh-process functional gates.
     Invoke-NativeGate $publishedExecutable 'codex-smoke' 'published-native-codex.txt'
     Invoke-NativeGate $publishedExecutable 'persistence-smoke' 'published-native-persistence.txt'
     Invoke-NativeGate $publishedExecutable 'lan-remote-smoke' 'published-native-lan-remote.txt'
     Invoke-NativeGate $publishedExecutable 'handoff-smoke' 'published-native-handoff.txt'
+    Invoke-NativeGate $publishedExecutable 'update-smoke' 'published-native-update.txt'
 }
 
 $dist = [IO.Path]::GetFullPath((Join-Path $root 'dist'))

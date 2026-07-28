@@ -125,6 +125,7 @@ public sealed class WorkspaceSettings
     public bool SaveTerminalTranscripts { get; set; } = true;
     public bool SendToAllModifierEnabled { get; set; } = true;
     public string SendToAllModifier { get; set; } = "Shift";
+    public bool CheckForUpdatesAutomatically { get; set; } = true;
 }
 
 public sealed class SessionProfile : INotifyPropertyChanged

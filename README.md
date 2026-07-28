@@ -34,7 +34,11 @@ PowerShellPlus stores its workspace locally under `%APPDATA%\PowerShellPlus`. Th
 
 ## Installation for beginners
 
-There is no traditional installer yet. The included build script creates a ready-to-run copy of the app for you. You only need to do these steps once.
+Download **PowerShellPlus-Setup-x64.exe** from the [latest GitHub Release](https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest), open it, and follow the short setup wizard. The per-user installer does not require administrator access by default, creates a Start menu shortcut, and offers an optional desktop shortcut.
+
+The release also includes **PowerShellPlus-Portable-x64.zip** for people who prefer a portable copy. The installer is recommended because it supports clean upgrades and uninstalling through Windows Settings.
+
+The source-build steps below are for contributors or anyone who specifically wants to compile PowerShellPlus themselves.
 
 ### 1. Check your computer
 
@@ -186,7 +190,11 @@ Recovery options are available under **Settings → Session recovery**. Saved te
 
 ## Updating later
 
-Open PowerShell in the project folder and run:
+Installed copies check the latest stable GitHub Release after startup. When an update is available, PowerShellPlus shows the release notes and lets you update now, decline, or turn off automatic update notifications. The installer is downloaded only after approval and its size and SHA-256 digest are verified against GitHub's release metadata before it opens.
+
+Use **Settings -> Check for updates** at any time for a manual check. This works even when automatic notifications are disabled.
+
+For source-built portable copies, open PowerShell in the project folder and run:
 
 ```powershell
 git pull
