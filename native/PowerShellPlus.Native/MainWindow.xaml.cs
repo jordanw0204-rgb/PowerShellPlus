@@ -1707,6 +1707,7 @@ public partial class MainWindow : Window
                 "Remove terminal?", PowerShellPlusDialogKind.Question,
                 "Remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: true)) return false;
         if (stopPane) pane.Stop();
+        else pane.ReleaseAuxiliaryResources();
         TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
         foreach (var session in state.TerminalSessions)
         {
@@ -2904,6 +2905,7 @@ public partial class MainWindow : Window
             var terminalScrollbarsInteractive = panes.Values.All(pane => pane.NativeScrollbarInteractiveForTest);
             var terminalScrollbarBridgesStable = panes.Values.All(pane => pane.TerminalScrollbarBridgeStableForTest);
             var tmuxScrollbackBridgeContract = RemoteTmuxScrollback.ContractPassesForTest();
+            var persistentTmuxScrollChannelContract = PersistentSshCommandChannel.ContractPassesForTest();
             var startupLoadingWindow = new StartupWindow { ShowActivated = false, ShowInTaskbar = false };
             startupLoadingWindow.Report(new StartupProgress("Starting terminals", "Smoke terminal", 1, 2));
             var startupLoadingScreenReady = startupLoadingWindow.ContractIsValidForTest;
@@ -3542,7 +3544,8 @@ public partial class MainWindow : Window
                 && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerStateDebouncesSustainedTyping && composerTypingLatencyBounded;
             var success = inputReady && outputReady && recoveryCapturesOutput && recoverySnapshotsAvoidUiThread
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
-                && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable && tmuxScrollbackBridgeContract
+                && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
+                && tmuxScrollbackBridgeContract && persistentTmuxScrollChannelContract
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
@@ -3585,7 +3588,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
-            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTmuxScrollbackBridgeContract={tmuxScrollbackBridgeContract}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalScrollbarRebindsReplacement={terminalScrollbarRebindsReplacement}\nTerminalScrollbarSurvivesRestart={terminalScrollbarSurvivesRestart}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
+            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTmuxScrollbackBridgeContract={tmuxScrollbackBridgeContract}\nPersistentTmuxScrollChannelContract={persistentTmuxScrollChannelContract}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalScrollbarRebindsReplacement={terminalScrollbarRebindsReplacement}\nTerminalScrollbarSurvivesRestart={terminalScrollbarSurvivesRestart}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
             if (!terminalScrollbarBridgesStable)
                 foreach (var pane in panes.Values) File.AppendAllText(reportPath, $"\nTerminalScrollbarBridge[{pane.Profile.Name}]={pane.TerminalScrollbarBridgeDiagnosticForTest}");
             if (!success)

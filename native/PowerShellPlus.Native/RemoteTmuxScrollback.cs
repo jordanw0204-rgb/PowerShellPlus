@@ -86,6 +86,9 @@ internal static class RemoteTmuxScrollback
             + $"send-keys -X -N {scrollPosition.ToString(CultureInfo.InvariantCulture)} -t {target} scroll-up";
     }
 
+    internal static string BuildScrollAndProbeCommand(string sessionName, int scrollPosition)
+        => BuildScrollCommand(sessionName, scrollPosition) + "; " + BuildProbeCommand(sessionName);
+
     internal static bool ContractPassesForTest()
     {
         const string name = "powershellplus-1234567890abcdef";
@@ -95,13 +98,16 @@ internal static class RemoteTmuxScrollback
             && scrolled.IsCopyMode && scrolled.ScrollPosition == 120 && scrolled.ViewTop == 961;
         var probe = BuildProbeCommand(name);
         var scroll = BuildScrollCommand(name, 120);
+        var scrollAndProbe = BuildScrollAndProbeCommand(name, 120);
         var bottomCommand = BuildScrollCommand(name, 0);
         return parsed && probe.Contains("#{history_size}", StringComparison.Ordinal)
             && probe.Contains("#{scroll_position}", StringComparison.Ordinal)
             && scroll.Contains("copy-mode", StringComparison.Ordinal)
             && scroll.Contains("scroll-up", StringComparison.Ordinal)
             && scroll.Contains("-N 120", StringComparison.Ordinal)
+            && scrollAndProbe.Contains(Marker, StringComparison.Ordinal)
             && bottomCommand.Contains("cancel", StringComparison.Ordinal)
+            && PersistentSshCommandChannel.ContractPassesForTest()
             && !scroll.Contains("\n", StringComparison.Ordinal);
     }
 
@@ -116,4 +122,67 @@ internal static class RemoteTmuxScrollback
     }
 
     private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
+}
+
+internal sealed class RemoteTmuxScrollbackClient : IDisposable
+{
+    private readonly SessionRecoveryEntry recovery;
+    private readonly string sessionName;
+    private readonly PersistentSshCommandChannel channel;
+    private bool disposed;
+
+    private RemoteTmuxScrollbackClient(SessionRecoveryEntry recovery, string sessionName, PersistentSshCommandChannel channel)
+    {
+        this.recovery = recovery;
+        this.sessionName = sessionName;
+        this.channel = channel;
+    }
+
+    public static bool TryCreate(SessionRecoveryEntry? recovery, out RemoteTmuxScrollbackClient? client)
+    {
+        client = null;
+        if (recovery is null || !TryResolveTarget(recovery, out var sessionName)
+            || !PersistentSshCommandChannel.TryCreate(recovery, out var channel) || channel is null) return false;
+        client = new RemoteTmuxScrollbackClient(recovery, sessionName, channel);
+        return true;
+    }
+
+    public async Task<RemoteTmuxScrollbackState> ProbeAsync(CancellationToken cancellationToken = default)
+    {
+        if (disposed) return default;
+        var command = RemoteTmuxScrollback.BuildProbeCommand(sessionName);
+        var result = await channel.ExecuteAsync(command, cancellationToken).ConfigureAwait(false);
+        if (result.Succeeded && RemoteTmuxScrollback.TryParse(result.Output, out var state)) return state;
+        return await RemoteTmuxScrollback.ProbeAsync(recovery, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<RemoteTmuxScrollbackState> ScrollAndProbeAsync(int scrollPosition,
+        CancellationToken cancellationToken = default)
+    {
+        if (disposed) return default;
+        var command = RemoteTmuxScrollback.BuildScrollAndProbeCommand(sessionName, scrollPosition);
+        var result = await channel.ExecuteAsync(command, cancellationToken).ConfigureAwait(false);
+        if (result.Succeeded && RemoteTmuxScrollback.TryParse(result.Output, out var state)) return state;
+
+        var fallback = await RemoteTmuxSession.RunSshCommandAsync(recovery, command, cancellationToken).ConfigureAwait(false);
+        return fallback.Started && fallback.ExitCode == 0 && RemoteTmuxScrollback.TryParse(fallback.Output, out state)
+            ? state : default;
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        channel.Dispose();
+    }
+
+    private static bool TryResolveTarget(SessionRecoveryEntry recovery, out string sessionName)
+    {
+        sessionName = RemoteTmuxSession.IsSafeSessionName(recovery.RemoteTmuxSessionName)
+            ? recovery.RemoteTmuxSessionName!
+            : RemoteTmuxSession.GetSessionName(recovery.SessionId);
+        return recovery.SshWasActive && recovery.RemoteTmuxManaged
+            && RemoteTmuxSession.IsSafeSessionName(sessionName)
+            && SshRecovery.TryNormalizeConnectionArguments(recovery.SshConnectionArguments, out _, out _);
+    }
 }
