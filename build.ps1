@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipTests,
+    [switch]$SkipCodexTests,
     [switch]$BuildElectronFallback,
     [switch]$StageOnly
 )
@@ -50,7 +51,9 @@ function Invoke-NativeGate([string]$Executable, [string]$ArgumentName, [string]$
 if (-not $SkipTests) {
     Invoke-NativeGate $buildOutput 'smoke-test' 'native-conpty.txt'
     Invoke-NativeGate $buildOutput 'multi-smoke' 'native-multi-pane.txt'
-    Invoke-NativeGate $buildOutput 'codex-smoke' 'native-codex.txt'
+    if (-not $SkipCodexTests) {
+        Invoke-NativeGate $buildOutput 'codex-smoke' 'native-codex.txt'
+    }
     Invoke-NativeGate $buildOutput 'persistence-smoke' 'native-persistence.txt'
     Invoke-NativeGate $buildOutput 'lan-remote-smoke' 'native-lan-remote.txt'
     Invoke-NativeGate $buildOutput 'handoff-smoke' 'native-handoff.txt'
@@ -68,7 +71,9 @@ if (-not $SkipTests) {
     # this exact Release assembly above. Re-running it after the persistence gates
     # can make its hover/debounce timing assertions depend on the first run's saved
     # workspace. Published output is covered here by fresh-process functional gates.
-    Invoke-NativeGate $publishedExecutable 'codex-smoke' 'published-native-codex.txt'
+    if (-not $SkipCodexTests) {
+        Invoke-NativeGate $publishedExecutable 'codex-smoke' 'published-native-codex.txt'
+    }
     Invoke-NativeGate $publishedExecutable 'persistence-smoke' 'published-native-persistence.txt'
     Invoke-NativeGate $publishedExecutable 'lan-remote-smoke' 'published-native-lan-remote.txt'
     Invoke-NativeGate $publishedExecutable 'handoff-smoke' 'published-native-handoff.txt'

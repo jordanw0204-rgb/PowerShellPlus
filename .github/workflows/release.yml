@@ -45,7 +45,9 @@ jobs:
 
       - name: Build and test application
         shell: pwsh
-        run: ./build.ps1 -StageOnly
+        # GitHub-hosted runners do not have an authenticated Codex CLI. All
+        # deterministic gates still run; local builds keep the Codex gate on.
+        run: ./build.ps1 -StageOnly -SkipCodexTests
 
       - name: Build and smoke-test installer
         shell: pwsh
