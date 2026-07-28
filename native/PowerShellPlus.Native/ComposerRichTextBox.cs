@@ -21,6 +21,8 @@ internal sealed class ComposerRichTextBox : RichTextBox
     private string canonicalText = string.Empty;
     private string tokenSignature = string.Empty;
     private bool rebuilding;
+    private bool canonicalTextDirty;
+    private int canonicalExtractionCount;
     internal event Action<string>? PlainTextPasted;
 
     public ComposerRichTextBox()
@@ -49,20 +51,33 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     public string Text
     {
-        get => canonicalText;
+        get
+        {
+            SynchronizeCanonicalText();
+            return canonicalText;
+        }
         set => SetCanonicalText(value ?? string.Empty);
     }
 
     public int CaretIndex
     {
-        get => CanonicalOffsetFor(CaretPosition);
-        set => CaretPosition = PointerForCanonicalOffset(Math.Clamp(value, 0, canonicalText.Length));
+        get
+        {
+            SynchronizeCanonicalText();
+            return CanonicalOffsetFor(CaretPosition);
+        }
+        set
+        {
+            SynchronizeCanonicalText();
+            CaretPosition = PointerForCanonicalOffset(Math.Clamp(value, 0, canonicalText.Length));
+        }
     }
 
     public string SelectedText
     {
         get
         {
+            SynchronizeCanonicalText();
             var start = CanonicalOffsetFor(Selection.Start);
             var end = CanonicalOffsetFor(Selection.End);
             return canonicalText[Math.Min(start, end)..Math.Max(start, end)];
@@ -79,6 +94,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     public void SetAttachmentTokens(IEnumerable<ComposerTokenDescriptor> descriptors)
     {
+        SynchronizeCanonicalText();
         var next = descriptors.ToList();
         var signature = string.Join('\u001f', next.Select(value => $"{value.Id}\u001e{value.Path}\u001e{value.Label}\u001e{value.Kind}\u001e{expandedTokenIds.Contains(value.Id)}"));
         var mustRender = signature != tokenSignature || NeedsRetokenization(next);
@@ -121,6 +137,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     internal bool DeleteToCurrentLineBoundary(bool beforeCaret)
     {
+        SynchronizeCanonicalText();
         var caret = CaretIndex;
         var boundary = beforeCaret
             ? caret == 0 ? 0 : canonicalText.LastIndexOf('\n', caret - 1) + 1
@@ -147,7 +164,11 @@ internal sealed class ComposerRichTextBox : RichTextBox
     protected override void OnTextChanged(TextChangedEventArgs e)
     {
         if (rebuilding) return;
-        canonicalText = ExtractCanonicalText();
+        // A RichTextBox edits a FlowDocument. Walking the whole document here
+        // makes every keystroke progressively more expensive, especially for a
+        // long restored draft. Keep the canonical representation lazy and sync
+        // it once when a consumer (send, persistence, attachment parsing) asks.
+        canonicalTextDirty = true;
         base.OnTextChanged(e);
     }
 
@@ -208,6 +229,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     private void SetCanonicalText(string value)
     {
+        SynchronizeCanonicalText();
         if (value == canonicalText && !NeedsRetokenization(tokens)) return;
         canonicalText = NormalizeNewlines(value);
         RenderCanonicalText(Math.Min(CaretIndex, canonicalText.Length));
@@ -215,6 +237,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     private void ReplaceCanonicalSelection(string value)
     {
+        SynchronizeCanonicalText();
         var start = CanonicalOffsetFor(Selection.Start);
         var end = CanonicalOffsetFor(Selection.End);
         if (start > end) (start, end) = (end, start);
@@ -279,6 +302,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
             Document.FontFamily = FontFamily;
             Document.FontSize = FontSize;
             CaretPosition = PointerForCanonicalOffset(Math.Clamp(caretOffset, 0, canonicalText.Length));
+            canonicalTextDirty = false;
         }
         finally { rebuilding = false; }
         base.OnTextChanged(new TextChangedEventArgs(TextChangedEvent, UndoAction.None));
@@ -346,6 +370,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     private string ExtractCanonicalText()
     {
+        canonicalExtractionCount++;
         var builder = new System.Text.StringBuilder();
         var firstBlock = true;
         foreach (var block in Document.Blocks)
@@ -355,6 +380,29 @@ internal sealed class ComposerRichTextBox : RichTextBox
             if (block is Paragraph paragraph) AppendInlines(builder, paragraph.Inlines);
         }
         return NormalizeNewlines(builder.ToString());
+    }
+
+    private void SynchronizeCanonicalText()
+    {
+        if (!canonicalTextDirty || rebuilding) return;
+        canonicalText = ExtractCanonicalText();
+        canonicalTextDirty = false;
+    }
+
+    internal (TimeSpan Elapsed, int ExtractionsDuringTyping, bool CanonicalTextMatches) SimulateFastTypingForTest(int characterCount)
+    {
+        SetCanonicalText(string.Empty);
+        var extractionBaseline = canonicalExtractionCount;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        for (var index = 0; index < characterCount; index++)
+        {
+            CaretPosition = Document.ContentEnd.GetInsertionPosition(LogicalDirection.Backward);
+            CaretPosition.InsertTextInRun("x");
+        }
+        timer.Stop();
+        var extractionsDuringTyping = canonicalExtractionCount - extractionBaseline;
+        var matches = Text.Length == characterCount;
+        return (timer.Elapsed, extractionsDuringTyping, matches);
     }
 
     private static void AppendInlines(System.Text.StringBuilder builder, InlineCollection inlines)

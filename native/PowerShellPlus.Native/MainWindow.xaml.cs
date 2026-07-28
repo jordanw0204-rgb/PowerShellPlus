@@ -2989,6 +2989,7 @@ public partial class MainWindow : Window
             activationTarget.UpdateLayout();
             var terminalScrollbarHasRealRange = scrollbackAccepted && activationTarget.TerminalScrollbarHasRangeForTest;
             var terminalScrollbarMovesNativeViewport = activationTarget.ExerciseTerminalScrollbarForTest();
+            var terminalScrollbarRebindsReplacement = activationTarget.TerminalScrollbarRebindsReplacementForTest();
             activationTarget.SetPreviousOutputHiddenByDefaultForTest("RECOVERY_DEFAULT_HIDDEN_REGRESSION");
             var recoverySurfaceDefaultsHidden = activationTarget.TerminalSurfaceOwnsViewportForTest;
             activationTarget.SetPreviousOutputForTest("RECOVERY_SURFACE_CLICK_REGRESSION");
@@ -3079,10 +3080,28 @@ public partial class MainWindow : Window
             for (var characterCount = 1; characterCount <= 160; characterCount++)
                 activationTarget.SetCommandInputDeferredForTest(new string('x', characterCount));
             composerBurstTimer.Stop();
-            var composerStateWorkDebounced = activationTarget.ComposerStateFlushCountForTest == composerFlushBaseline;
-            await Task.Delay(180);
-            composerStateWorkDebounced &= activationTarget.ComposerStateFlushCountForTest == composerFlushBaseline + 1;
-            var composerTypingLatencyBounded = composerBurstTimer.Elapsed < TimeSpan.FromSeconds(1);
+            var composerFlushAfterBurst = activationTarget.ComposerStateFlushCountForTest;
+            var composerStateWorkDebounced = composerFlushAfterBurst == composerFlushBaseline
+                && activationTarget.ComposerStateTimerEnabledForTest;
+            activationTarget.FlushComposerStateForTest();
+            var composerFlushAfterIdle = activationTarget.ComposerStateFlushCountForTest;
+            composerStateWorkDebounced &= composerFlushAfterIdle == composerFlushBaseline + 1;
+            var sustainedTypingFlushBaseline = activationTarget.ComposerStateFlushCountForTest;
+            for (var characterCount = 1; characterCount <= 4; characterCount++)
+            {
+                activationTarget.SetCommandInputDeferredForTest(new string('s', characterCount));
+                await Task.Delay(70);
+            }
+            var sustainedFlushAfterBurst = activationTarget.ComposerStateFlushCountForTest;
+            var composerStateDebouncesSustainedTyping = sustainedFlushAfterBurst == sustainedTypingFlushBaseline
+                && activationTarget.ComposerStateTimerEnabledForTest;
+            activationTarget.FlushComposerStateForTest();
+            var sustainedFlushAfterIdle = activationTarget.ComposerStateFlushCountForTest;
+            composerStateDebouncesSustainedTyping &= sustainedFlushAfterIdle == sustainedTypingFlushBaseline + 1;
+            var realTyping = activationTarget.SimulateFastComposerTypingForTest(320);
+            var composerTypingLatencyBounded = composerBurstTimer.Elapsed < TimeSpan.FromSeconds(1)
+                && realTyping.Elapsed < TimeSpan.FromSeconds(1)
+                && realTyping.ExtractionsDuringTyping == 0 && realTyping.CanonicalTextMatches;
             for (var queueIndex = 1; queueIndex <= 18; queueIndex++)
             {
                 activationTarget.SetCommandInputForTest($"Write-Output 'QUEUE_MENU_{queueIndex}'");
@@ -3433,6 +3452,24 @@ public partial class MainWindow : Window
             var f2OpensSelectedEditors = f2OpensTerminalEditor && nativeTerminalF2OpensEditor && f2OpensSessionEditor && f2OpensCommandEditor && f2OpensAutomationEditor;
             ShowSection(SessionsPanel);
 
+            // Run the destructive restart regression only after all established
+            // live-process assertions so it cannot alter their process identity.
+            SelectPane(activationTarget.Profile.Id, true);
+            await Dispatcher.Yield(DispatcherPriority.Loaded);
+            activationTarget.UpdateLayout();
+            await activationTarget.RestartAsync();
+            const string resumedScrollbarMarker = "TERMINAL_SCROLLBAR_RESUME_READY";
+            var resumedScrollbackAccepted = await activationTarget.SendCommandAsync(
+                "1..90 | ForEach-Object { Write-Output ('RESUMED_SCROLLBACK_LINE_' + $_) }; Write-Output 'TERMINAL_SCROLLBAR_RESUME_READY'");
+            var resumedScrollbarDeadline = DateTime.UtcNow.AddSeconds(12);
+            while (DateTime.UtcNow < resumedScrollbarDeadline
+                && !activationTarget.GetOutput().Contains(resumedScrollbarMarker, StringComparison.Ordinal)) await Task.Delay(120);
+            await Task.Delay(350);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            activationTarget.UpdateLayout();
+            var terminalScrollbarSurvivesRestart = resumedScrollbackAccepted
+                && activationTarget.TerminalScrollbarHasRangeForTest && activationTarget.ExerciseTerminalScrollbarForTest();
+
             var paneCommandSystem = paneCommandInputTakesFocus && handoffButtonReady && commandBarCollapses && commandBarStatePersists && commandBarExpands && queueAddsCommands && queueStatePersists && currentCommandRuns
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
@@ -3442,11 +3479,11 @@ public partial class MainWindow : Window
                 && commandHistoryRestoresInput && historyAttachmentsRehydrate && commandHistoryPersists && commandHistoryIsPerTerminal
                 && clearHistoryRequiresConfirmation && clearHistoryButtonReady && clearHistoryWorks && clearHistoryPersists
                 && ctrlUDeletesToLineStart && ctrlKDeletesToLineEnd && ctrlJAddsLine && shiftEnterAddsLine
-                && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerTypingLatencyBounded;
+                && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerStateDebouncesSustainedTyping && composerTypingLatencyBounded;
             var success = inputReady && outputReady && recoveryCapturesOutput && recoverySnapshotsAvoidUiThread
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
                 && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
-                && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && recoverySurfaceOwnershipStable
+                && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && updateUiContractReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
@@ -3478,7 +3515,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
-            File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
+            File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
@@ -3487,7 +3524,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
-            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
+            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalScrollbarRebindsReplacement={terminalScrollbarRebindsReplacement}\nTerminalScrollbarSurvivesRestart={terminalScrollbarSurvivesRestart}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
             if (!terminalScrollbarBridgesStable)
                 foreach (var pane in panes.Values) File.AppendAllText(reportPath, $"\nTerminalScrollbarBridge[{pane.Profile.Name}]={pane.TerminalScrollbarBridgeDiagnosticForTest}");
             if (!success)

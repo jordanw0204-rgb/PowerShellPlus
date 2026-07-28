@@ -203,7 +203,7 @@ public partial class TerminalPane : UserControl
     private int remoteFontSize = 12;
     private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly System.Windows.Threading.DispatcherTimer composerStateTimer = new(System.Windows.Threading.DispatcherPriority.Background)
-        { Interval = TimeSpan.FromMilliseconds(120) };
+        { Interval = TimeSpan.FromMilliseconds(300) };
     private bool composerStateDirty;
     private int composerStateFlushCount;
     private readonly object agentOutputSync = new();
@@ -245,6 +245,8 @@ public partial class TerminalPane : UserControl
     private bool terminalScrollbarBridgeAttached;
     private bool terminalScrollbarUpdating;
     private (double Value, double Maximum, double ViewportSize)? terminalScrollbarState;
+    private int terminalScrollbarRefreshPending;
+    private volatile bool terminalScrollbarRangeObserved;
 
     public TerminalPane(SessionProfile profile, TerminalAppearance appearance, SessionRecoveryEntry? recovery = null, string? recoveredOutput = null,
         Func<IEnumerable<CommandSnippet>>? quickAccessProvider = null, Action? commandStateChanged = null,
@@ -398,17 +400,17 @@ public partial class TerminalPane : UserControl
             {
                 await Terminal.RestartTerm();
                 AttachTerminalOutputFilter();
-                ConfigureNativeScrollbar();
+                await RebindNativeScrollbarAfterRestartAsync();
                 restarted = true;
             }
         }
         catch (ArgumentException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); ConfigureNativeScrollbar(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
         }
         catch (InvalidOperationException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); ConfigureNativeScrollbar(); restarted = true; } catch { return false; }
+            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
         }
         if (restarted) await Task.Delay(900);
         var deadline = DateTime.UtcNow.AddSeconds(8);
@@ -665,9 +667,11 @@ public partial class TerminalPane : UserControl
     private void CommandInputTextChanged(object sender, TextChangedEventArgs e)
     {
         if (synchronizingComposerAttachments) return;
-        Profile.CommandDraft = CommandInput.Text;
         composerStateDirty = true;
-        if (!composerStateTimer.IsEnabled) composerStateTimer.Start();
+        // True trailing-edge debounce: persistence and attachment reconciliation
+        // run only after typing has gone quiet, never repeatedly inside a burst.
+        composerStateTimer.Stop();
+        composerStateTimer.Start();
     }
 
     private void FlushComposerState()
@@ -676,6 +680,7 @@ public partial class TerminalPane : UserControl
         if (!composerStateDirty) return;
         composerStateDirty = false;
         composerStateFlushCount++;
+        Profile.CommandDraft = CommandInput.Text;
         var detached = composerAttachments
             .Where(value => !CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -1193,8 +1198,7 @@ public partial class TerminalPane : UserControl
         Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
-        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
-        ConfigureNativeScrollbar();
+        await RebindNativeScrollbarAfterRestartAsync();
         agentActivityState = AgentActivityState.Starting;
         RefreshAgentStatus(true);
         Terminal.Focus();
@@ -1255,8 +1259,7 @@ public partial class TerminalPane : UserControl
             Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
             await Terminal.RestartTerm();
             AttachTerminalOutputFilter();
-            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
-            ConfigureNativeScrollbar();
+            await RebindNativeScrollbarAfterRestartAsync();
             await Task.Delay(600);
             RefreshRemoteDimensions();
             RefreshAgentStatus(true);
@@ -1509,9 +1512,13 @@ public partial class TerminalPane : UserControl
 
     private void TerminalPreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
-        AdjustTerminalFontSize(e.Delta);
-        e.Handled = true;
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            AdjustTerminalFontSize(e.Delta);
+            e.Handled = true;
+            return;
+        }
+        if (TryScrollTerminalViewport(e.Delta)) e.Handled = true;
     }
 
     private void CommandInputPreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -1617,6 +1624,31 @@ public partial class TerminalPane : UserControl
         });
         return Math.Abs(nativeScrollbar.Value - target) < .5;
     }
+    public bool TerminalScrollbarRebindsReplacementForTest()
+    {
+        var original = nativeScrollbar;
+        if (original is null) return false;
+        var first = new ScrollBar { Minimum = 0, Maximum = 40, ViewportSize = 10, Value = 4 };
+        var second = new ScrollBar { Minimum = 0, Maximum = 80, ViewportSize = 12, Value = 8 };
+        try
+        {
+            BindNativeScrollbar(first);
+            first.Value = 15;
+            var firstFollowed = Math.Abs(TerminalViewportScrollbar.Value - 15) < .5;
+            BindNativeScrollbar(second);
+            var valueAfterReplacement = TerminalViewportScrollbar.Value;
+            first.Value = 25;
+            var oldDetached = Math.Abs(TerminalViewportScrollbar.Value - valueAfterReplacement) < .5;
+            second.Value = 30;
+            var replacementFollowed = Math.Abs(TerminalViewportScrollbar.Value - 30) < .5;
+            return firstFollowed && oldDetached && replacementFollowed;
+        }
+        finally
+        {
+            BindNativeScrollbar(original);
+            SynchronizeTerminalViewportScrollbar();
+        }
+    }
     public bool RecoveryOverlayVisibleForTest => RecoveryOverlay.Visibility == Visibility.Visible;
     public bool RecoverySurfaceOwnsViewportForTest => RecoveryOverlay.Visibility == Visibility.Visible
         && TerminalSurfaceGrid.Visibility != Visibility.Visible;
@@ -1715,7 +1747,10 @@ public partial class TerminalPane : UserControl
     public void SetCommandInputCaretForTest(int value) => CommandInput.CaretIndex = value;
     public Task<bool> HandleCommandInputKeyForTestAsync(Key key, ModifierKeys modifiers) => HandleCommandInputKeyAsync(key, modifiers);
     public int ComposerStateFlushCountForTest => composerStateFlushCount;
+    public bool ComposerStateTimerEnabledForTest => composerStateTimer.IsEnabled;
     public void FlushComposerStateForTest() => FlushComposerState();
+    public (TimeSpan Elapsed, int ExtractionsDuringTyping, bool CanonicalTextMatches) SimulateFastComposerTypingForTest(int characterCount)
+        => CommandInput.SimulateFastTypingForTest(characterCount);
     public int CommandHistoryCountForTest => Profile.CommandHistory.Count;
     public int CommandHistoryVisibleItemCountForTest => CommandHistoryList.Items.Count;
     public bool CommandHistoryButtonIsFramelessForTest => CommandHistoryButton.Background == Brushes.Transparent && CommandHistoryButton.BorderThickness == new Thickness(0);
@@ -1810,9 +1845,25 @@ public partial class TerminalPane : UserControl
 
     private void ConfigureNativeScrollbar()
     {
-        var scrollbar = nativeScrollbar ?? FindVisualChild<ScrollBar>(Terminal.Terminal);
+        var scrollbar = FindVisualChild<ScrollBar>(Terminal.Terminal);
+        if (scrollbar is null)
+        {
+            BindNativeScrollbar(null);
+            return;
+        }
+        BindNativeScrollbar(scrollbar);
+    }
+
+    private void BindNativeScrollbar(ScrollBar? scrollbar)
+    {
+        if (!ReferenceEquals(nativeScrollbar, scrollbar))
+        {
+            DetachTerminalScrollbarBridge();
+            nativeScrollbar = scrollbar;
+            terminalScrollbarState = null;
+            terminalScrollbarRangeObserved = false;
+        }
         if (scrollbar is null) return;
-        nativeScrollbar = scrollbar;
         // TerminalControl reads the original scrollbar's ActualWidth during every
         // native resize. Keep that control in its own visual tree and use it only
         // as the dependency's private state holder. Moving it corrupts the HWND's
@@ -1837,6 +1888,42 @@ public partial class TerminalPane : UserControl
         nativeScrollbar.IsEnabledChanged += NativeScrollbarEnabledChanged;
         nativeScrollbar.LayoutUpdated += NativeScrollbarLayoutUpdated;
         terminalScrollbarBridgeAttached = true;
+    }
+
+    private void DetachTerminalScrollbarBridge()
+    {
+        if (nativeScrollbar is not null && terminalScrollbarBridgeAttached)
+        {
+            nativeScrollbar.ValueChanged -= NativeScrollbarStateChanged;
+            nativeScrollbar.IsEnabledChanged -= NativeScrollbarEnabledChanged;
+            nativeScrollbar.LayoutUpdated -= NativeScrollbarLayoutUpdated;
+        }
+        terminalScrollbarBridgeAttached = false;
+    }
+
+    private async Task RebindNativeScrollbarAfterRestartAsync()
+    {
+        // RestartTerm replaces the backend and can reapply the terminal visual
+        // tree asynchronously. Re-query the tree instead of retaining the old
+        // private ScrollBar instance. The process/output callbacks can become
+        // ready a few frames later than the visual tree, so restore both as one
+        // post-restart binding operation.
+        terminalScrollbarRangeObserved = false;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
+            ConfigureNativeScrollbar();
+            AttachTerminalActivationHook();
+            AttachTerminalOutputFilter();
+            if (nativeScrollbar is not null && Terminal.ConPTYTerm?.TermProcIsStarted == true)
+            {
+                SynchronizeTerminalViewportScrollbar();
+                return;
+            }
+            await Task.Delay(50);
+        }
+        ConfigureNativeScrollbar();
+        AttachTerminalOutputFilter();
     }
 
     private void NativeScrollbarStateChanged(object sender, RoutedEventArgs e) => SynchronizeTerminalViewportScrollbar();
@@ -1870,6 +1957,7 @@ public partial class TerminalPane : UserControl
                 TerminalViewportScrollbar.Value = Math.Clamp(viewTop, 0, maximum);
                 TerminalViewportScrollbar.IsEnabled = maximum > 0;
                 TerminalViewportScrollbar.Opacity = maximum > 0 ? 1 : .5;
+                if (maximum > 0) terminalScrollbarRangeObserved = true;
             }
             finally { terminalScrollbarUpdating = false; }
         }
@@ -1887,16 +1975,23 @@ public partial class TerminalPane : UserControl
 
     private void TerminalViewportScrollbarMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (!TerminalViewportScrollbar.IsEnabled || nativeScrollbar is null) return;
+        if (!TryScrollTerminalViewport(e.Delta)) return;
+        e.Handled = true;
+    }
+
+    private bool TryScrollTerminalViewport(int wheelDelta)
+    {
+        ConfigureNativeScrollbar();
+        if (!TerminalViewportScrollbar.IsEnabled || nativeScrollbar is null || wheelDelta == 0) return false;
         var configuredLines = SystemParameters.WheelScrollLines;
         var lines = configuredLines > 0 ? configuredLines : Math.Max(1, (int)TerminalViewportScrollbar.ViewportSize - 1);
-        var target = Math.Clamp(TerminalViewportScrollbar.Value - Math.Sign(e.Delta) * lines,
+        var target = Math.Clamp(TerminalViewportScrollbar.Value - Math.Sign(wheelDelta) * lines,
             TerminalViewportScrollbar.Minimum, TerminalViewportScrollbar.Maximum);
         terminalScrollbarUpdating = true;
         try { TerminalViewportScrollbar.Value = target; }
         finally { terminalScrollbarUpdating = false; }
-        ForwardTerminalScroll(target, e.Delta > 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement);
-        e.Handled = true;
+        ForwardTerminalScroll(target, wheelDelta > 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement);
+        return true;
     }
 
     private void ForwardTerminalScroll(double target, ScrollEventType eventType)
@@ -2015,6 +2110,11 @@ public partial class TerminalPane : UserControl
                 Dispatcher.BeginInvoke(() => AdjustTerminalFontSize(delta), System.Windows.Threading.DispatcherPriority.Input);
                 return IntPtr.Zero;
             }
+            if (message == WmMouseWheel)
+            {
+                var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xffff));
+                if (TryScrollTerminalViewport(delta)) return IntPtr.Zero;
+            }
             var keyboardMessage = message == WmKeyDown || message == WmSysKeyDown;
             var virtualKey = unchecked((int)wParam.ToInt64());
             var controlDown = keyboardMessage && IsKeyDown(VkControl);
@@ -2060,9 +2160,25 @@ public partial class TerminalPane : UserControl
         outputCaptureTerminal.TerminalOutput += CaptureTerminalOutput;
     }
 
+    private void QueueScrollbarRefreshFromOutput()
+    {
+        if (terminalScrollbarRangeObserved || Dispatcher.HasShutdownStarted
+            || Interlocked.Exchange(ref terminalScrollbarRefreshPending, 1) != 0) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                ConfigureNativeScrollbar();
+                SynchronizeTerminalViewportScrollbar();
+            }
+            finally { Interlocked.Exchange(ref terminalScrollbarRefreshPending, 0); }
+        }, System.Windows.Threading.DispatcherPriority.Background);
+    }
+
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
+        QueueScrollbarRefreshFromOutput();
         CaptureWorkingDirectory(args.Data);
         var output = TerminalTextSanitizer.ForLiveOutput(args.Data);
         if (output.Length == 0) return;
@@ -2703,8 +2819,15 @@ public partial class TerminalPane : UserControl
         return composerAttachments.Count == 0 && Profile.ComposerAttachments.Count == 0
             && AttachmentStrip.Visibility == Visibility.Collapsed && Profile.CommandDraft == CommandInput.Text;
     }
-    internal bool ComposerDraftPersistedForTest => Profile.CommandDraft == CommandInput.Text
-        && Profile.ComposerAttachments.Count == composerAttachments.Count;
+    internal bool ComposerDraftPersistedForTest
+    {
+        get
+        {
+            FlushComposerState();
+            return Profile.CommandDraft == CommandInput.Text
+                && Profile.ComposerAttachments.Count == composerAttachments.Count;
+        }
+    }
     internal bool ComposerTokensMatchCanonicalPathsForTest => composerAttachments.Count > 0
         && CommandInput.RenderedTokenLabelsForTest.SequenceEqual(composerAttachments.Select(value => value.DisplayName))
         && composerAttachments.All(value => CommandInput.Text.Contains(value.LocalPath, StringComparison.OrdinalIgnoreCase))
