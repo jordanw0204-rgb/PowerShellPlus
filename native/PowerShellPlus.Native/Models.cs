@@ -136,6 +136,7 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public string CommandLine { get; set; } = "powershell.exe";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
+    public bool UseRemoteTmux { get; set; } = true;
     public bool CommandBarExpanded { get; set; } = true;
     public int? TerminalFontSize { get; set; }
     public int? CommandFontSize { get; set; }

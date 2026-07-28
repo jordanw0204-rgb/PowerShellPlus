@@ -1145,6 +1145,7 @@ public partial class MainWindow : Window
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
+        SessionUseTmuxEdit.IsChecked = profile?.UseRemoteTmux ?? true;
         ShowEditor(SessionEditor);
     }
 
@@ -1370,15 +1371,18 @@ public partial class MainWindow : Window
         TerminalHost.Visibility = Visibility.Visible;
     }
 
-    private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart, string? accentColor = null)
+    private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart,
+        string? accentColor = null, bool? useRemoteTmux = null)
     {
         var restartRequired = !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
-            || !PathsEqual(profile.WorkingDirectory, workingDirectory);
+            || !PathsEqual(profile.WorkingDirectory, workingDirectory)
+            || useRemoteTmux is bool requestedTmux && profile.UseRemoteTmux != requestedTmux;
         profile.Name = name;
         profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         profile.CommandLine = commandLine;
         profile.WorkingDirectory = workingDirectory;
         profile.AutoStart = autoStart;
+        if (useRemoteTmux is bool tmuxEnabled) profile.UseRemoteTmux = tmuxEnabled;
         if (!panes.TryGetValue(profile.Id, out var pane)) return restartRequired;
         if (restartRequired)
         {
@@ -1413,11 +1417,11 @@ public partial class MainWindow : Window
             if (editingValue is SessionProfile existing)
             {
                 await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true,
-                    terminalEditorAccentColor);
+                    terminalEditorAccentColor, SessionUseTmuxEdit.IsChecked == true);
             }
             else
             {
-                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = terminalEditorAccentColor, CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true };
+                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = terminalEditorAccentColor, CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true, UseRemoteTmux = SessionUseTmuxEdit.IsChecked == true };
                 AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
             }
         }
@@ -2118,7 +2122,8 @@ public partial class MainWindow : Window
             && normalScript.Contains("ConnectionArguments", StringComparison.Ordinal);
         var managedSshShellCommand = SshLaunchStore.BuildRemoteInteractiveShellCommand(profile.Id);
         var managedTmuxSessionName = RemoteTmuxSession.GetSessionName(profile.Id);
-        var managedSshShellUsesTmux = managedSshShellCommand.StartsWith($"export POWERSHELLPLUS_PANE_ID='{profile.Id}';", StringComparison.Ordinal)
+        var managedSshShellUsesTmux = managedSshShellCommand.Contains($"export POWERSHELLPLUS_PANE_ID='{profile.Id}';", StringComparison.Ordinal)
+            && managedSshShellCommand.StartsWith("printf '\\033]9;9;", StringComparison.Ordinal)
             && managedSshShellCommand.Contains("command -v tmux", StringComparison.Ordinal)
             && managedSshShellCommand.Contains("tmux attach-session", StringComparison.Ordinal)
             && managedSshShellCommand.Contains("tmux new-session", StringComparison.Ordinal)
@@ -3342,7 +3347,13 @@ public partial class MainWindow : Window
             var sshDirectoryHook = SshLaunchStore.BuildRemoteInteractiveShellCommand("fixture-pane");
             var sshDirectoryHookReady = sshDirectoryHook.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
                 && sshDirectoryHook.Contains("$PWD", StringComparison.Ordinal)
-                && sshDirectoryHook.Contains("]9;9;", StringComparison.Ordinal);
+                && sshDirectoryHook.Contains("]9;9;", StringComparison.Ordinal)
+                && sshDirectoryHook.Contains("\\033Ptmux;", StringComparison.Ordinal)
+                && sshDirectoryHook.Contains("tmux display-message", StringComparison.Ordinal);
+            var directSshDirectoryHook = SshLaunchStore.BuildRemoteInteractiveShellCommand("fixture-pane-direct", false);
+            var terminalTmuxChoiceWorks = !directSshDirectoryHook.Contains("tmux new-session", StringComparison.Ordinal)
+                && directSshDirectoryHook.Contains("$PWD", StringComparison.Ordinal)
+                && new SessionProfile().UseRemoteTmux;
             var bareSshResumePlan = SshRecovery.BuildResumePlan(new SessionRecoveryEntry
             {
                 SessionId = "directory-hook-fixture",
@@ -3353,6 +3364,8 @@ public partial class MainWindow : Window
                 && SshRecovery.TryDecodePowerShellSafeRemoteCommand(bareSshRemoteCommand, out var decodedBareSshRemoteCommand)
                 && decodedBareSshRemoteCommand.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
                 && decodedBareSshRemoteCommand.Contains("]9;9;", StringComparison.Ordinal);
+            var originalUseRemoteTmux = activationTarget.Profile.UseRemoteTmux;
+            activationTarget.Profile.UseRemoteTmux = false;
             WorkspaceStore.Save(state);
             var automationPersistenceWorkspace = WorkspaceStore.Load(terminalProfile);
             var automationPersistenceProfile = automationPersistenceWorkspace.Sessions.First(value => value.Id == activationTarget.Profile.Id);
@@ -3365,6 +3378,8 @@ public partial class MainWindow : Window
                 && automationPersistenceRule.ClearLine
                 && automationPersistenceProfile.LiveWorkingDirectory == "/home/ubuntu/illest.bot"
                 && automationPersistenceProfile.LiveWorkingDirectoryIsSsh;
+            var terminalTmuxChoicePersists = !automationPersistenceProfile.UseRemoteTmux;
+            activationTarget.Profile.UseRemoteTmux = originalUseRemoteTmux;
             activationTarget.Profile.LiveWorkingDirectory = originalLiveDirectory;
             activationTarget.Profile.LiveWorkingDirectoryIsSsh = originalLiveDirectoryIsSsh;
             activationTarget.Profile.NotifyDirectoryChanged();
@@ -3374,6 +3389,7 @@ public partial class MainWindow : Window
             selectedEditableValue = activationTarget.Profile;
             var f2OpensTerminalEditor = TryOpenSelectedEditor() && editorMode == EditorMode.Terminal
                 && ReferenceEquals(editingValue, activationTarget.Profile) && EditorOverlay.Visibility == Visibility.Visible;
+            var terminalTmuxEditorToggleReflectsProfile = SessionUseTmuxEdit.IsChecked == activationTarget.Profile.UseRemoteTmux;
             var editorCardKeepsEditorOpen = !TryDismissEditorFromBackdrop(EditorCard) && EditorOverlay.Visibility == Visibility.Visible;
             var backdropDismissesEditor = TryDismissEditorFromBackdrop(EditorOverlay)
                 && EditorOverlay.Visibility == Visibility.Collapsed && TerminalHost.Visibility == Visibility.Visible;
@@ -3432,6 +3448,7 @@ public partial class MainWindow : Window
                 && automationCanAutoInsert && automationCanBeDisabled && automationMenuContractReady && automationClearLineWorks
                 && automationEditorSupportsManualTargetAndClearLine && terminalAutomationStatePersists
                 && localDirectoryUpdates && sshDirectoryUpdates && workingDirectoryMarkersParse && localDirectoryHookReady && sshDirectoryHookReady
+                && terminalTmuxChoiceWorks && terminalTmuxChoicePersists && terminalTmuxEditorToggleReflectsProfile
                 && terminalProtocolTextSanitized && interactiveSshWrapperForcesPty && bareSshRecoveryKeepsDirectoryHook
                 && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
@@ -3443,7 +3460,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
-            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
+            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");

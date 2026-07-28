@@ -59,14 +59,15 @@ public static class SshLaunchStore
         File.Move(temporary, path, true);
     }
 
-    public static string BuildPowerShellWrapper(string paneId, string? directoryPath = null)
+    public static string BuildPowerShellWrapper(string paneId, string? directoryPath = null, bool usePersistentSession = true)
     {
         var directory = directoryPath ?? DirectoryPath;
         Directory.CreateDirectory(directory);
         var markerPath = MarkerPath(paneId, directory);
         var escapedPaneId = EscapePowerShell(paneId);
         var escapedMarkerPath = EscapePowerShell(markerPath);
-        var escapedRemoteShellCommand = EscapePowerShell(SshRecovery.BuildPowerShellSafeRemoteCommand(BuildRemoteInteractiveShellCommand(paneId)));
+        var escapedRemoteShellCommand = EscapePowerShell(SshRecovery.BuildPowerShellSafeRemoteCommand(BuildRemoteInteractiveShellCommand(paneId, usePersistentSession)));
+        var persistentSessionRequested = usePersistentSession ? "$true" : "$false";
         return $$"""
 $global:__PowerShellPlusSshCommand = (Get-Command ssh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source;
 if ($global:__PowerShellPlusSshCommand) {
@@ -177,7 +178,7 @@ if ($global:__PowerShellPlusSshCommand) {
                 WorkingDirectory = (Get-Location).ProviderPath;
                 ConnectionArguments = @($__pspSafe.ToArray());
                 RecoveryAttempt = [bool]$global:__PowerShellPlusSshRecoveryActive;
-                PersistentSessionRequested = $true;
+                PersistentSessionRequested = {{persistentSessionRequested}};
                 ExitCode = $null;
                 EndedUtc = $null
             };
@@ -207,9 +208,11 @@ if ($global:__PowerShellPlusSshCommand) {
 """;
     }
 
-    internal static string BuildRemoteInteractiveShellCommand(string paneId)
+    internal static string BuildRemoteInteractiveShellCommand(string paneId, bool usePersistentSession = true)
     {
-        return RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, BuildRemoteInteractiveWorkload());
+        var workload = BuildRemoteInteractiveWorkload(usePersistentSession);
+        var shell = usePersistentSession ? RemoteTmuxSession.BuildAttachOrCreateCommand(paneId, workload) : workload;
+        return BuildRemoteDirectoryMarker("$PWD") + shell;
     }
 
     internal static bool InteractiveWrapperForcesPtyForTest()
@@ -218,8 +221,10 @@ if ($global:__PowerShellPlusSshCommand) {
         try
         {
             var remote = BuildRemoteInteractiveShellCommand("pty-fixture");
+            var directRemote = BuildRemoteInteractiveShellCommand("pty-direct-fixture", false);
             var transported = SshRecovery.BuildPowerShellSafeRemoteCommand(remote);
             var wrapper = BuildPowerShellWrapper("pty-fixture", directory);
+            var directWrapper = BuildPowerShellWrapper("pty-direct-fixture", directory, false);
             return wrapper.Contains("$__pspInstrumented.Add('-tt')", StringComparison.Ordinal)
                 && wrapper.Contains("$__pspInstrumented.Add([string]$__pspArgs[$__pspDestinationIndex])", StringComparison.Ordinal)
                 && wrapper.Contains("@__pspInvokeArgs", StringComparison.Ordinal)
@@ -227,7 +232,14 @@ if ($global:__PowerShellPlusSshCommand) {
                 && SshRecovery.TryDecodePowerShellSafeRemoteCommand(transported, out var decoded)
                 && decoded == remote
                 && !transported.Contains('"')
-                && !transported.Contains('\\');
+                && !transported.Contains('\\')
+                && remote.Contains("tmux new-session", StringComparison.Ordinal)
+                && remote.Contains("\\033Ptmux;", StringComparison.Ordinal)
+                && remote.Contains("$PWD", StringComparison.Ordinal)
+                && wrapper.Contains("PersistentSessionRequested = $true", StringComparison.Ordinal)
+                && directRemote.Contains("$PWD", StringComparison.Ordinal)
+                && !directRemote.Contains("tmux new-session", StringComparison.Ordinal)
+                && directWrapper.Contains("PersistentSessionRequested = $false", StringComparison.Ordinal);
         }
         finally
         {
@@ -235,12 +247,23 @@ if ($global:__PowerShellPlusSshCommand) {
         }
     }
 
-    internal static string BuildRemoteInteractiveWorkload()
-        => "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
+    internal static string BuildRemoteInteractiveWorkload(bool insideTmux = false)
+    {
+        var promptMarker = insideTmux
+            ? "printf \"\\033Ptmux;\\033\\033]9;9;\\\"%s\\\"\\007\\033\\\\\" \"$PWD\""
+            : "printf \"\\033]9;9;\\\"%s\\\"\\007\" \"$PWD\"";
+        var tmuxSetup = insideTmux
+            ? "if [ -n \"${TMUX:-}\" ] && command -v tmux >/dev/null 2>&1; then tmux set-option -t \"$POWERSHELLPLUS_TMUX_SESSION\" allow-passthrough on >/dev/null 2>&1 || true; fi; "
+            : string.Empty;
+        return tmuxSetup + "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
             + "__psp_previous_prompt_command=\"${PROMPT_COMMAND:-}\"; "
-            + "PROMPT_COMMAND='printf \"\\033]9;9;\\\"%s\\\"\\007\" \"$PWD\"'; "
+            + $"PROMPT_COMMAND='{promptMarker}'; "
             + "if [ -n \"$__psp_previous_prompt_command\" ]; then PROMPT_COMMAND=\"$PROMPT_COMMAND;$__psp_previous_prompt_command\"; fi; "
             + "export PROMPT_COMMAND; fi; exec \"${SHELL:-/bin/sh}\" -l";
+    }
+
+    internal static string BuildRemoteDirectoryMarker(string pathExpression)
+        => $"printf '\\033]9;9;\"%s\"\\007' \"{pathExpression}\"; ";
 
     private static string MarkerPath(string paneId, string? directoryPath = null)
         => Path.Combine(directoryPath ?? DirectoryPath, SessionRecoveryStore.SafeSessionId(paneId) + ".json");

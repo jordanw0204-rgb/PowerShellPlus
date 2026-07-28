@@ -1637,8 +1637,10 @@ public partial class TerminalPane : UserControl
     {
         var windows = WorkingDirectoryOscRegex.Match("before\u001b]9;9;\"D:\\Dev\\illest.lol\"\aafter");
         var ssh = WorkingDirectoryOscRegex.Match("\u001b]9;9;/home/ubuntu/illest.bot\u001b\\");
+        var tmux = WorkingDirectoryOscRegex.Match("\u001bPtmux;\u001b\u001b]9;9;\"/home/ubuntu/tmux-project\"\a\u001b\\");
         return windows.Success && NormalizeWorkingDirectoryMarker(windows.Groups["path"].Value) == @"D:\Dev\illest.lol"
-            && ssh.Success && NormalizeWorkingDirectoryMarker(ssh.Groups["path"].Value) == "/home/ubuntu/illest.bot";
+            && ssh.Success && NormalizeWorkingDirectoryMarker(ssh.Groups["path"].Value) == "/home/ubuntu/illest.bot"
+            && tmux.Success && NormalizeWorkingDirectoryMarker(tmux.Groups["path"].Value) == "/home/ubuntu/tmux-project";
     }
     public void SetWorkingDirectoryForTest(string path, bool isSsh) => ApplyWorkingDirectory(path, isSsh);
     public bool CommandInputAutoGrowsForTest => CommandInput.MinLines == 1 && CommandInput.MaxLines == 8
@@ -2809,7 +2811,7 @@ public partial class TerminalPane : UserControl
             if (skipPowerShellProfile && !command.Contains("-NoProfile", StringComparison.OrdinalIgnoreCase)) command += " -NoProfile";
             var script = validDirectory ? $"Set-Location -LiteralPath '{escaped}'; " : string.Empty;
             script += CodexLaunchStore.BuildPowerShellWrapper(profile.Id);
-            script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id);
+            script += "; " + SshLaunchStore.BuildPowerShellWrapper(profile.Id, usePersistentSession: profile.UseRemoteTmux);
             script += "; " + BuildPowerShellDirectoryHook();
             if (resumeSsh) script += "; " + sshResumeCommand;
             else if (resumeCodex) script += $"; & codex resume{resumeArgument}{modelArgument}{permissionsArgument}";
