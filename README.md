@@ -1,273 +1,262 @@
-# PowerShellPlus
+<div align="center">
+  <img src="native/PowerShellPlus.Native/Assets/PowerShellPlus.png" alt="PowerShellPlus logo" width="88" />
+  <h1>PowerShellPlus</h1>
+  <p><strong>A native Windows workspace for PowerShell, SSH, Codex, Hermes, and long-running terminal workflows.</strong></p>
+  <p>Organize real interactive terminals into persistent Sessions, switch between flexible layouts, recover AI-agent threads, and securely reach your workspace from a browser.</p>
+  <p>
+    <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest"><img src="https://img.shields.io/github/v/release/jordanw0204-rgb/PowerShellPlus?display_name=tag&amp;style=flat-square&amp;color=89b4fa" alt="Latest release" /></a>
+    <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/jordanw0204-rgb/PowerShellPlus/release.yml?style=flat-square&amp;label=release" alt="Release build" /></a>
+    <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011-74c7ec?style=flat-square&amp;logo=windows11" alt="Windows 10 and 11" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/jordanw0204-rgb/PowerShellPlus?style=flat-square&amp;color=a6e3a1" alt="MIT License" /></a>
+  </p>
+  <p>
+    <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest/download/PowerShellPlus-Setup-x64.exe"><strong>Download installer</strong></a>
+    · <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest/download/PowerShellPlus-Portable-x64.zip">Portable ZIP</a>
+    · <a href="https://github.com/jordanw0204-rgb/PowerShellPlus/issues">Report an issue</a>
+  </p>
+</div>
 
-PowerShellPlus is a Windows desktop workspace for people who regularly have more than one PowerShell terminal open. It organizes live terminals into named Sessions, lets every Session remember its own resizable layout and active terminal, saves commands you use often, and can run commands on a schedule without turning the terminal into a read-only log viewer.
+---
 
-The main application is native WPF on .NET 8. Its terminals are backed by Windows ConPTY and Microsoft TerminalControl, so they remain real interactive terminals: prompts, colors, keyboard input, full-screen console programs, and tools such as Codex continue to work normally.
+## See it in action
 
-## What it can do
+### Grid view
 
-- Run several interactive PowerShell terminals in one window.
-- Group terminals into Sessions and switch between them without stopping background terminals.
-- Activate a terminal by clicking anywhere inside its pane, including the native terminal surface.
-- Use a dedicated PowerShellPlus icon in the executable, taskbar, window switcher, and notification tray.
-- Arrange terminals as a grid, rows, columns, or a focused pane.
-- Resize panes by dragging the dividers; nearby panes adjust automatically.
-- Collapse the workspace sidebar to give the terminal grid its space, then expand it without disturbing pane proportions.
-- Save terminal names, working directories, shell commands, and a separate layout for every Session.
-- Keep a reusable command library and mark selected entries for quick access inside every terminal.
-- Use a compact, auto-growing command bar and saved command queue independently in each terminal pane.
-- See a small animated agent character in each pane header: blue while Codex or Hermes is working, amber while it is waiting for you, green when idle, and gray when stopped.
-- Paste clipboard text with `Ctrl+V` even inside Codex, while preserving Codex's image-only paste path when the clipboard has no text.
-- Keep the layout controls centered in the title bar as the window resizes, with one-click Windows Terminal access beside the window controls.
-- Schedule commands by interval, once at an exact date and time, or every day at an exact time.
-- Test an automation without moving its next scheduled run.
-- See a live countdown until an automation runs.
-- Right-click a session, command, or automation card for its available actions.
-- Inherit the font and color scheme from your Windows Terminal profile, with optional overrides in Settings.
-- Keep the real PowerShell, Codex, SSH, job, and native-program processes alive when the window is closed.
-- Recover pane output after a full app or Windows restart, including the exact Codex thread selected through an in-session `/resume`, its model and permission level, plus validated SSH reconnection details and a running remote Hermes session with that session's own model.
-- Drag an existing Windows Terminal window onto PowerShellPlus to recreate every tab as a named native session, retain its scrollback, and resume verified Codex threads with their model and complete `/permissions` selection.
-- Click **>_** in a pane header to move that session back into a new Windows Terminal window through a verified two-phase handoff. Exact Codex threads, models, permission settings, working folders, transcripts, and queued commands are retained wherever the underlying tools expose them safely.
-- Click the globe in the title bar to mirror every live session to a phone or browser in **LAN** mode or switch to browser-only **GLOBAL** mode for access from anywhere, with saved-device pairing, a responsive xterm.js view, and optional remote typing.
+Run several color-coded terminals at once, resize their boundaries, and keep every pane interactive.
 
-PowerShellPlus stores its workspace locally under `%APPDATA%\PowerShellPlus`. The desktop app and LAN mode do not require an account, API key, or cloud service. Optional Global mode uses a Tailscale account and Funnel connector on the computer; the phone needs only a normal web browser.
+![PowerShellPlus Grid view with six interactive terminals](docs/images/powershellplus-grid.png)
 
-## Installation for beginners
+### Tabs view
 
-Download **PowerShellPlus-Setup-x64.exe** from the [latest GitHub Release](https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest), open it, and follow the short setup wizard. The per-user installer does not require administrator access by default, creates a Start menu shortcut, and offers an optional desktop shortcut.
+Use the same terminals in a focused, familiar tabbed layout. Layout choice and terminal order are saved per Session.
 
-The release also includes **PowerShellPlus-Portable-x64.zip** for people who prefer a portable copy. The installer is recommended because it supports clean upgrades and uninstalling through Windows Settings.
+![PowerShellPlus Tabs view with color-coded terminal tabs](docs/images/powershellplus-tabs.png)
 
-The source-build steps below are for contributors or anyone who specifically wants to compile PowerShellPlus themselves.
+## Why PowerShellPlus?
 
-### 1. Check your computer
+PowerShellPlus is designed for workflows that outgrow a row of unrelated terminal windows. A **Session** is a workspace that owns its terminals, active pane, layout, colors, queues, histories, and automation bindings. Switching Sessions changes the workspace without stopping the terminals running in the background.
 
-You need:
+The terminal surface is native WPF backed by Windows ConPTY and Microsoft TerminalControl. PowerShell, prompts, colors, keyboard input, full-screen console programs, SSH, Codex, and Hermes remain real interactive processes rather than simulated output panels.
 
-- A 64-bit PC running Windows 10 version 2004 or newer, or Windows 11.
-- An internet connection for the first build.
-- Windows PowerShell, which is already included with Windows.
-- The current [Node.js LTS](https://nodejs.org/) release, used once to restore the pinned xterm.js browser assets.
+| Capability | What it gives you |
+| --- | --- |
+| Session workspaces | Group terminals by project or purpose and switch without stopping background work. |
+| Five layouts | Grid, columns, rows, focus, and draggable tabs—saved independently per Session. |
+| AI-agent awareness | Distinct idle, working, and waiting-for-response states for Codex and Hermes. |
+| Durable recovery | Restore layouts, transcripts, working folders, SSH recipes, and validated AI-thread metadata after a restart. |
+| Productive composer | Multiline input, per-terminal history, queues, attachments, previews, shortcuts, and font zoom. |
+| Remote browser access | View every Session over LAN or securely publish the authenticated web client through Tailscale Funnel. |
+| Native handoff | Import Windows Terminal tabs or reconstruct a PowerShellPlus terminal in Windows Terminal after verification. |
+| Automations | Run reusable commands manually, on a schedule, or append terminal-specific instructions before sending. |
 
-Windows Terminal is recommended because PowerShellPlus can inherit its appearance, but it is not required.
+## Install
 
-### 2. Install Git
+### Recommended: Windows installer
 
-1. Download **Git for Windows** from [git-scm.com/download/win](https://git-scm.com/download/win).
-2. Run the installer.
-3. The default choices are fine; keep clicking **Next**, then click **Install**.
-4. When it finishes, open the Start menu, type **PowerShell**, and open **Windows PowerShell**.
+1. Download [**PowerShellPlus-Setup-x64.exe**](https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest/download/PowerShellPlus-Setup-x64.exe).
+2. Open the installer and follow the short setup wizard.
+3. Launch PowerShellPlus from the Start menu or optional desktop shortcut.
 
-### 3. Download PowerShellPlus
+The installer is per-user by default, so administrator access is normally not required. It supports clean upgrades and standard uninstalling through **Windows Settings → Apps**.
 
-Copy the following commands, paste them into PowerShell, and press Enter:
+> [!NOTE]
+> PowerShellPlus is currently unsigned. Windows SmartScreen may show a first-run warning. Confirm that the file came from this repository's Releases page; never disable SmartScreen globally.
 
-```powershell
-cd $HOME
-git clone https://github.com/jordanw0204-rgb/PowerShellPlus.git
-cd PowerShellPlus
-```
+### Portable
 
-You should now see `PowerShellPlus` at the left side of your PowerShell prompt. If Git says the destination already exists, skip the `git clone` command and run `cd $HOME\PowerShellPlus` instead.
+Download [**PowerShellPlus-Portable-x64.zip**](https://github.com/jordanw0204-rgb/PowerShellPlus/releases/latest/download/PowerShellPlus-Portable-x64.zip), extract it to a writable folder, and run `PowerShellPlus.exe`.
 
-### 4. Build the app
+### Requirements
 
-Run this command from inside the PowerShellPlus folder:
+- 64-bit Windows 10 version 1809 or later, or Windows 11.
+- Windows PowerShell, included with Windows.
+- Windows Terminal is recommended for profile appearance and handoff features, but it is not required.
+- Tailscale is required only for optional Global browser access.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
-```
+## First run
 
-The first build can take a few minutes. The script downloads a private, project-local copy of the .NET 8 SDK when needed, restores the required packages, compiles the app, runs its terminal and layout tests, and creates the final application. It does not replace or reconfigure the system-wide version of .NET.
+1. Select **+** beside **Sessions** to create a workspace.
+2. Select **+** beside **Terminals** to add PowerShell terminals to the active Session.
+3. Choose Grid, Columns, Rows, Focus, or Tabs from the Session layout control.
+4. Drag dividers or terminal tabs to arrange the workspace.
+5. Rename and color-code Sessions and terminals from their context menus.
 
-When the build succeeds, the last lines will show:
+Closing the main window hides PowerShellPlus in the notification area by default. This keeps the real terminal processes alive. Use the tray menu or Settings when you intentionally want to quit and close the sessions.
 
-```text
-PowerShellPlus Native build complete.
-Application: ...\PowerShellPlus\dist\PowerShellPlus.exe
-```
+## Core workflow
 
-### 5. Start PowerShellPlus
+### Sessions and terminals
 
-Run:
+- Every Session remembers its terminals, active terminal, chosen layout, ordering, divider positions, and accent colors.
+- Hovering a Session card briefly previews it; moving away restores the active Session.
+- Terminal cards track their current local directory or SSH working directory.
+- Tabs and sidebar cards can be reordered by dragging.
+- Per-terminal font size and composer font size persist across restarts.
 
-```powershell
-.\dist\PowerShellPlus.exe
-```
+### Command composer
 
-For easier access later:
+Each terminal has its own command composer, queue, history, quick commands, and automation menu.
 
-1. Open the `PowerShellPlus\dist` folder in File Explorer.
-2. Right-click `PowerShellPlus.exe`.
-3. Choose **Show more options**, then **Send to → Desktop (create shortcut)**.
+| Shortcut | Action |
+| --- | --- |
+| `Enter` | Send the current input. |
+| `Ctrl+Enter` | Add the current input to that terminal's queue. |
+| `Shift+Enter` or `Ctrl+J` | Insert a new line. |
+| `Ctrl+U` | Remove text from the cursor to the start of the line. |
+| `Ctrl+K` | Remove text from the cursor to the end of the line. |
+| `Up` / `Down` | Move vertically through multiline input or browse queued entries where appropriate. |
+| `Ctrl+Mouse wheel` | Zoom the focused terminal or its composer independently. |
+| `Shift+Send` | Send to every open terminal when the configured modifier is enabled. |
 
-The app is currently unsigned. Windows SmartScreen may show a warning the first time you open a build you created yourself. Read the dialog carefully; if it identifies the `PowerShellPlus.exe` you just built, choose **More info → Run anyway**. You should never disable SmartScreen globally.
+The composer grows upward to eight visible lines, then uses a themed scrollbar. Sent entries are stored in per-terminal History with relative timestamps and can be restored with their attachment metadata.
 
-## Your first five minutes
+Files can be pasted or dragged into the composer. PowerShellPlus shows reorderable attachment pills and previews images, video, and text. For SSH terminals, referenced local files are copied to a managed remote cache and their paths are rewritten before the message is sent.
 
-1. Click the **+** beside Sessions (or in the Session tab strip) to create a new Session with its first terminal.
-2. Click the **+** beside Terminals to add another terminal to the active Session, then give it a useful name and starting folder.
-3. Use the Session tabs above the terminal area to switch groups. Terminals in other Sessions remain live in the background.
-   Hover over a Session card in the sidebar for half a second to preview its terminals and layout; moving away returns to the active Session, while clicking commits the switch.
-4. Use the layout buttons to choose grid, rows, columns, or focus mode for the active Session.
-5. Drag a divider between terminals to resize them. Layout and divider sizes are saved independently for every Session.
-5. Open Commands to save something you type often, or Automate to create a scheduled command.
+### Codex and Hermes
 
-Double-clicking a saved command runs it in the selected terminal. Double-clicking an automation runs it immediately. You can also click the `⋯` button or right-click any card to see every action available for that item.
+PowerShellPlus derives AI-agent state from pane-scoped process and protocol activity:
 
-Each terminal has its own command bar along its bottom edge. Press **Enter** to run its current command, or press **Ctrl+Enter** to place it at the end of that pane's queue. Click **Queue** to open the numbered, scrollable queue and choose any pending command; its badge shows how many commands are waiting. After a command runs, the next queued command is promoted into the input without running automatically. Press **Up** or **Down** while the input is focused to browse the pending queue. Long input wraps and expands upward to six visible lines while staying aligned to the top; only the textbox grows, so the lightning, Queue, and Send controls stay compact at the bottom. Queue contents and the expanded or collapsed state are saved with the terminal. Hover over the thin strip at the bottom center of a pane to reveal the collapse arrow.
+- **Green — Idle:** the agent is ready and no response is in progress.
+- **Blue — Working:** the agent is actively producing a response or running a turn.
+- **Yellow — Waiting for response:** the agent needs approval or user input.
 
-Use the slim arrow on the right edge of the navigation rail to collapse or restore the workspace sidebar. The terminal panes resize immediately into the available width, and the sidebar state is saved with the workspace.
+The same indicator appears in terminal headers and Tabs layout. Keyboard echo by itself does not mark an agent as working.
 
-### View your sessions from a phone — LAN or Global
+When durable metadata is available, recovery preserves the exact Codex thread, model, approval policy, reviewer, and permission profile. Hermes recovery preserves the exact session and validated model. PowerShellPlus will not silently guess a permission level or bind an ambiguous thread.
 
-Click the **globe** beside the Windows Terminal button in the title bar. **LAN** starts the embedded website only on this PC's active private IPv4 addresses. The dialog names every adapter, places the real Wi-Fi/Ethernet route first as **Recommended**, and labels virtual routes so you know which address reaches your device. Open that address, name the browser, and enter the eight-digit pairing code.
+### SSH and persistent remote work
 
-Switch the same dialog to **GLOBAL** to use the site from cellular data, another Wi-Fi network, or anywhere else. Global mode requires the current Tailscale client on this Windows PC and a one-time Tailscale sign-in/Funnel approval. If Tailscale is missing, the themed setup prompt can download the newest stable Windows installer from Tailscale's official package server and open it for you. If Windows reports `NeedsLogin`, PowerShellPlus explains that Tailscale is a system-tray client, obtains a one-time address from the installed CLI, accepts only an exact `https://login.tailscale.com` origin, opens the browser sign-in, waits for completion, and retries Global mode automatically; identity-provider credentials never pass through PowerShellPlus. The same validated browser flow handles Tailscale's first-use Funnel approval, and the public endpoint uses standard HTTPS port 443 so its address works without a special port suffix. PowerShellPlus does not call the address ready merely because the host PC can reach it through private MagicDNS: it independently resolves the hostname through public DNS-over-HTTPS, rejects loopback/private/CGNAT answers, connects directly to a returned public Funnel relay, and requires a valid hostname-bound TLS response from the PowerShellPlus web app. The mapping stays alive through Tailscale's documented first-use DNS propagation window while that check runs. Installer setup resolves through Tailscale's official Windows package manifest (with the stable package page and a release-pinned official package as availability fallbacks), retries brief installer-download failures, accepts only the official HTTPS package path, limits the download size, and requires both valid Windows Authenticode trust and the exact `Tailscale Inc.` publisher before anything can run. Windows still shows its normal UAC/installer confirmation. It does **not** require Tailscale, a VPN, an account, or any PowerShellPlus software on the phone: open the generated `https://…ts.net` address directly in Safari, Chrome, or another modern browser and enter the 12-digit one-time code. Tailscale Funnel provides the public DNS name, valid HTTPS certificate, encrypted relay, and home-IP hiding; PowerShellPlus remains bound only to `127.0.0.1` and never opens or forwards a router port.
+PowerShellPlus records a validated SSH connection recipe—destination, user, port, identity/config files, jump host, and a small allowlist of reliability options—without storing passwords, passphrases, or private-key contents.
 
-If Tailscale is installed but disconnected, choosing **GLOBAL** connects it with a no-reset `tailscale up` command before creating the Funnel. PowerShellPlus records ownership of that connection and runs `tailscale down` when sharing stops or startup fails. If Tailscale was already connected—or another app or user connected it—PowerShellPlus leaves that connection running and removes only its own Funnel. It never stops the Windows Tailscale service or resets existing DNS, route, exit-node, SSH, or unattended-mode settings.
+New SSH terminals can use a pane-specific remote `tmux` session. Choosing **Keep running** closes only the local SSH client while the remote shell, Codex/Hermes turn, and child processes continue. Selecting the detached terminal reattaches to the same remote process and screen state.
 
-In either mode, every current terminal appears with live VT colors, scrollback, session names, grid/focus layouts, and font controls. The web renderer uses each native pane's real row/column grid before decoding its VT output, then scales the visual cells to the available card without resizing the shared ConPTY. Sessions added or removed on the PC are synchronized automatically.
+## Remote browser access
 
-Remote access is read-only by default. Enable **Allow paired devices to type in terminals** only when you need it. Remote keystrokes then go directly to the selected existing ConPTY, so PowerShell, Codex, SSH, and native programs keep exactly the permissions they already have; the browser does not create or resume a second shell. The remote view never resizes the shared ConPTY, so its layout cannot disturb the desktop terminal. Rotating a phone, showing its software keyboard, or resizing a desktop browser automatically re-fits the terminal cards to the visible viewport.
+Select the globe in the title bar to open Remote Access.
 
-Every remote session also has its own growing command line. **Enter** sends, **Shift+Enter** inserts a line, and **Ctrl+Enter** (or **Cmd+Enter**) adds the command to that session's persisted queue. **Queue** opens and selects pending commands, including a touch-friendly add action, while the lightning button opens the same Quick Access commands configured in the desktop app.
+### LAN mode
 
-LAN mode uses local HTTP, so use it only on trusted Private Wi-Fi/Ethernet. Do not use LAN mode on hotel, airport, guest, school, or other untrusted networks; if Windows Firewall asks, allow **Private networks** only. Requests must come from the same IPv4 subnet and direct public/router-forwarded traffic is rejected. Never port-forward the LAN Remote port.
+- Serves the embedded web client on active private IPv4 interfaces.
+- Shows adapter labels and recommends the most useful Wi-Fi/Ethernet address.
+- Uses saved-device pairing and starts read-only by default.
+- Is intended only for trusted private networks; do not port-forward the LAN endpoint.
 
-Global mode deliberately exposes only the authenticated web application through Tailscale Funnel. The local Kestrel listener accepts loopback traffic only; the public host and HTTPS WebSocket origin must match exactly; HSTS and Secure/HttpOnly/SameSite cookies are enforced; the global 12-digit code is throttled to five failed attempts per minute across the entire endpoint; and the 256-bit saved device secret is stored only as a SHA-256 hash. Saved devices survive application and sharing restarts, appear in the Remote Access dialog with connection and last-seen details, and can be revoked immediately. Remote typing returns to read-only whenever Global mode starts. Funnel runs in the foreground without `--bg`, is removed with its exact scoped command when sharing stops, and is killed during shutdown so an abandoned public route is not left behind. Tailscale Funnel is currently a Tailscale beta and applies its published bandwidth limits.
+### Global mode
 
-Hold **Shift** while pressing **Enter** or clicking the send button to send the command to every open terminal. The send icon turns purple and changes to a double arrow before anything is sent, so the wider action is visible. You can disable this shortcut or change its modifier to **Alt** under **Settings → Behavior**. `Ctrl+Enter` is always reserved for adding the current command to its pane's queue.
+- Keeps the PowerShellPlus web server bound to `127.0.0.1`.
+- Publishes it through Tailscale Funnel with public HTTPS and WebSocket origin validation.
+- Requires Tailscale only on the Windows computer; the phone needs a normal browser and no installed app.
+- Stores saved-device secrets as SHA-256 hashes and lets you revoke paired browsers.
+- Returns remote typing to read-only whenever Global sharing starts.
 
-Funnel cleanup is idempotent. If Tailscale reports that the handler is already absent, PowerShellPlus re-reads Funnel status and accepts that result only after HTTPS port 443 is verified clear.
+PowerShellPlus manages only the Tailscale connection and Funnel route it started. If Tailscale was already connected by the user or another application, stopping sharing leaves that connection alone.
 
-To put a saved command in the lightning-bolt menu, open **Commands**, edit that command, and enable **Show in terminal quick access**. Selecting it from a terminal's quick-access menu fills that pane's input so you can review, edit, queue, or run it.
+## Recovery and handoff
 
-Scheduled commands are real PowerShell commands. Test a new automation first, especially if it changes files, installs software, or stops processes.
+PowerShellPlus distinguishes live-process continuity from restart recovery:
 
-### Import an existing Windows Terminal window
+- **Close to tray:** terminals and every child process stay alive exactly as they are.
+- **Application or Windows restart:** panes are recreated from saved layout and validated recovery metadata; previous output remains available from History.
+- **SSH with tmux:** the remote process can remain alive even after the local app fully exits.
+- **Windows Terminal import/handoff:** PowerShellPlus performs a controlled reconstruction because Windows cannot move an existing ConPTY client process between terminal hosts.
 
-Drag a Windows Terminal window by its title bar over PowerShellPlus and hold it there briefly. When the overlay says **Release to import Windows Terminal**, release the mouse. PowerShellPlus reads the tab names and scrollback without closing the source, then shows one review row per tab.
+For safety, a Windows Terminal import does not close its source until review succeeds. A handoff does not remove its source pane until the destination shell proves it started. Unsupported or incomplete Codex permissions, ambiguous threads, unsafe SSH options, and unverifiable destination state fail closed.
 
-For a Codex tab, select the matching active Codex thread if PowerShellPlus could not choose it unambiguously. The review shows the working directory, model, permission profile or legacy sandbox, approval policy, and approval reviewer. PowerShellPlus will not resume a selected Codex thread unless all required permission metadata is valid. Choose **Close source & import** to finish. Only then does PowerShellPlus close that Windows Terminal window and create the replacement sessions, preventing the same Codex thread from running in two terminals simultaneously.
+> [!IMPORTANT]
+> PowerShell variables, loaded modules, in-memory jobs, and arbitrary child-process memory cannot be serialized after a genuine process exit. Recovery preserves everything the underlying tools expose durably; hiding to the tray or remote `tmux` is the option for exact live state.
 
-Each imported session uses the Windows Terminal tab's name. A transient Codex activity spinner is removed from the beginning of the name. Split panes inside one Windows Terminal tab are captured together as previous output, but the initial importer creates one PowerShellPlus session per tab.
+## Updates
 
-This is a recreation, not a transfer of the original PowerShell process. Variables, loaded modules, jobs, SSH connections, and other in-memory state end when the source window closes. The review dialog calls this out before making any change.
+Installed copies check the latest stable GitHub Release after startup. When a newer version is available, the themed prompt shows its release notes and offers:
 
-### Move a session back to Windows Terminal
+- **Update now**
+- **Not now**
+- **Don't show update notifications again**
 
-Click **>_** in a session pane header. PowerShellPlus verifies Windows Terminal and PowerShell first. If Codex is running, it also requires a live, unambiguous top-level thread ID and a complete validated permission state; if another non-Codex child program is running, the handoff is blocked until that program exits. The confirmation shows the exact thread, model, permission selection, working folder, transcript location, and queued-command copy that will be used.
+Settings includes **Check for updates** for an on-demand check even when automatic notifications are disabled. An accepted installer is downloaded from this repository's exact release asset, bounded by its declared size, and verified against GitHub's SHA-256 digest before Windows opens it. Session recovery data is saved before the update closes the application.
 
-After confirmation, PowerShellPlus opens a new Windows Terminal window whose PowerShell bootstrap writes a proof-of-life marker and waits. The source ConPTY is stopped and removed only after that marker identifies a live PowerShell process. PowerShellPlus then atomically releases the new shell, which runs `codex resume <thread-id>` with the captured model, approval policy, reviewer, and permission profile or legacy sandbox. If startup or verification fails, the source pane remains untouched; this avoids running two copies of one Codex thread.
+## Security model
 
-The local transfer bundle is kept under `%APPDATA%\PowerShellPlus\session-handoffs` for 30 days and includes a plain-text terminal transcript plus any queued commands. As with import, this is a controlled reconstruction because Windows cannot move an existing ConPTY client process into a different terminal host. PowerShell variables, functions, loaded modules, jobs, SSH connections, live child programs, and process memory cannot be transferred. An active Codex turn or tool command is interrupted when its old process stops, but its durable conversation continues from the verified thread.
+- Terminal commands run with the permissions of the existing terminal process; the browser does not create a more privileged shell.
+- Codex permission metadata is validated from structured session records rather than inferred from transcript text.
+- SSH recovery accepts only structured connection options and leaves authentication and host-key verification to Windows OpenSSH.
+- LAN requests are constrained to private-network clients; Global mode exposes only the authenticated loopback web application through Funnel.
+- Update redirects are restricted to GitHub release infrastructure and installers must match GitHub's published size and SHA-256 digest.
+- Workspace data and transcripts remain local unless you explicitly use Remote Access or send data through a terminal application.
 
-## How session recovery works
+## Local data
 
-PowerShellPlus uses two kinds of recovery because a live Windows process cannot be serialized and recreated perfectly.
-
-When you click the window's close button, PowerShellPlus hides in the Windows system tray by default. The application and its ConPTY processes remain alive, so PowerShell variables, running commands, Codex chats, SSH connections, background jobs, and interactive programs remain exactly where you left them. Double-click the PowerShellPlus tray icon—or start PowerShellPlus again—to bring the existing window back. A second launch activates the already-running instance instead of creating duplicate terminals.
-
-To genuinely exit, right-click the tray icon and choose **Quit and close sessions**, or use **Quit PowerShellPlus and close all sessions** in Settings.
-
-If PowerShellPlus is terminated, crashes, updates, or Windows restarts, the original processes cannot remain alive. In that case PowerShellPlus:
-
-1. Recreates the saved panes and layout.
-2. Starts normal shells in their configured working directory, restored Codex panes where that chat started, and interrupted SSH panes against their saved host/config alias.
-3. Makes the previous terminal output available from the history icon in the pane header.
-4. Installs small pane-local PowerShell wrappers around the existing `codex` and Windows OpenSSH `ssh.exe` commands. They record launch/lifecycle metadata without replacing either executable.
-5. Correlates the pane's live Codex process with Codex's local activity and rollout metadata, including rollout files Codex still has open for writing, then saves the durable thread ID plus that thread's most recently applied model and `/permissions` level. It can resolve the process through either the terminal pane or its launch marker, with launch-time correlation as a final fallback. If `/resume` switches threads inside Codex, the pane binding follows the selected top-level thread while ignoring background subagent activity. After an app crash, update, or Windows restart, recovery calls `codex resume <thread-id>` with the saved model, approval policy, approval reviewer, and either the saved permission profile or legacy sandbox. Permission-profile resumes use `default_permissions` and deliberately do not pass `--sandbox`, because Codex treats the newer permission profiles and legacy sandbox settings as mutually exclusive.
-6. Confirms that the pane still owns a live `ssh.exe` process, then saves only a validated connection recipe: destination or SSH config alias plus supported port, user, identity-file, config-file, jump-host, address-family, compression, agent-forwarding, and X11 options. On recovery it reconnects with a forced interactive PTY. Recovery adds bounded OpenSSH connection attempts, handshake timeout, and encrypted server-alive checks so an unreachable or overloaded SSH server cannot leave a permanently blank pane. The restore status and any connection error remain visible, the local PowerShell prompt becomes interactive after the bounded attempt, and the pane restart button retries the same saved recovery. A connection failure keeps the previous transcript, SSH recipe, exact Hermes ID, and validated per-session Hermes model for the next retry instead of overwriting them with the failed pane. PowerShellPlus recognizes Hermes' resume banner plus full and compact status bars, follows in-session `/model` changes, and supplies the saved model as a per-run `--model` override when it resumes the exact session. If no exact ID is available, it uses Hermes' own `--continue` lookup with the saved pane model. A normal Hermes exit is recognized and is not relaunched.
-
-SSH terminals opened by PowerShellPlus also receive a deterministic, pane-specific `tmux` session on the remote host. When **Keep running** is chosen while closing an SSH terminal, PowerShellPlus closes only the local SSH/ConPTY client and leaves the exact remote shell, Codex turn, Hermes turn, and child processes alive inside tmux. The terminal remains in the sidebar with a detached status; selecting it reattaches to that same process and screen state. **Stop & remove** verifies and terminates the managed remote tmux session before deleting the terminal, and fails closed if the SSH host cannot be reached. Removing a whole PowerShellPlus Session applies the same verified cleanup to every managed remote terminal. Existing SSH terminals created before this feature can be moved into tmux once; because their original process is not already inside tmux, that first move resumes the saved agent thread rather than preserving a currently executing turn. The remote host must have `tmux` installed.
-
-SSH passwords, key passphrases, private-key contents, arbitrary `-o` directives, forwarding commands, and remote shell commands are never added to recovery metadata. The only accepted `-o` values are bounded `ConnectionAttempts`, `ConnectTimeout`, `ServerAliveInterval`, and `ServerAliveCountMax` reliability settings; injected defaults are not persisted as connection identity. Authentication remains OpenSSH's job through `%USERPROFILE%\.ssh\config`, `ssh-agent`, key files, and `known_hosts`, so host-key checking is not weakened. If authentication still needs a password or key passphrase after restart, OpenSSH prompts in the restored pane as usual. Unsupported or malformed SSH arguments fail closed: the shell opens normally instead of replaying them.
-
-For PowerShellPlus-owned panes, the app never decides that a pane is Codex merely because the word “Codex” appeared in its output. Detection comes from the pane's live process tree and its own launch marker. During an external Windows Terminal import, terminal accessibility text identifies which review rows look like Codex, but a resume is enabled only after that row is bound to a live top-level Codex thread from structured activity metadata. Model and permission recovery always comes from Codex's structured session records, not terminal text. Only validated permission-profile names, legacy sandbox modes, approval policies, and approval reviewers are accepted. An incomplete external match cannot auto-resume. These marker files contain session identifiers, model names, permission mode names, timestamps, and local folder paths—not chat contents or API credentials—and remain under `%APPDATA%\PowerShellPlus\session-recovery`.
-
-Recovery options are available under **Settings → Session recovery**. Saved terminal output is limited to the most recent 500,000 characters per pane and remains local in the PowerShellPlus data folder. Terminal output can contain private commands or tokens, so transcript saving can be disabled independently.
-
-## Updating later
-
-Installed copies check the latest stable GitHub Release after startup. When an update is available, PowerShellPlus shows the release notes and lets you update now, decline, or turn off automatic update notifications. The installer is downloaded only after approval and its size and SHA-256 digest are verified against GitHub's release metadata before it opens.
-
-Use **Settings -> Check for updates** at any time for a manual check. This works even when automatic notifications are disabled.
-
-For source-built portable copies, open PowerShell in the project folder and run:
-
-```powershell
-git pull
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
-```
-
-Then start the refreshed copy from `dist\PowerShellPlus.exe`.
-
-## Troubleshooting
-
-### The build says a file in `dist` is being used
-
-Close PowerShellPlus, wait a few seconds, and run the build command again. Windows cannot replace the deployed executable while it is open.
-
-### Git is not recognized
-
-Close PowerShell, reopen it after installing Git, and retry. If that still fails, restart Windows so the installer can finish updating your PATH.
-
-### Package restore or SDK download fails
-
-Check your internet connection and retry. Corporate networks, school networks, VPNs, and antivirus products can block NuGet or Microsoft's SDK download service.
-
-### The terminal appearance is unexpected
-
-Open Settings inside PowerShellPlus. Blank appearance fields inherit from your Windows Terminal default profile; entering a font or size overrides that value for PowerShellPlus.
-
-### I want a completely fresh workspace
-
-PowerShellPlus saves user-created sessions, commands, automations, and preferences in:
+PowerShellPlus stores user-created Sessions, terminal profiles, commands, automations, preferences, recovery metadata, and optional transcripts under:
 
 ```text
 %APPDATA%\PowerShellPlus
 ```
 
-Close the app and rename that folder to `PowerShellPlus-backup`. The next launch creates a fresh workspace, while the renamed folder preserves your old data in case you want it back.
+Saved terminal output can contain sensitive commands or tokens. Transcript persistence can be disabled independently in Settings.
 
-## Building and testing for development
+## Build from source
 
-The normal build command is also the complete release gate:
+Source builds are intended for contributors and advanced users. Install Git and the current Node.js LTS release, then run:
 
 ```powershell
+git clone https://github.com/jordanw0204-rgb/PowerShellPlus.git
+cd PowerShellPlus
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-It performs a Release build, tests interactive ConPTY input/output, checks multi-pane resizing and responsive title controls, exercises pane-local command bars, persisted and scrollable queues, queue navigation, quick-access filtering, configurable send-to-all routing, and real fan-out to every live pane, validates automation timing and countdown formatting, verifies live hide/restore process identity, checks Codex-only recovery with exact launch-marker, thread-ID, model, and permission binding, tests launching and detecting Codex inside the terminal, validates the Windows Terminal handoff's structured resume arguments, proof-of-life wait, atomic release, transcript/queue preservation, unsafe-permission rejection, and cancellation path, and runs an embedded Remote Access integration test covering persistent hash-only pairing across a fresh server instance, live-device revocation, adapter metadata, unauthenticated rejection, WebSocket origin validation, dimension-faithful session snapshots and output, responsive web controls, remote command queues, direct input, live VT output, LAN subnet enforcement, Global loopback isolation, exact HTTPS host/origin validation, HSTS, Secure cookies, global pairing throttling, scoped Funnel arguments, Tailscale installer URL/launch boundaries, unsigned-installer rejection, and clean shutdown. It publishes a self-contained Windows x64 build, repeats the native tests against the published build, and produces:
+The build script restores pinned web assets, installs a project-local .NET 8 SDK when needed, compiles the native application, runs its functional gates, and writes the deployable build to `dist\`.
 
-- `dist\PowerShellPlus.exe` and its runtime files
-- `PowerShellPlus-win-x64.zip`
-
-For a faster compile/publish cycle without the runtime gates:
+To build and smoke-test the same installer used by GitHub Releases:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -SkipTests
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build-installer.ps1 -RunSmokeTest
 ```
 
-If a deployed copy is currently running and its live sessions must not be interrupted, use `-StageOnly`. The tested app remains in `release-native` and is packaged as `PowerShellPlus-win-x64-staged.zip`; the active `dist` folder is left untouched.
+The release workflow is triggered by stable `vMAJOR.MINOR.PATCH` tags and publishes the installer, portable ZIP, and SHA-256 checksum file.
 
-The repository also retains the earlier WinForms and Electron implementations for reference. Active development is centered on `native\PowerShellPlus.Native`.
-
-## Project layout
+## Project structure
 
 ```text
-native/PowerShellPlus.Native/   Current WPF application
-native/PowerShellPlus.Native/RemoteWeb/  Embedded phone/browser terminal client
-native/PowerShellPlus.Native/TailscaleFunnelManager.cs  Browser-only Global HTTPS tunnel lifecycle
-native/PowerShellPlus.Native/TailscaleInstaller.cs  Official installer download and publisher verification
-native/PowerShellPlus.Native/PowerShellPlusDialog.xaml  Shared themed app prompt and confirmation surface
-native/NuGet.config             Native package source configuration
-src/PowerShellPlus/             Earlier WinForms implementation
-electron/ and renderer/         Electron fallback implementation
-scripts/                        Smoke tests and deployment helpers
-build.ps1                       Native build, test, publish, and package pipeline
+PowerShellPlus/
+├── native/PowerShellPlus.Native/   Native WPF application and embedded web client
+├── installer/                      Inno Setup installer definition
+├── scripts/                        Supporting PowerShell utilities
+├── electron/                       Legacy Electron fallback host
+├── renderer/                       Legacy fallback renderer
+├── .github/workflows/              Tag-driven release automation
+├── build.ps1                       Native build and functional gates
+└── build-installer.ps1             Installer build and isolated smoke test
 ```
+
+## Troubleshooting
+
+<details>
+<summary><strong>The installer or app is blocked by SmartScreen</strong></summary>
+
+PowerShellPlus is currently unsigned. Confirm that the filename and source are this repository's official Releases page, then use Windows' **More info** option if you trust the download. Do not disable SmartScreen globally.
+</details>
+
+<details>
+<summary><strong>A source build cannot replace files in dist</strong></summary>
+
+The running portable application still has those files open. Quit PowerShellPlus from its tray menu, wait for the process to exit, and run `build.ps1` again.
+</details>
+
+<details>
+<summary><strong>A recovered SSH terminal cannot reconnect</strong></summary>
+
+Verify the host, network, key/config path, and normal Windows OpenSSH command outside PowerShellPlus. The pane retains its transcript and recovery recipe so you can retry after connectivity or authentication is fixed.
+</details>
+
+<details>
+<summary><strong>Global Remote Access is unavailable</strong></summary>
+
+Confirm that Tailscale is installed and signed in on the Windows computer, then reopen Remote Access and select Global. The phone does not need Tailscale installed.
+</details>
+
+## Contributing
+
+Issues and focused pull requests are welcome. Please describe the terminal mode involved—local PowerShell, SSH, Codex, Hermes, LAN Remote, or Global Remote—and include reproduction steps. Avoid attaching transcripts that contain credentials or private command output.
 
 ## License
 
