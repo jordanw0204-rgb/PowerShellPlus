@@ -253,7 +253,7 @@ if ($global:__PowerShellPlusSshCommand) {
             ? "printf \"\\033Ptmux;\\033\\033]9;9;\\\"%s\\\"\\007\\033\\\\\" \"$PWD\""
             : "printf \"\\033]9;9;\\\"%s\\\"\\007\" \"$PWD\"";
         var tmuxSetup = insideTmux
-            ? "if [ -n \"${TMUX:-}\" ] && command -v tmux >/dev/null 2>&1; then tmux set-option -t \"$POWERSHELLPLUS_TMUX_SESSION\" allow-passthrough on >/dev/null 2>&1 || true; fi; "
+            ? "if [ -n \"${TMUX:-}\" ] && command -v tmux >/dev/null 2>&1; then tmux set-option -t \"$POWERSHELLPLUS_TMUX_SESSION\" status off >/dev/null 2>&1 || true; tmux set-option -t \"$POWERSHELLPLUS_TMUX_SESSION\" allow-passthrough on >/dev/null 2>&1 || true; fi; "
             : string.Empty;
         return tmuxSetup + "if [ \"${SHELL##*/}\" = \"bash\" ]; then "
             + "__psp_previous_prompt_command=\"${PROMPT_COMMAND:-}\"; "

@@ -157,8 +157,6 @@ public sealed class SessionProfile : INotifyPropertyChanged
     {
         "working" => new SolidColorBrush(Color.FromRgb(137, 180, 250)),
         "waiting" => new SolidColorBrush(Color.FromRgb(249, 226, 175)),
-        "error" => new SolidColorBrush(Color.FromRgb(243, 139, 168)),
-        "stopped" => new SolidColorBrush(Color.FromRgb(108, 112, 134)),
         _ => new SolidColorBrush(Color.FromRgb(166, 227, 161))
     };
     [JsonIgnore] public Brush AccentBrush => WorkspaceAccentPalette.BrushFor(AccentColor, WorkspaceAccentPalette.DefaultTerminal);

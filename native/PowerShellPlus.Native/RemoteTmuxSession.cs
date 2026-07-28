@@ -43,11 +43,15 @@ public static class RemoteTmuxSession
             + $"export POWERSHELLPLUS_TMUX_SESSION={quotedSession}; "
             + "if command -v tmux >/dev/null 2>&1; then "
             + $"if tmux has-session -t {quotedSession} 2>/dev/null; then "
+            + $"tmux set-option -t {quotedSession} status off >/dev/null 2>&1 || true; "
             + $"tmux set-option -t {quotedSession} allow-passthrough on >/dev/null 2>&1 || true; "
             + $"__psp_tmux_pwd=$(tmux display-message -p -t {quotedSession} '#{{pane_current_path}}' 2>/dev/null); "
             + "if [ -n \"$__psp_tmux_pwd\" ]; then " + SshLaunchStore.BuildRemoteDirectoryMarker("$__psp_tmux_pwd") + "fi; "
             + $"exec tmux attach-session -t {quotedSession}; fi; "
-            + $"exec tmux new-session -s {quotedSession} {QuotePosix(workloadCommand)}; "
+            + $"tmux new-session -d -s {quotedSession} {QuotePosix(workloadCommand)} >/dev/null 2>&1 || true; "
+            + $"tmux set-option -t {quotedSession} status off >/dev/null 2>&1 || true; "
+            + $"tmux set-option -t {quotedSession} allow-passthrough on >/dev/null 2>&1 || true; "
+            + $"exec tmux attach-session -t {quotedSession}; "
             + "fi; "
             + "printf '[PowerShellPlus] tmux is not installed; this SSH process cannot remain live after disconnect.\n' >&2; "
             + workloadCommand;
@@ -59,8 +63,13 @@ public static class RemoteTmuxSession
         var quotedSession = QuotePosix(sessionName);
         return "if ! command -v tmux >/dev/null 2>&1; then "
             + $"printf '{MissingMarker}\n'; exit 127; fi; "
-            + $"if tmux has-session -t {quotedSession} 2>/dev/null; then printf '{ExistsMarker}\n'; exit 0; fi; "
+            + $"if tmux has-session -t {quotedSession} 2>/dev/null; then "
+            + $"tmux set-option -t {quotedSession} status off >/dev/null 2>&1 || true; "
+            + $"tmux set-option -t {quotedSession} allow-passthrough on >/dev/null 2>&1 || true; "
+            + $"printf '{ExistsMarker}\n'; exit 0; fi; "
             + $"tmux new-session -d -s {quotedSession} {QuotePosix(workloadCommand)} >/dev/null 2>&1 || exit 1; "
+            + $"tmux set-option -t {quotedSession} status off >/dev/null 2>&1 || true; "
+            + $"tmux set-option -t {quotedSession} allow-passthrough on >/dev/null 2>&1 || true; "
             + "sleep 1; "
             + $"if tmux has-session -t {quotedSession} 2>/dev/null; then printf '{ReadyMarker}\n'; exit 0; fi; exit 1";
     }

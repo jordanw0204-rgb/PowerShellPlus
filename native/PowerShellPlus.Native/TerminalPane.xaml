@@ -12,7 +12,12 @@
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Border x:Name="PaneAccentBar" Grid.ColumnSpan="3" Width="3" CornerRadius="2" HorizontalAlignment="Left" Margin="-10,5,0,5"/>
           <Grid x:Name="AgentStatusIcon" Width="17" Height="17" Margin="0,0,8,0" VerticalAlignment="Center" ToolTip="Terminal is starting" AutomationProperties.Name="Terminal is starting">
-            <Grid.RenderTransform><ScaleTransform x:Name="AgentStatusScale" ScaleX="1" ScaleY="1" CenterX="8.5" CenterY="8.5"/></Grid.RenderTransform>
+            <Grid.RenderTransform>
+              <TransformGroup>
+                <ScaleTransform x:Name="AgentStatusScale" ScaleX="1" ScaleY="1" CenterX="8.5" CenterY="8.5"/>
+                <TranslateTransform x:Name="AgentStatusTranslate" X="0"/>
+              </TransformGroup>
+            </Grid.RenderTransform>
             <Line x:Name="AgentAntenna" X1="8.5" Y1="1" X2="8.5" Y2="4" Stroke="#89B4FA" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
             <Ellipse x:Name="AgentAntennaTip" Width="2.6" Height="2.6" Fill="#89B4FA" HorizontalAlignment="Center" VerticalAlignment="Top"/>
             <Border x:Name="AgentHead" Width="15" Height="11" Margin="0,4,0,0" BorderBrush="#89B4FA" BorderThickness="1.2" CornerRadius="4" Background="#241F2940">
@@ -22,10 +27,16 @@
                 <Ellipse x:Name="AgentRightEye" Grid.Column="1" Width="2.2" Height="2.2" Fill="#89B4FA" HorizontalAlignment="Left" Margin="2,0,0,0"/>
               </Grid>
             </Border>
+            <Border x:Name="AgentWaitingBadge" Width="8" Height="8" Margin="0,-1,-4,0" Visibility="Collapsed"
+                    HorizontalAlignment="Right" VerticalAlignment="Top" CornerRadius="4"
+                    Background="#F9E2AF" BorderBrush="#181825" BorderThickness="1">
+              <TextBlock Text="!" FontFamily="Segoe UI" FontSize="6" FontWeight="Bold" Foreground="#181825"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
+            </Border>
           </Grid>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <TextBlock x:Name="TitleText" FontSize="11" FontWeight="SemiBold"/>
-            <TextBlock x:Name="StateText" Text="  Windows Terminal control" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StateText" Text="  Windows PowerShell" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal">
             <Button x:Name="PreviousOutputButton" Content="◷" ToolTip="Previous session output" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed" Click="PreviousOutputClick"/>

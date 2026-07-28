@@ -291,6 +291,7 @@ public partial class TerminalPane : UserControl
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes
             : recovery?.CodexWasActive == true || recovery?.RemoteCodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
         activeCodexSessionId = recovery?.RemoteCodexWasActive == true ? recovery.RemoteCodexSessionId : recovery?.CodexSessionId;
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
         agentStatusTimer.Tick += (_, _) =>
         {
             RefreshAgentStatus();
@@ -321,7 +322,7 @@ public partial class TerminalPane : UserControl
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Loaded);
             RefreshRemoteDimensions();
             ConfigureNativeScrollbar();
-            StateText.Text = $"  {appearance.ProfileName} · native renderer";
+            UpdateHeaderStatus();
             await Task.Delay(1400);
             if (Terminal.ConPTYTerm?.TermProcIsStarted != true)
             {
@@ -333,7 +334,7 @@ public partial class TerminalPane : UserControl
                 }
                 catch (Exception exception)
                 {
-                    StateText.Text = "  Start failed";
+                    SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
                     Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
                     File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] {exception}\n");
                     return;
@@ -364,11 +365,6 @@ public partial class TerminalPane : UserControl
         var accent = WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         PaneAccentBar.Background = accent;
         if (PaneBorder.BorderThickness.Left > 1) PaneBorder.BorderBrush = accent;
-        AgentHead.BorderBrush = accent;
-        AgentAntenna.Stroke = accent;
-        AgentAntennaTip.Fill = accent;
-        AgentLeftEye.Fill = accent;
-        AgentRightEye.Fill = accent;
     }
 
     public bool HasTerminalSurfaceActivationHook => terminalContainer is not null && terminalMessageRouterInstalled && terminalWindowSubclassInstalled;
@@ -1191,7 +1187,7 @@ public partial class TerminalPane : UserControl
     {
         var sshRecovery = recoveryOverride?.SshWasActive == true ? recoveryOverride
             : startupRecovery?.SshWasActive == true ? startupRecovery : null;
-        StateText.Text = sshRecovery is null ? "  Restarting…" : "  Retrying SSH recovery…";
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
         startupRecovery = sshRecovery;
         hermesExitObserved = false;
         Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
@@ -1253,7 +1249,7 @@ public partial class TerminalPane : UserControl
         if (!ShouldRecoverStalledProfile(GetOutput(), descendants)) return;
 
         startupProfileFallbackAttempted = true;
-        StateText.Text = "  Prompt initialization timed out · starting safe shell";
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
         try
         {
             Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
@@ -1263,11 +1259,11 @@ public partial class TerminalPane : UserControl
             ConfigureNativeScrollbar();
             await Task.Delay(600);
             RefreshRemoteDimensions();
-            StateText.Text = "  Safe shell · native renderer";
+            RefreshAgentStatus(true);
         }
         catch (Exception exception)
         {
-            StateText.Text = "  Profile fallback failed";
+            SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
             Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
             File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] PowerShell profile fallback: {exception}\n");
         }
@@ -2223,8 +2219,6 @@ public partial class TerminalPane : UserControl
         {
             AgentActivityState.Working => Color.FromRgb(137, 180, 250),
             AgentActivityState.Waiting => Color.FromRgb(249, 226, 175),
-            AgentActivityState.Error => Color.FromRgb(243, 139, 168),
-            AgentActivityState.Stopped => Color.FromRgb(108, 112, 134),
             _ => Color.FromRgb(166, 227, 161)
         };
         var brush = new SolidColorBrush(color);
@@ -2236,10 +2230,13 @@ public partial class TerminalPane : UserControl
 
         AgentStatusScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         AgentStatusScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        AgentStatusTranslate.BeginAnimation(TranslateTransform.XProperty, null);
         AgentLeftEye.BeginAnimation(OpacityProperty, null);
         AgentRightEye.BeginAnimation(OpacityProperty, null);
         AgentStatusScale.ScaleX = AgentStatusScale.ScaleY = 1;
+        AgentStatusTranslate.X = 0;
         AgentLeftEye.Opacity = AgentRightEye.Opacity = 1;
+        AgentWaitingBadge.Visibility = Visibility.Collapsed;
         if (state == AgentActivityState.Working)
         {
             var bounce = new DoubleAnimation(1, 1.13, TimeSpan.FromMilliseconds(360))
@@ -2253,12 +2250,17 @@ public partial class TerminalPane : UserControl
         }
         else if (state == AgentActivityState.Waiting)
         {
-            var blink = new DoubleAnimationUsingKeyFrames { RepeatBehavior = RepeatBehavior.Forever, Duration = TimeSpan.FromSeconds(2.4) };
-            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromPercent(0)));
-            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(.15, KeyTime.FromPercent(.82)));
-            blink.KeyFrames.Add(new DiscreteDoubleKeyFrame(1, KeyTime.FromPercent(.9)));
-            AgentLeftEye.BeginAnimation(OpacityProperty, blink);
-            AgentRightEye.BeginAnimation(OpacityProperty, blink);
+            AgentWaitingBadge.Visibility = Visibility.Visible;
+            var shake = new DoubleAnimationUsingKeyFrames { RepeatBehavior = RepeatBehavior.Forever, Duration = TimeSpan.FromSeconds(2.8) };
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(0)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(.72)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(-.8, KeyTime.FromPercent(.76)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(.8, KeyTime.FromPercent(.80)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(-.55, KeyTime.FromPercent(.84)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(.55, KeyTime.FromPercent(.88)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(.92)));
+            shake.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromPercent(1)));
+            AgentStatusTranslate.BeginAnimation(TranslateTransform.XProperty, shake);
         }
 
         var agentName = kind switch { AgentKind.Codex => "Codex", AgentKind.Hermes => "Hermes", _ => "Terminal" };
@@ -2271,7 +2273,9 @@ public partial class TerminalPane : UserControl
             AgentActivityState.Starting => "starting",
             _ => "idle"
         };
-        var accessibleStatus = $"{agentName} is {stateLabel}";
+        var accessibleStatus = state == AgentActivityState.Waiting
+            ? $"{agentName} is waiting for your response"
+            : $"{agentName} is {stateLabel}";
         Profile.UpdateAgentStatus(state switch
         {
             AgentActivityState.Working => "working",
@@ -2283,11 +2287,33 @@ public partial class TerminalPane : UserControl
         }, accessibleStatus);
         AgentStatusIcon.ToolTip = accessibleStatus;
         AutomationProperties.SetName(AgentStatusIcon, accessibleStatus);
-        StateText.Text = $"  {agentName} · {stateLabel}";
+        UpdateHeaderStatus();
+    }
+
+    private void UpdateHeaderStatus()
+    {
+        StateText.ToolTip = null;
+        if (displayedAgentKind == AgentKind.Terminal)
+        {
+            StateText.Text = "  Windows PowerShell";
+            return;
+        }
+        StateText.Text = agentActivityState switch
+        {
+            AgentActivityState.Working => "  Working",
+            AgentActivityState.Waiting => "  Waiting for Response",
+            AgentActivityState.Stopped => "  Stopped",
+            AgentActivityState.Error => "  Error",
+            AgentActivityState.Starting => "  Starting",
+            _ => "  Idle"
+        };
     }
 
     internal AgentActivityState AgentActivityStateForTest => agentActivityState;
     internal string AgentStatusTextForTest => StateText.Text;
+    internal Color AgentStatusColorForTest => AgentHead.BorderBrush is SolidColorBrush brush ? brush.Color : Colors.Transparent;
+    internal bool AgentWorkingAnimationForTest => AgentStatusScale.HasAnimatedProperties;
+    internal bool AgentWaitingAttentionForTest => AgentWaitingBadge.Visibility == Visibility.Visible && AgentStatusTranslate.HasAnimatedProperties;
     internal bool AccentAppliedForTest => ReferenceEquals(PaneAccentBar.Background, WorkspaceAccentPalette.BrushFor(Profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal));
     internal void SetAgentStatusForTest(AgentKind kind, AgentActivityState state) => SetAgentStatus(kind, state);
     internal static bool ActivityTrackerRejectsInputEchoForTest()
@@ -2520,8 +2546,6 @@ public partial class TerminalPane : UserControl
 
     private void ShowRemoteImageStatus(string text, string detail, bool uploading, bool autoHide = false)
     {
-        StateText.Text = "  " + text;
-        StateText.ToolTip = detail;
         var version = Interlocked.Increment(ref remoteImageIndicatorVersion);
         RemoteImagePasteIndicator.Visibility = Visibility.Visible;
         RemoteImagePasteIndicator.ToolTip = detail;

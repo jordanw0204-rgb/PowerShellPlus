@@ -2127,6 +2127,7 @@ public partial class MainWindow : Window
             && managedSshShellCommand.Contains("command -v tmux", StringComparison.Ordinal)
             && managedSshShellCommand.Contains("tmux attach-session", StringComparison.Ordinal)
             && managedSshShellCommand.Contains("tmux new-session", StringComparison.Ordinal)
+            && managedSshShellCommand.Contains("status off", StringComparison.Ordinal)
             && managedSshShellCommand.Contains(managedTmuxSessionName, StringComparison.Ordinal)
             && managedSshShellCommand.Contains("tmux is not installed", StringComparison.Ordinal);
         var unsafeTmuxName = RemoteTmuxSession.GetSessionName("pane'; touch /tmp/unsafe; #");
@@ -2135,6 +2136,7 @@ public partial class MainWindow : Window
             && unsafeTmuxName.IndexOfAny(['\'', ';', '/', ' ', '#']) < 0
             && RemoteTmuxSession.BuildEnsureDetachedCommand(profile.Id, "exec codex resume safe-session") is { } detachedCommand
             && detachedCommand.Contains("tmux new-session -d", StringComparison.Ordinal)
+            && detachedCommand.Contains("status off", StringComparison.Ordinal)
             && detachedCommand.Contains("PSP_TMUX_READY", StringComparison.Ordinal);
         var sshKeyPath = Path.Combine(Path.GetDirectoryName(reportPath)!, "vps recovery key");
         var safeSshAccepted = SshRecovery.TryNormalizeConnectionArguments(["-p", "2222", "-i", sshKeyPath, "deploy@vps.example"], out var safeSshArguments, out var safeSshDestination)
@@ -2916,17 +2918,27 @@ public partial class MainWindow : Window
             var terminalTabShowsWorkingAgent = activationTarget.Profile.AgentStatusState == "working"
                 && activationTarget.Profile.AgentStatusText == "Codex is working";
             var agentWorkingStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Working
-                && activationTarget.AgentStatusTextForTest.Contains("Codex · working", StringComparison.Ordinal);
+                && activationTarget.AgentStatusTextForTest == "  Working"
+                && activationTarget.AgentStatusColorForTest == Color.FromRgb(137, 180, 250)
+                && activationTarget.AgentWorkingAnimationForTest;
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Waiting);
             var terminalTabShowsWaitingAgent = activationTarget.Profile.AgentStatusState == "waiting"
-                && activationTarget.Profile.AgentStatusText == "Codex is waiting for you";
+                && activationTarget.Profile.AgentStatusText == "Codex is waiting for your response";
             var agentWaitingStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Waiting
-                && activationTarget.AgentStatusTextForTest.Contains("Codex · waiting for you", StringComparison.Ordinal);
+                && activationTarget.AgentStatusTextForTest == "  Waiting for Response"
+                && activationTarget.AgentStatusColorForTest == Color.FromRgb(249, 226, 175)
+                && activationTarget.AgentWaitingAttentionForTest;
             activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Idle);
             var terminalTabShowsIdleAgent = activationTarget.Profile.AgentStatusState == "idle"
                 && activationTarget.Profile.AgentStatusText == "Codex is idle";
             var agentIdleStateVisible = activationTarget.AgentActivityStateForTest == AgentActivityState.Idle
-                && activationTarget.AgentStatusTextForTest.Contains("Codex · idle", StringComparison.Ordinal);
+                && activationTarget.AgentStatusTextForTest == "  Idle"
+                && activationTarget.AgentStatusColorForTest == Color.FromRgb(166, 227, 161)
+                && !activationTarget.AgentWorkingAnimationForTest
+                && !activationTarget.AgentWaitingAttentionForTest;
+            activationTarget.SetAgentStatusForTest(AgentKind.Terminal, AgentActivityState.Idle);
+            var plainPowerShellHeaderVisible = activationTarget.AgentStatusTextForTest == "  Windows PowerShell";
+            activationTarget.SetAgentStatusForTest(AgentKind.Codex, AgentActivityState.Idle);
             var terminalTabAgentStateMirrorsPane = terminalTabShowsWorkingAgent && terminalTabShowsWaitingAgent && terminalTabShowsIdleAgent;
             var inputEchoDoesNotActivateAgent = TerminalPane.ActivityTrackerRejectsInputEchoForTest();
             var codexTurnEventsDriveAgent = CodexSessionLocator.ActivityRecordsClassifyForTest();
@@ -3185,7 +3197,8 @@ public partial class MainWindow : Window
             var terminalTabSurface = terminalTabContainer is null ? null : FindContextMenuSurface(terminalTabContainer);
             var terminalTabsShowAgentAndName = terminalTabContainer is not null
                 && FindVisualDescendant<System.Windows.Shapes.Ellipse>(terminalTabContainer) is not null
-                && FindVisualDescendant<TextBlock>(terminalTabContainer)?.Text == ((SessionProfile)TerminalTabList.Items[0]).Name;
+                && FindVisualDescendant<TextBlock>(terminalTabContainer,
+                    value => value.Text == ((SessionProfile)TerminalTabList.Items[0]).Name) is not null;
             var tabContextMenusWork = workspaceTabSurface?.ContextMenu is { } workspaceTabMenu
                 && workspaceTabMenu.Items.OfType<MenuItem>().Any(value => string.Equals(value.Header?.ToString(), "Edit session", StringComparison.Ordinal))
                 && terminalTabSurface?.ContextMenu is { } terminalTabMenu
@@ -3440,7 +3453,7 @@ public partial class MainWindow : Window
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
                 && rows && columns && focus && grid && tabs && terminalTabsShowAgentAndName && tabContextMenusWork && terminalReorderSynchronizes && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
-                && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && terminalTabAgentStateMirrorsPane
+                && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && plainPowerShellHeaderVisible && terminalTabAgentStateMirrorsPane
                 && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && agentActivityClassificationExact
                 && hermesActivityTransitionsExact && remoteCodexActivityProbeBounded
                 && scheduleLogic && countdownLogic && automationHoverContainerStable && manualOnlyScheduleStaysDormant && explicitNoScheduleStaysDormant
@@ -3455,7 +3468,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
-            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}");
@@ -3977,6 +3990,16 @@ public partial class MainWindow : Window
             if (child is T match) return match;
             var nested = FindVisualDescendant<T>(child);
             if (nested is not null) return nested;
+        }
+        return null;
+    }
+    private static T? FindVisualDescendant<T>(DependencyObject root, Func<T, bool> predicate) where T : DependencyObject
+    {
+        if (root is T rootMatch && predicate(rootMatch)) return rootMatch;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var match = FindVisualDescendant(VisualTreeHelper.GetChild(root, index), predicate);
+            if (match is not null) return match;
         }
         return null;
     }
