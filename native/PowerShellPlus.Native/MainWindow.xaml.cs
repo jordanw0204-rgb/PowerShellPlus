@@ -19,6 +19,10 @@ public partial class MainWindow : Window
 {
     private enum EditorMode { Terminal, WorkspaceSession, Snippet, Automation }
     private enum AccentColorPickerTarget { Terminal, WorkspaceSession }
+    private const string TrayOpenLabel = "Open PowerShellPlus";
+    private const string TrayQuitLabel = "Quit PowerShellPlus";
+    private const string TrayRestartLabel = "Restart PowerShellPlus";
+    private const string TrayFullQuitLabel = "Fully Quit PowerShellPlus && Tmux Terminals";
     private sealed record RecoveryPaneSource(string SessionId, string WorkingDirectory, TerminalPane Pane, int? RootProcessId);
     private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId);
     private const double WorkspaceSidebarWidth = 278;
@@ -34,6 +38,8 @@ public partial class MainWindow : Window
     private readonly SessionRecoverySnapshot loadedRecovery;
     private System.Windows.Forms.NotifyIcon? trayIcon;
     private bool explicitShutdown;
+    private bool suppressShutdownRecoveryCapture;
+    private bool lifecycleOperationInProgress;
     private bool shutdownComplete;
     private bool trayNoticeShown;
     private EditorMode editorMode;
@@ -207,7 +213,7 @@ public partial class MainWindow : Window
         windowsTerminalDragMonitor?.Dispose();
         windowsTerminalDragMonitor = null;
         StopLanRemoteForShutdown();
-        if (!automationMode) CaptureRecoverySnapshot();
+        if (!automationMode && !suppressShutdownRecoveryCapture) CaptureRecoverySnapshot();
         shutdownComplete = true;
         SaveNow();
         foreach (var pane in panes.Values) pane.Stop();
@@ -222,13 +228,24 @@ public partial class MainWindow : Window
     private void InitializeTrayIcon()
     {
         var menu = new System.Windows.Forms.ContextMenuStrip();
-        menu.Items.Add("Open PowerShellPlus", null, (_, _) => Dispatcher.BeginInvoke(RestoreFromTray));
+        menu.Items.Add(TrayOpenLabel, null, (_, _) => Dispatcher.BeginInvoke(RestoreFromTray));
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-        menu.Items.Add("Quit and close sessions", null, (_, _) => Dispatcher.BeginInvoke(() =>
+        var quitItem = new System.Windows.Forms.ToolStripMenuItem(TrayQuitLabel, null, (_, _) =>
         {
-            explicitShutdown = true;
-            Close();
-        }));
+            Dispatcher.BeginInvoke(new Action(QuitPowerShellPlusToSessionHost));
+        }) { ToolTipText = "Hide the PowerShellPlus window while keeping every local and remote terminal running." };
+        var restartItem = new System.Windows.Forms.ToolStripMenuItem(TrayRestartLabel, null, (_, _) =>
+        {
+            Dispatcher.BeginInvoke(new Action(() => _ = RestartPowerShellPlusAsync()));
+        }) { ToolTipText = "Restart the UI and restore saved local sessions without stopping managed remote tmux terminals." };
+        var fullQuitItem = new System.Windows.Forms.ToolStripMenuItem(TrayFullQuitLabel, null, (_, _) =>
+        {
+            Dispatcher.BeginInvoke(new Action(() => _ = FullyQuitPowerShellPlusAsync()));
+        }) { ToolTipText = "Stop local terminals, stop every managed remote tmux terminal, and exit PowerShellPlus." };
+        menu.Items.Add(quitItem);
+        menu.Items.Add(restartItem);
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        menu.Items.Add(fullQuitItem);
         System.Drawing.Icon icon;
         try { icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application; }
         catch { icon = System.Drawing.SystemIcons.Application; }
@@ -240,6 +257,106 @@ public partial class MainWindow : Window
             Visible = true
         };
         trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(RestoreFromTray);
+    }
+
+    private void QuitPowerShellPlusToSessionHost()
+    {
+        if (shutdownComplete || lifecycleOperationInProgress) return;
+        CaptureRecoverySnapshot();
+        HideToTray();
+        UpdateStatus("PowerShellPlus is hidden · local and remote terminals remain live");
+    }
+
+    private async Task RestartPowerShellPlusAsync()
+    {
+        if (shutdownComplete || lifecycleOperationInProgress) return;
+        lifecycleOperationInProgress = true;
+        try
+        {
+            await CaptureRecoverySnapshotAsync();
+            var startInfo = BuildRestartStartInfo(Environment.ProcessId);
+            using var replacement = Process.Start(startInfo);
+            if (replacement is null)
+                throw new InvalidOperationException("Windows could not start the replacement PowerShellPlus process.");
+            suppressShutdownRecoveryCapture = true;
+            explicitShutdown = true;
+            Close();
+        }
+        catch (Exception exception)
+        {
+            lifecycleOperationInProgress = false;
+            LogNativeError("PowerShellPlus restart", exception);
+            RestoreWindow(true);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "PowerShellPlus could not restart", PowerShellPlusDialogKind.Error);
+        }
+    }
+
+    private async Task FullyQuitPowerShellPlusAsync()
+    {
+        if (shutdownComplete || lifecycleOperationInProgress) return;
+        RestoreWindow(true);
+        if (!PowerShellPlusDialog.Confirm(this,
+            "This closes every local terminal and permanently stops every remote tmux terminal managed by PowerShellPlus. Running commands and agents in those tmux terminals will stop.",
+            "Fully quit PowerShellPlus?", PowerShellPlusDialogKind.Warning,
+            "Fully quit", "Cancel", defaultToPrimary: false, primaryIsDangerous: true)) return;
+
+        lifecycleOperationInProgress = true;
+        try
+        {
+            await CaptureRecoverySnapshotAsync();
+            var snapshot = SessionRecoveryStore.Load();
+            var managedRemoteSessions = snapshot.Sessions.Values
+                .Where(entry => entry.SshWasActive && entry.RemoteTmuxManaged)
+                .ToArray();
+            var results = await Task.WhenAll(managedRemoteSessions.Select(entry => RemoteTmuxSession.KillAsync(entry)));
+            var failures = results.Where(result => !result.CommandSucceeded).Select(result => result.Message).Distinct().ToArray();
+            if (failures.Length > 0)
+            {
+                lifecycleOperationInProgress = false;
+                PowerShellPlusDialog.ShowMessage(this,
+                    "PowerShellPlus stayed open because one or more managed tmux terminals could not be stopped:\n\n" + string.Join("\n", failures),
+                    "Some tmux terminals are still running", PowerShellPlusDialogKind.Warning);
+                return;
+            }
+
+            SessionRecoveryStore.Save(new SessionRecoverySnapshot());
+            suppressShutdownRecoveryCapture = true;
+            explicitShutdown = true;
+            Close();
+        }
+        catch (Exception exception)
+        {
+            lifecycleOperationInProgress = false;
+            LogNativeError("Full PowerShellPlus shutdown", exception);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message,
+                "PowerShellPlus stayed open", PowerShellPlusDialogKind.Error);
+        }
+    }
+
+    private static ProcessStartInfo BuildRestartStartInfo(int currentProcessId)
+    {
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable)) throw new InvalidOperationException("PowerShellPlus could not locate its executable.");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            WorkingDirectory = AppContext.BaseDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add($"--restart-after={currentProcessId.ToString(CultureInfo.InvariantCulture)}");
+        return startInfo;
+    }
+
+    internal static bool TrayLifecycleContractPassesForTest()
+    {
+        var startInfo = BuildRestartStartInfo(4242);
+        return TrayOpenLabel == "Open PowerShellPlus"
+            && TrayQuitLabel == "Quit PowerShellPlus"
+            && TrayRestartLabel == "Restart PowerShellPlus"
+            && TrayFullQuitLabel.Contains("Tmux Terminals", StringComparison.Ordinal)
+            && !startInfo.UseShellExecute && startInfo.CreateNoWindow
+            && startInfo.ArgumentList.SequenceEqual(["--restart-after=4242"]);
     }
 
     private void InitializeWindowsTerminalImport()
@@ -2906,6 +3023,7 @@ public partial class MainWindow : Window
             var terminalScrollbarBridgesStable = panes.Values.All(pane => pane.TerminalScrollbarBridgeStableForTest);
             var tmuxScrollbackBridgeContract = RemoteTmuxScrollback.ContractPassesForTest();
             var persistentTmuxScrollChannelContract = PersistentSshCommandChannel.ContractPassesForTest();
+            var trayLifecycleContract = TrayLifecycleContractPassesForTest() && App.RestartArgumentContractPassesForTest();
             var startupLoadingWindow = new StartupWindow { ShowActivated = false, ShowInTaskbar = false };
             startupLoadingWindow.Report(new StartupProgress("Starting terminals", "Smoke terminal", 1, 2));
             var startupLoadingScreenReady = startupLoadingWindow.ContractIsValidForTest;
@@ -3526,9 +3644,14 @@ public partial class MainWindow : Window
             var resumedScrollbarDeadline = DateTime.UtcNow.AddSeconds(12);
             while (DateTime.UtcNow < resumedScrollbarDeadline
                 && !activationTarget.GetOutput().Contains(resumedScrollbarMarker, StringComparison.Ordinal)) await Task.Delay(120);
-            await Task.Delay(350);
-            await Dispatcher.Yield(DispatcherPriority.Render);
-            activationTarget.UpdateLayout();
+            var resumedScrollbarRangeDeadline = DateTime.UtcNow.AddSeconds(4);
+            do
+            {
+                await Task.Delay(100);
+                await Dispatcher.Yield(DispatcherPriority.Render);
+                activationTarget.UpdateLayout();
+            }
+            while (DateTime.UtcNow < resumedScrollbarRangeDeadline && !activationTarget.TerminalScrollbarHasRangeForTest);
             var terminalScrollbarSurvivesRestart = resumedScrollbackAccepted
                 && activationTarget.TerminalScrollbarHasRangeForTest && activationTarget.ExerciseTerminalScrollbarForTest();
 
@@ -3545,7 +3668,7 @@ public partial class MainWindow : Window
             var success = inputReady && outputReady && recoveryCapturesOutput && recoverySnapshotsAvoidUiThread
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
                 && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
-                && tmuxScrollbackBridgeContract && persistentTmuxScrollChannelContract
+                && tmuxScrollbackBridgeContract && persistentTmuxScrollChannelContract && trayLifecycleContract
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
@@ -3588,7 +3711,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
             File.AppendAllText(reportPath, $"\nComposerFileDropAddsAttachment={composerFileDropAddsAttachment}\nComposerFileDropIndicatorsWork={composerFileDropIndicatorsWork}\nAttachmentPillDropReplacesFile={attachmentPillDropReplacesFile}");
             File.AppendAllText(reportPath, $"\nProfileStartupWatchdogWorks={profileStartupWatchdogWorks}");
-            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTmuxScrollbackBridgeContract={tmuxScrollbackBridgeContract}\nPersistentTmuxScrollChannelContract={persistentTmuxScrollChannelContract}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalScrollbarRebindsReplacement={terminalScrollbarRebindsReplacement}\nTerminalScrollbarSurvivesRestart={terminalScrollbarSurvivesRestart}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
+            File.AppendAllText(reportPath, $"\nTerminalScrollbarBridgesStable={terminalScrollbarBridgesStable}\nTmuxScrollbackBridgeContract={tmuxScrollbackBridgeContract}\nPersistentTmuxScrollChannelContract={persistentTmuxScrollChannelContract}\nTrayLifecycleContract={trayLifecycleContract}\nTerminalScrollbarHasRealRange={terminalScrollbarHasRealRange}\nTerminalScrollbarMovesNativeViewport={terminalScrollbarMovesNativeViewport}\nTerminalScrollbarRebindsReplacement={terminalScrollbarRebindsReplacement}\nTerminalScrollbarSurvivesRestart={terminalScrollbarSurvivesRestart}\nRecoverySurfaceDefaultsHidden={recoverySurfaceDefaultsHidden}\nRecoverySurfaceExcludesNativeTerminal={recoverySurfaceExcludesNativeTerminal}\nTerminalSurfaceRestoredExclusively={terminalSurfaceRestoredExclusively}\nTerminalClicksKeepRecoveryHidden={terminalClicksKeepRecoveryHidden}\nRecoverySurfaceOwnershipStable={recoverySurfaceOwnershipStable}");
             if (!terminalScrollbarBridgesStable)
                 foreach (var pane in panes.Values) File.AppendAllText(reportPath, $"\nTerminalScrollbarBridge[{pane.Profile.Name}]={pane.TerminalScrollbarBridgeDiagnosticForTest}");
             if (!success)

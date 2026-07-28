@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading;
 using System.Windows;
 
@@ -21,6 +22,7 @@ public partial class App : Application
             CodexLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "codex-launches");
             SshLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "ssh-launches");
         }
+        if (!automationMode) await WaitForRestartSourceAsync(e.Args);
         if (!automationMode && !ClaimPrimaryInstance())
         {
             Shutdown(0);
@@ -159,6 +161,36 @@ public partial class App : Application
         instanceMutex = null;
         return false;
     }
+
+    private static async Task WaitForRestartSourceAsync(string[] arguments)
+    {
+        var processId = ParseRestartSourceProcessId(arguments);
+        if (processId is null || processId == Environment.ProcessId) return;
+        try
+        {
+            using var source = Process.GetProcessById(processId.Value);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            await source.WaitForExitAsync(timeout.Token);
+        }
+        catch (ArgumentException) { }
+        catch (InvalidOperationException) { }
+        catch (OperationCanceledException) { }
+    }
+
+    private static int? ParseRestartSourceProcessId(IEnumerable<string> arguments)
+    {
+        const string prefix = "--restart-after=";
+        var value = arguments.FirstOrDefault(argument => argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        return value is not null
+            && int.TryParse(value[prefix.Length..], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var processId)
+            && processId > 0 ? processId : null;
+    }
+
+    internal static bool RestartArgumentContractPassesForTest()
+        => ParseRestartSourceProcessId(["--restart-after=4242"]) == 4242
+            && ParseRestartSourceProcessId(["--restart-after=0"]) is null
+            && ParseRestartSourceProcessId(["--restart-after=not-a-pid"]) is null;
 
     private void StartActivationListener(MainWindow window)
     {
