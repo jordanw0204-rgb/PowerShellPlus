@@ -90,6 +90,93 @@ internal sealed class TerminalOutputActivityTracker
     }
 }
 
+internal sealed class CodexOutputActivityTracker
+{
+    private const int MaximumVisibleCharacters = 4096;
+    private static readonly TimeSpan ResponseGrace = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan PromptRedrawGuard = TimeSpan.FromMilliseconds(750);
+    private static readonly Regex ConfirmationFooter = new(
+        @"press\s+enter\s+to\s+(?:confirm|submit|select|continue)|esc\s+to\s+cancel|use\s+(?:the\s+)?(?:up|down|arrow)\s+keys[^\r\n]*(?:enter|select)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ApprovalQuestion = new(
+        @"would\s+you\s+like\s+to\s+(?:run|approve|allow)|approval\s+(?:required|request)|allow\s+(?:this|the\s+following)\s+command|approve\s+(?:this|the\s+following)\s+command",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ChoiceLine = new(
+        @"(?:^|\n)\s*(?:[^\p{L}\p{N}\s]\s*)?\d+[.)]\s+\S+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private readonly object sync = new();
+    private readonly StringBuilder recentVisibleOutput = new();
+    private int waiting;
+    private long responseGraceUntilTicks;
+    private long ignorePromptUntilTicks;
+
+    public AgentActivityState State => StateAt(DateTime.UtcNow);
+
+    public void RecordOutput(string data, DateTime utcNow)
+    {
+        var visible = TerminalTextSanitizer.ForTranscript(data);
+        if (visible.Length == 0) return;
+        lock (sync)
+        {
+            recentVisibleOutput.Append(visible);
+            if (recentVisibleOutput.Length > MaximumVisibleCharacters)
+                recentVisibleOutput.Remove(0, recentVisibleOutput.Length - MaximumVisibleCharacters);
+            if (utcNow.Ticks < Interlocked.Read(ref ignorePromptUntilTicks)) return;
+            var text = recentVisibleOutput.ToString();
+            if (!LooksLikeInteractivePrompt(text)) return;
+            Volatile.Write(ref waiting, 1);
+            Interlocked.Exchange(ref responseGraceUntilTicks, 0);
+        }
+    }
+
+    public void UserResponded(DateTime utcNow)
+    {
+        Volatile.Write(ref waiting, 0);
+        Interlocked.Exchange(ref responseGraceUntilTicks, utcNow.Add(ResponseGrace).Ticks);
+        Interlocked.Exchange(ref ignorePromptUntilTicks, utcNow.Add(PromptRedrawGuard).Ticks);
+        lock (sync) recentVisibleOutput.Clear();
+    }
+
+    public void Reset()
+    {
+        Volatile.Write(ref waiting, 0);
+        Interlocked.Exchange(ref responseGraceUntilTicks, 0);
+        Interlocked.Exchange(ref ignorePromptUntilTicks, 0);
+        lock (sync) recentVisibleOutput.Clear();
+    }
+
+    private AgentActivityState StateAt(DateTime utcNow)
+    {
+        if (Volatile.Read(ref waiting) != 0) return AgentActivityState.Waiting;
+        return utcNow.Ticks < Interlocked.Read(ref responseGraceUntilTicks)
+            ? AgentActivityState.Working
+            : AgentActivityState.Idle;
+    }
+
+    private static bool LooksLikeInteractivePrompt(string text)
+    {
+        if (!ConfirmationFooter.IsMatch(text)) return false;
+        return ApprovalQuestion.IsMatch(text) || ChoiceLine.Matches(text).Count >= 2;
+    }
+
+    internal static bool StateTransitionsPassForTest()
+    {
+        var now = new DateTime(2026, 7, 28, 12, 0, 0, DateTimeKind.Utc);
+        var tracker = new CodexOutputActivityTracker();
+        tracker.RecordOutput("I can explain the phrase: Would you like to run the following command?", now);
+        if (tracker.StateAt(now) != AgentActivityState.Idle) return false;
+        tracker.RecordOutput("\nWould you like to run the following command?\n1. Yes, proceed (y)\n", now.AddMilliseconds(20));
+        tracker.RecordOutput("2. No, tell Codex what to do differently (esc)\nPress enter to confirm or esc to cancel", now.AddMilliseconds(40));
+        if (tracker.StateAt(now.AddMilliseconds(50)) != AgentActivityState.Waiting) return false;
+        tracker.UserResponded(now.AddMilliseconds(60));
+        if (tracker.StateAt(now.AddMilliseconds(70)) != AgentActivityState.Working) return false;
+        tracker.RecordOutput("\n1. Use the existing design\n2. Create a new design\nPress enter to select", now.AddSeconds(1));
+        if (tracker.StateAt(now.AddSeconds(1.1)) != AgentActivityState.Waiting) return false;
+        tracker.UserResponded(now.AddSeconds(1.2));
+        return tracker.StateAt(now.AddSeconds(8)) == AgentActivityState.Idle;
+    }
+}
+
 internal sealed class HermesOutputActivityTracker
 {
     private static readonly Regex WaitingPrompt = new(
@@ -152,6 +239,7 @@ public partial class TerminalPane : UserControl
     private const int VkMenu = 0x12;
     private const int VkV = 0x56;
     private const int VkReturn = 0x0D;
+    private const int VkEscape = 0x1B;
     private const int MaximumQueuedCommands = 100;
     private const int MaximumCommandHistory = 100;
     private const int MaximumCommandLength = 32_768;
@@ -217,6 +305,7 @@ public partial class TerminalPane : UserControl
     private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
     private readonly TerminalOutputActivityTracker terminalActivity = new();
+    private readonly CodexOutputActivityTracker codexOutputActivity = new();
     private readonly HermesOutputActivityTracker hermesActivity = new();
     private string? activeCodexSessionId;
     private AgentKind detectedAgentKind;
@@ -479,7 +568,9 @@ public partial class TerminalPane : UserControl
             {
                 if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
                 {
-                    terminalActivity.RecordInput(DateTime.UtcNow);
+                    var now = DateTime.UtcNow;
+                    terminalActivity.RecordInput(now);
+                    if (detectedAgentKind == AgentKind.Codex) codexOutputActivity.UserResponded(now);
                     if (detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
                     Terminal.ConPTYTerm.WriteToTerm(command + "\r");
                     Terminal.Focus();
@@ -1253,6 +1344,7 @@ public partial class TerminalPane : UserControl
             : startupRecovery?.SshWasActive == true ? startupRecovery : null;
         SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
         startupRecovery = sshRecovery;
+        codexOutputActivity.Reset();
         Profile.SetTmuxTerminal(sshRecovery is { SshWasActive: true, RemoteTmuxManaged: true });
         DisposeTmuxScrollbackClient();
         Interlocked.Increment(ref tmuxScrollbarGeneration);
@@ -1472,7 +1564,10 @@ public partial class TerminalPane : UserControl
         try
         {
             if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
-            terminalActivity.RecordInput(DateTime.UtcNow);
+            var now = DateTime.UtcNow;
+            terminalActivity.RecordInput(now);
+            if (detectedAgentKind == AgentKind.Codex && input.IndexOfAny(['\r', '\n', '\u001b']) >= 0)
+                codexOutputActivity.UserResponded(now);
             Terminal.ConPTYTerm.WriteToTerm(input);
             return true;
         }
@@ -1625,6 +1720,7 @@ public partial class TerminalPane : UserControl
     {
         Profile = profile;
         startupRecovery = null;
+        codexOutputActivity.Reset();
         Profile.SetTmuxTerminal(false);
         TitleText.Text = profile.Name;
         ApplyAccent();
@@ -2460,7 +2556,9 @@ public partial class TerminalPane : UserControl
         CaptureWorkingDirectory(args.Data);
         var output = TerminalTextSanitizer.ForLiveOutput(args.Data);
         if (output.Length == 0) return;
-        var meaningful = terminalActivity.RecordOutput(output, DateTime.UtcNow);
+        var now = DateTime.UtcNow;
+        var meaningful = terminalActivity.RecordOutput(output, now);
+        codexOutputActivity.RecordOutput(output, now);
         hermesActivity.RecordOutput(output, meaningful);
         lock (agentOutputSync)
         {
@@ -2565,7 +2663,8 @@ public partial class TerminalPane : UserControl
         var codexActivity = detectedAgentKind != AgentKind.Codex ? default
             : remoteCodexActive ? remoteCodexActivity
             : CodexSessionLocator.FindActivity(activeCodexSessionId);
-        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State, hermesActivity.State);
+        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State,
+            codexOutputActivity.State, hermesActivity.State);
         SetAgentStatus(detectedAgentKind, next);
     }
 
@@ -2584,11 +2683,13 @@ public partial class TerminalPane : UserControl
     }
 
     private static AgentActivityState ClassifyAgentActivity(AgentKind kind, bool terminalRunning, CodexTurnActivityState codexState,
-        AgentActivityState hermesState)
+        AgentActivityState codexOutputState, AgentActivityState hermesState)
     {
         if (!terminalRunning) return AgentActivityState.Stopped;
         if (kind == AgentKind.Codex)
         {
+            if (codexOutputState == AgentActivityState.Waiting) return AgentActivityState.Waiting;
+            if (codexOutputState == AgentActivityState.Working) return AgentActivityState.Working;
             return codexState switch
             {
                 CodexTurnActivityState.Working => AgentActivityState.Working,
@@ -2721,14 +2822,16 @@ public partial class TerminalPane : UserControl
             && tracker.HasRecentOutput(now.AddMilliseconds(800), TimeSpan.FromSeconds(2));
     }
     internal static bool AgentActivityClassificationForTest()
-        => ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Idle, AgentActivityState.Working) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Working, AgentActivityState.Idle) == AgentActivityState.Working
-            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Waiting, AgentActivityState.Idle) == AgentActivityState.Waiting
-            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Working) == AgentActivityState.Working
-            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Waiting) == AgentActivityState.Waiting
-            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Terminal, true, CodexTurnActivityState.Working, AgentActivityState.Working) == AgentActivityState.Idle
-            && ClassifyAgentActivity(AgentKind.Terminal, false, CodexTurnActivityState.Working, AgentActivityState.Working) == AgentActivityState.Stopped;
+        => ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Idle, AgentActivityState.Idle, AgentActivityState.Working) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Working, AgentActivityState.Idle, AgentActivityState.Idle) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Waiting, AgentActivityState.Idle, AgentActivityState.Idle) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Working, AgentActivityState.Waiting, AgentActivityState.Idle) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Codex, true, CodexTurnActivityState.Waiting, AgentActivityState.Working, AgentActivityState.Idle) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle, AgentActivityState.Working) == AgentActivityState.Working
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle, AgentActivityState.Waiting) == AgentActivityState.Waiting
+            && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle, AgentActivityState.Idle) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, true, CodexTurnActivityState.Working, AgentActivityState.Waiting, AgentActivityState.Working) == AgentActivityState.Idle
+            && ClassifyAgentActivity(AgentKind.Terminal, false, CodexTurnActivityState.Working, AgentActivityState.Waiting, AgentActivityState.Working) == AgentActivityState.Stopped;
     internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
         && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
         && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom
@@ -2801,7 +2904,10 @@ public partial class TerminalPane : UserControl
         }
         else if (message == WmKeyDown)
         {
-            terminalActivity.RecordInput(DateTime.UtcNow);
+            var now = DateTime.UtcNow;
+            terminalActivity.RecordInput(now);
+            if (detectedAgentKind == AgentKind.Codex && wParam.ToInt32() is VkReturn or VkEscape)
+                codexOutputActivity.UserResponded(now);
             if (wParam.ToInt32() == VkReturn && detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
             if (TryHandleEditShortcut(wParam.ToInt32()))
             {
