@@ -32,6 +32,59 @@ internal enum AgentKind { Terminal, Codex, Hermes }
 internal enum RemoteImagePasteMode { Attachment, FilePath }
 internal enum RemoteClipboardPasteContent { Image, Text, Empty }
 
+internal sealed class BracketedPasteModeTracker
+{
+    private const string EnableSequence = "\u001b[?2004h";
+    private const string DisableSequence = "\u001b[?2004l";
+    private const string PasteStart = "\u001b[200~";
+    private const string PasteEnd = "\u001b[201~";
+    private string sequenceTail = string.Empty;
+
+    public bool Enabled { get; private set; }
+
+    public void RecordOutput(string data)
+    {
+        if (string.IsNullOrEmpty(data)) return;
+        var combined = sequenceTail + data;
+        var enabledAt = combined.LastIndexOf(EnableSequence, StringComparison.Ordinal);
+        var disabledAt = combined.LastIndexOf(DisableSequence, StringComparison.Ordinal);
+        if (enabledAt >= 0 || disabledAt >= 0) Enabled = enabledAt > disabledAt;
+        var tailLength = Math.Min(EnableSequence.Length - 1, combined.Length);
+        sequenceTail = combined[^tailLength..];
+    }
+
+    public void Reset()
+    {
+        Enabled = false;
+        sequenceTail = string.Empty;
+    }
+
+    public string FormatSubmission(string command)
+    {
+        if (!Enabled || command.Any(character => char.IsControl(character) && character is not '\r' and not '\n' and not '\t'))
+            return command + "\r";
+        var normalized = command.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        return PasteStart + normalized + PasteEnd + "\r";
+    }
+
+    internal static bool SubmissionContractPassesForTest()
+    {
+        var tracker = new BracketedPasteModeTracker();
+        if (tracker.FormatSubmission("hello") != "hello\r") return false;
+        tracker.RecordOutput("\u001b[?20");
+        tracker.RecordOutput("04h");
+        var large = "first line\n" + new string('x', 32_768) + "\nlast line";
+        var formatted = tracker.FormatSubmission(large);
+        if (!formatted.StartsWith(PasteStart, StringComparison.Ordinal)
+            || !formatted.EndsWith(PasteEnd + "\r", StringComparison.Ordinal)
+            || !formatted.Contains(large, StringComparison.Ordinal)) return false;
+        tracker.RecordOutput("\u001b[?2004l");
+        if (tracker.FormatSubmission("plain") != "plain\r") return false;
+        tracker.RecordOutput(EnableSequence);
+        return tracker.FormatSubmission("unsafe\u001bcommand") == "unsafe\u001bcommand\r";
+    }
+}
+
 internal sealed class TerminalOutputActivityTracker
 {
     private static readonly long InputEchoWindowTicks = TimeSpan.FromMilliseconds(450).Ticks;
@@ -292,7 +345,8 @@ public partial class TerminalPane : UserControl
     private int remoteRows = 32;
     private string remoteFontFace = "Cascadia Mono";
     private int remoteFontSize = 12;
-    private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new(System.Windows.Threading.DispatcherPriority.Background)
+        { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly System.Windows.Threading.DispatcherTimer composerStateTimer = new(System.Windows.Threading.DispatcherPriority.Background)
         { Interval = TimeSpan.FromMilliseconds(300) };
     private bool composerStateDirty;
@@ -304,7 +358,10 @@ public partial class TerminalPane : UserControl
     private char[]? terminalOutputScratch;
     private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
+    private bool agentStatusRefreshPending;
+    private bool forceAgentStatusRefreshQueued;
     private readonly TerminalOutputActivityTracker terminalActivity = new();
+    private readonly BracketedPasteModeTracker bracketedPasteMode = new();
     private readonly CodexOutputActivityTracker codexOutputActivity = new();
     private readonly HermesOutputActivityTracker hermesActivity = new();
     private string? activeCodexSessionId;
@@ -546,6 +603,7 @@ public partial class TerminalPane : UserControl
         {
             if (Terminal.ConPTYTerm?.Process?.HasExited == true)
             {
+                bracketedPasteMode.Reset();
                 await Terminal.RestartTerm();
                 AttachTerminalOutputFilter();
                 await RebindNativeScrollbarAfterRestartAsync();
@@ -554,11 +612,11 @@ public partial class TerminalPane : UserControl
         }
         catch (ArgumentException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
+            try { bracketedPasteMode.Reset(); await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
         }
         catch (InvalidOperationException)
         {
-            try { await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
+            try { bracketedPasteMode.Reset(); await Terminal.RestartTerm(); AttachTerminalOutputFilter(); await RebindNativeScrollbarAfterRestartAsync(); restarted = true; } catch { return false; }
         }
         if (restarted) await Task.Delay(900);
         var deadline = DateTime.UtcNow.AddSeconds(8);
@@ -572,7 +630,7 @@ public partial class TerminalPane : UserControl
                     terminalActivity.RecordInput(now);
                     if (detectedAgentKind == AgentKind.Codex) codexOutputActivity.UserResponded(now);
                     if (detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
-                    Terminal.ConPTYTerm.WriteToTerm(command + "\r");
+                    Terminal.ConPTYTerm.WriteToTerm(bracketedPasteMode.FormatSubmission(command));
                     Terminal.Focus();
                     return true;
                 }
@@ -1352,6 +1410,7 @@ public partial class TerminalPane : UserControl
         pendingTmuxScrollPosition = null;
         hermesExitObserved = false;
         Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
+        bracketedPasteMode.Reset();
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
         await RebindNativeScrollbarAfterRestartAsync();
@@ -1417,6 +1476,7 @@ public partial class TerminalPane : UserControl
         try
         {
             Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery, true);
+            bracketedPasteMode.Reset();
             await Terminal.RestartTerm();
             AttachTerminalOutputFilter();
             await RebindNativeScrollbarAfterRestartAsync();
@@ -2552,6 +2612,7 @@ public partial class TerminalPane : UserControl
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
+        bracketedPasteMode.RecordOutput(args.Data);
         QueueScrollbarRefreshFromOutput();
         CaptureWorkingDirectory(args.Data);
         var output = TerminalTextSanitizer.ForLiveOutput(args.Data);
@@ -2619,53 +2680,83 @@ public partial class TerminalPane : UserControl
             buffer.Remove(0, buffer.Length - MaximumRecoveryOutputCharacters);
     }
 
-    private void RefreshAgentStatus(bool force = false)
+    private async void RefreshAgentStatus(bool force = false)
     {
         if (Dispatcher.HasShutdownStarted) return;
-        var now = DateTime.UtcNow;
-        if (force || now - lastAgentProbeUtc >= TimeSpan.FromSeconds(4))
+        if (agentStatusRefreshPending)
         {
-            lastAgentProbeUtc = now;
-            var output = string.Empty;
-            lock (agentOutputSync) output = recentAgentOutput.ToString();
-            var codexLaunch = CodexLaunchStore.Load(Profile.Id);
-            var remoteCodex = startupRecovery?.RemoteCodexWasActive == true
-                && CodexSessionLocator.IsSafeCodexId(startupRecovery.RemoteCodexSessionId);
-            if (remoteCodex || codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
-            {
-                detectedAgentKind = AgentKind.Codex;
-                activeCodexSessionId = remoteCodex
-                    ? startupRecovery!.RemoteCodexSessionId
-                    : codexLaunch?.SessionId ?? startupRecovery?.CodexSessionId;
-                if (remoteCodex) QueueRemoteCodexActivityProbe(now);
-            }
-            else if (output.Contains("Resume this session with:", StringComparison.OrdinalIgnoreCase))
-            {
-                hermesExitObserved = true;
-                detectedAgentKind = AgentKind.Terminal;
-            }
-            else if (!hermesExitObserved && (startupRecovery?.HermesWasActive == true || output.Contains("Hermes Agent", StringComparison.OrdinalIgnoreCase)
-                     || output.Contains("$ Hermes", StringComparison.OrdinalIgnoreCase))
-                    )
-                detectedAgentKind = AgentKind.Hermes;
-            else if (codexLaunch?.EndedUtc is not null)
-            {
-                detectedAgentKind = AgentKind.Terminal;
-                activeCodexSessionId = null;
-            }
+            forceAgentStatusRefreshQueued |= force;
+            return;
         }
 
-        bool terminalRunning;
-        try { terminalRunning = Terminal.ConPTYTerm?.TermProcIsStarted == true; }
-        catch { terminalRunning = false; }
-        var remoteCodexActive = startupRecovery?.RemoteCodexWasActive == true
-            && string.Equals(activeCodexSessionId, startupRecovery.RemoteCodexSessionId, StringComparison.OrdinalIgnoreCase);
-        var codexActivity = detectedAgentKind != AgentKind.Codex ? default
-            : remoteCodexActive ? remoteCodexActivity
-            : CodexSessionLocator.FindActivity(activeCodexSessionId);
-        var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State,
-            codexOutputActivity.State, hermesActivity.State);
-        SetAgentStatus(detectedAgentKind, next);
+        agentStatusRefreshPending = true;
+        try
+        {
+            var now = DateTime.UtcNow;
+            if (force || now - lastAgentProbeUtc >= TimeSpan.FromSeconds(4))
+            {
+                lastAgentProbeUtc = now;
+                var output = string.Empty;
+                lock (agentOutputSync) output = recentAgentOutput.ToString();
+                var profileId = Profile.Id;
+                var codexLaunch = await Task.Run(() => CodexLaunchStore.Load(profileId));
+                if (Dispatcher.HasShutdownStarted) return;
+                var remoteCodex = startupRecovery?.RemoteCodexWasActive == true
+                    && CodexSessionLocator.IsSafeCodexId(startupRecovery.RemoteCodexSessionId);
+                if (remoteCodex || codexLaunch?.IsActive == true || output.Contains("OpenAI Codex", StringComparison.OrdinalIgnoreCase))
+                {
+                    detectedAgentKind = AgentKind.Codex;
+                    activeCodexSessionId = remoteCodex
+                        ? startupRecovery!.RemoteCodexSessionId
+                        : codexLaunch?.SessionId ?? startupRecovery?.CodexSessionId;
+                    if (remoteCodex) QueueRemoteCodexActivityProbe(now);
+                }
+                else if (output.Contains("Resume this session with:", StringComparison.OrdinalIgnoreCase))
+                {
+                    hermesExitObserved = true;
+                    detectedAgentKind = AgentKind.Terminal;
+                }
+                else if (!hermesExitObserved && (startupRecovery?.HermesWasActive == true || output.Contains("Hermes Agent", StringComparison.OrdinalIgnoreCase)
+                         || output.Contains("$ Hermes", StringComparison.OrdinalIgnoreCase))
+                        )
+                    detectedAgentKind = AgentKind.Hermes;
+                else if (codexLaunch?.EndedUtc is not null)
+                {
+                    detectedAgentKind = AgentKind.Terminal;
+                    activeCodexSessionId = null;
+                }
+            }
+
+            bool terminalRunning;
+            try { terminalRunning = Terminal.ConPTYTerm?.TermProcIsStarted == true; }
+            catch { terminalRunning = false; }
+            var remoteCodexActive = startupRecovery?.RemoteCodexWasActive == true
+                && string.Equals(activeCodexSessionId, startupRecovery.RemoteCodexSessionId, StringComparison.OrdinalIgnoreCase);
+            var codexActivity = default(CodexTurnActivity);
+            if (detectedAgentKind == AgentKind.Codex)
+            {
+                if (remoteCodexActive) codexActivity = remoteCodexActivity;
+                else
+                {
+                    var sessionId = activeCodexSessionId;
+                    codexActivity = await Task.Run(() => CodexSessionLocator.FindActivity(sessionId));
+                    if (Dispatcher.HasShutdownStarted) return;
+                }
+            }
+            var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State,
+                codexOutputActivity.State, hermesActivity.State);
+            SetAgentStatus(detectedAgentKind, next);
+        }
+        catch { }
+        finally
+        {
+            agentStatusRefreshPending = false;
+            if (forceAgentStatusRefreshQueued && !Dispatcher.HasShutdownStarted)
+            {
+                forceAgentStatusRefreshQueued = false;
+                _ = Dispatcher.BeginInvoke(() => RefreshAgentStatus(true), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
     }
 
     private async void QueueRemoteCodexActivityProbe(DateTime now)

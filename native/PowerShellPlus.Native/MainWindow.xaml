@@ -160,9 +160,9 @@
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
                     <StackPanel VerticalAlignment="Center" Margin="11,0,96,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"><Run Text="{Binding DirectoryPrefix, Mode=OneWay}" Foreground="#89B4FA" FontWeight="SemiBold"/><Run Text="{Binding Subtitle, Mode=OneWay}"/></TextBlock></StackPanel>
                     <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center" Orientation="Horizontal">
-                      <Border Margin="0,0,5,0" Padding="6,2" CornerRadius="4" Background="#24313A52" BorderBrush="#89B4FA" BorderThickness="1">
+                      <Border Margin="0,0,6,0" MinWidth="34" Height="16" Padding="5,0" CornerRadius="3" Background="#356A78" BorderThickness="0">
                         <Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding IsTmuxTerminal, Mode=OneWay}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></Border.Style>
-                        <TextBlock Text="TMUX" Foreground="#89DCEB" FontSize="8" FontWeight="Bold"/>
+                        <TextBlock Text="TMUX" Foreground="#F1FCFF" FontSize="8" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                       </Border>
                       <Button Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionSurface}" Click="OpenCardMenuClick"/>
                     </StackPanel>

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 
 namespace PowerShellPlus.Native;
@@ -240,7 +241,8 @@ public static class SessionRecoveryStore
 public static class CodexSessionLocator
 {
     private const long ModelScanOverlapBytes = 64 * 1024;
-    private const long ActivityInitialScanBytes = 2 * 1024 * 1024;
+    private const int ActivityReadLimitBytes = 2 * 1024 * 1024;
+    private const int ActivityMaximumRecordCharacters = 256 * 1024;
     private static readonly object ModelCacheLock = new();
     private static readonly Dictionary<string, ModelFileCursor> ModelFileCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object ActivityCacheLock = new();
@@ -405,16 +407,7 @@ public static class CodexSessionLocator
                 file.Refresh();
                 if (file.Length != cursor.Length)
                 {
-                    var scanStart = cursor.Length == 0 || file.Length < cursor.Length
-                        ? Math.Max(0, file.Length - ActivityInitialScanBytes)
-                        : Math.Max(0, cursor.Length - ModelScanOverlapBytes);
-                    using var stream = new FileStream(cursor.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                    stream.Seek(scanStart, SeekOrigin.Begin);
-                    using var reader = new StreamReader(stream);
-                    if (scanStart > 0) _ = reader.ReadLine();
-                    string? line;
-                    while ((line = reader.ReadLine()) is not null) ConsiderActivityRecord(line, cursor);
-                    cursor.Length = stream.Length;
+                    ScanActivityGrowth(file, cursor);
                 }
 
                 // If a very large in-flight turn began before the bounded initial
@@ -429,6 +422,88 @@ public static class CodexSessionLocator
             }
         }
         catch { return default; }
+    }
+
+    private static void ScanActivityGrowth(FileInfo file, ActivityFileCursor cursor)
+    {
+        var observedLength = file.Length;
+        var reset = observedLength < cursor.Length;
+        if (reset)
+        {
+            cursor.Length = 0;
+            cursor.PendingFragment = string.Empty;
+            cursor.State = CodexTurnActivityState.Unknown;
+            cursor.WaitingForUser = false;
+            cursor.UpdatedUtc = default;
+        }
+
+        var scanStart = cursor.Length;
+        var startsInsideRecord = false;
+        if (scanStart == 0 && observedLength > ActivityReadLimitBytes)
+        {
+            scanStart = observedLength - ActivityReadLimitBytes;
+            startsInsideRecord = true;
+        }
+        else if (observedLength - scanStart > ActivityReadLimitBytes)
+        {
+            scanStart = observedLength - ActivityReadLimitBytes;
+            cursor.PendingFragment = string.Empty;
+            startsInsideRecord = true;
+        }
+
+        var requested = (int)Math.Min(ActivityReadLimitBytes, Math.Max(0, observedLength - scanStart));
+        if (requested == 0)
+        {
+            cursor.Length = observedLength;
+            cursor.LastScanBytes = 0;
+            return;
+        }
+
+        var buffer = new byte[requested];
+        var totalRead = 0;
+        using (var stream = new FileStream(cursor.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            stream.Seek(scanStart, SeekOrigin.Begin);
+            while (totalRead < requested)
+            {
+                var read = stream.Read(buffer, totalRead, requested - totalRead);
+                if (read == 0) break;
+                totalRead += read;
+            }
+        }
+
+        cursor.LastScanBytes = totalRead;
+        var text = Encoding.UTF8.GetString(buffer, 0, totalRead);
+        if (startsInsideRecord)
+        {
+            var firstNewline = text.IndexOf('\n');
+            text = firstNewline >= 0 ? text[(firstNewline + 1)..] : string.Empty;
+        }
+        else if (cursor.PendingFragment.Length > 0)
+        {
+            text = cursor.PendingFragment + text;
+        }
+
+        cursor.PendingFragment = string.Empty;
+        var recordStart = 0;
+        while (recordStart < text.Length)
+        {
+            var newline = text.IndexOf('\n', recordStart);
+            if (newline < 0)
+            {
+                var fragmentLength = text.Length - recordStart;
+                if (fragmentLength <= ActivityMaximumRecordCharacters)
+                    cursor.PendingFragment = text[recordStart..];
+                break;
+            }
+
+            var recordLength = newline - recordStart;
+            if (recordLength > 0 && text[newline - 1] == '\r') recordLength--;
+            if (recordLength is > 0 and <= ActivityMaximumRecordCharacters)
+                ConsiderActivityRecord(text.Substring(recordStart, recordLength), cursor);
+            recordStart = newline + 1;
+        }
+        cursor.Length = observedLength;
     }
 
     internal static bool ActivityRecordsClassifyForTest()
@@ -457,6 +532,38 @@ public static class CodexSessionLocator
         catch { return false; }
         finally
         {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    internal static bool ActivityGrowthScanIsBoundedForTest()
+    {
+        var sessionId = Guid.NewGuid().ToString("N");
+        var root = Path.Combine(Path.GetTempPath(), "PowerShellPlus-codex-growth-" + sessionId);
+        var path = Path.Combine(root, "rollout-fixture.jsonl");
+        var cacheKey = Path.GetFullPath(root) + "|" + sessionId;
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(path,
+                $"{{\"timestamp\":\"2026-07-20T11:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{sessionId}\",\"cwd\":\"C:\\\\fixture\"}}}}\n" +
+                "{\"timestamp\":\"2026-07-20T11:01:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+
+            var oversizedRecord = "{\"timestamp\":\"2026-07-20T11:02:00.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"tool_output\",\"output\":\""
+                + new string('x', ActivityReadLimitBytes + 128 * 1024) + "\"}}\n";
+            File.AppendAllText(path, oversizedRecord +
+                "{\"timestamp\":\"2026-07-20T11:03:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"exec_command_approval_request\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Waiting) return false;
+            lock (ActivityCacheLock)
+                return ActivityFileCache.TryGetValue(cacheKey, out var cursor)
+                    && cursor.LastScanBytes <= ActivityReadLimitBytes
+                    && cursor.PendingFragment.Length <= ActivityMaximumRecordCharacters;
+        }
+        catch { return false; }
+        finally
+        {
+            lock (ActivityCacheLock) ActivityFileCache.Remove(cacheKey);
             try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
         }
     }
@@ -726,6 +833,8 @@ public static class CodexSessionLocator
     {
         public string Path { get; } = path;
         public long Length { get; set; }
+        public string PendingFragment { get; set; } = string.Empty;
+        public int LastScanBytes { get; set; }
         public CodexTurnActivityState State { get; set; }
         public DateTime UpdatedUtc { get; set; }
         public bool WaitingForUser { get; set; }
