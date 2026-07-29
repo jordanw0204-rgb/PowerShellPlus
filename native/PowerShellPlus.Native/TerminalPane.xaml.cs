@@ -287,6 +287,8 @@ public partial class TerminalPane : UserControl
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
     private const int WmSysChar = 0x0106;
+    private const int VkTab = 0x09;
+    private const int VkShift = 0x10;
     private const int VkF2 = 0x71;
     private const int VkControl = 0x11;
     private const int VkMenu = 0x12;
@@ -373,8 +375,10 @@ public partial class TerminalPane : UserControl
     private bool remoteImagePastePending;
     private bool suppressRemoteImagePasteVSequence;
     private Func<RemoteImagePasteMode, bool>? remoteClipboardPasteTestOverride;
-    private (bool Control, bool Alt)? terminalShortcutTestModifiers;
+    private (bool Control, bool Alt, bool Shift)? terminalShortcutTestModifiers;
     private long terminalThreadMessageInterceptCount;
+    private long terminalTabInterceptCount;
+    private Func<bool>? terminalTabForwardTestOverride;
     private long terminalInternalMessageForwardCount;
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
@@ -2454,6 +2458,17 @@ public partial class TerminalPane : UserControl
         var modifiers = terminalShortcutTestModifiers;
         var controlDown = keyboardMessage && (modifiers?.Control ?? IsKeyDown(VkControl));
         var altDown = keyboardMessage && (modifiers?.Alt ?? IsKeyDown(VkMenu));
+        var shiftDown = keyboardMessage && (modifiers?.Shift ?? IsKeyDown(VkShift));
+        if (IsPlainTerminalTabMessage(nativeMessage, virtualKey, controlDown, altDown, shiftDown))
+        {
+            if (TryForwardTerminalTab())
+            {
+                terminalActivity.RecordInput(DateTime.UtcNow);
+                Interlocked.Increment(ref terminalTabInterceptCount);
+                handled = true;
+            }
+            return;
+        }
         if (keyboardMessage && IsRemoteImageShortcutMessage(nativeMessage, virtualKey, controlDown, altDown))
         {
             var mode = altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment;
@@ -2544,6 +2559,15 @@ public partial class TerminalPane : UserControl
 
     private static bool IsRemoteImageShortcutMessage(uint message, int virtualKey, bool controlDown, bool altDown)
         => (message == WmKeyDown || message == WmSysKeyDown) && virtualKey == VkV && (controlDown || altDown);
+    private static bool IsPlainTerminalTabMessage(uint message, int virtualKey, bool controlDown, bool altDown, bool shiftDown)
+        => message == WmKeyDown && virtualKey == VkTab && !controlDown && !altDown && !shiftDown;
+    private bool TryForwardTerminalTab()
+    {
+        if (terminalTabForwardTestOverride is not null) return terminalTabForwardTestOverride();
+        if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
+        Terminal.ConPTYTerm.WriteToTerm("\t");
+        return true;
+    }
     private static bool IsRemoteImagePasteCharacter(uint message, int value)
         => (message == WmChar || message == WmSysChar) && char.ToUpperInvariant(unchecked((char)value)) == 'V';
     private static bool IsRemoteImagePasteKeyUp(uint message, int virtualKey)
@@ -3093,19 +3117,25 @@ public partial class TerminalPane : UserControl
         }
         else if (message == WmKeyDown)
         {
+            var virtualKey = wParam.ToInt32();
             var now = DateTime.UtcNow;
             terminalActivity.RecordInput(now);
-            if (detectedAgentKind == AgentKind.Codex && wParam.ToInt32() is VkReturn or VkEscape)
-                codexOutputActivity.UserResponded(now);
-            if (wParam.ToInt32() == VkReturn && detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
-            if (TryHandleEditShortcut(wParam.ToInt32()))
+            var controlDown = IsKeyDown(VkControl);
+            var altDown = IsKeyDown(VkMenu);
+            var shiftDown = IsKeyDown(VkShift);
+            if (IsPlainTerminalTabMessage(WmKeyDown, virtualKey, controlDown, altDown, shiftDown) && TryForwardTerminalTab())
             {
+                Interlocked.Increment(ref terminalTabInterceptCount);
                 handled = true;
             }
-            else if (wParam.ToInt32() == VkV)
+            else if (detectedAgentKind == AgentKind.Codex && virtualKey is VkReturn or VkEscape)
             {
-                var controlDown = IsKeyDown(VkControl);
-                var altDown = IsKeyDown(VkMenu);
+                codexOutputActivity.UserResponded(now);
+            }
+            if (!handled && virtualKey == VkReturn && detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
+            if (!handled && TryHandleEditShortcut(virtualKey)) handled = true;
+            else if (!handled && virtualKey == VkV)
+            {
                 if ((controlDown || altDown) && TryHandleRemoteClipboardPaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment)) handled = true;
                 else if (controlDown && !altDown && TryPasteClipboardText()) handled = true;
             }
@@ -3451,7 +3481,7 @@ public partial class TerminalPane : UserControl
         var beforeIntercept = Volatile.Read(ref terminalThreadMessageInterceptCount);
         var beforeForward = Volatile.Read(ref terminalInternalMessageForwardCount);
         remoteClipboardPasteTestOverride = _ => true;
-        terminalShortcutTestModifiers = (true, false);
+        terminalShortcutTestModifiers = (true, false, false);
         try
         {
             var keyDown = new MSG { hwnd = handle, message = WmKeyDown, wParam = new IntPtr(VkV) };
@@ -3469,6 +3499,32 @@ public partial class TerminalPane : UserControl
             remoteClipboardPasteTestOverride = null;
             terminalShortcutTestModifiers = null;
             suppressRemoteImagePasteVSequence = false;
+        }
+    }
+    internal bool ExerciseThreadMessageTabInterceptionForTest()
+    {
+        AttachTerminalActivationHook();
+        RegisterTerminalThreadMessageHook();
+        if (terminalContainer?.Handle is not { } handle || handle == IntPtr.Zero) return false;
+        var beforeIntercept = Volatile.Read(ref terminalTabInterceptCount);
+        terminalShortcutTestModifiers = (false, false, false);
+        terminalTabForwardTestOverride = () => true;
+        try
+        {
+            var keyDown = new MSG { hwnd = handle, message = WmKeyDown, wParam = new IntPtr(VkTab) };
+            var handled = false;
+            TerminalThreadPreprocessMessage(ref keyDown, ref handled);
+            return terminalThreadMessageHookInstalled && handled
+                && Volatile.Read(ref terminalTabInterceptCount) == beforeIntercept + 1
+                && IsPlainTerminalTabMessage(WmKeyDown, VkTab, false, false, false)
+                && !IsPlainTerminalTabMessage(WmKeyDown, VkTab, false, false, true)
+                && !IsPlainTerminalTabMessage(WmKeyDown, VkTab, true, false, false)
+                && !IsPlainTerminalTabMessage(WmKeyUp, VkTab, false, false, false);
+        }
+        finally
+        {
+            terminalShortcutTestModifiers = null;
+            terminalTabForwardTestOverride = null;
         }
     }
     internal bool ExerciseRemoteImagePasteIndicatorForTest()

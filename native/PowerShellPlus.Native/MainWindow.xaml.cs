@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer automationTimer;
     private readonly DispatcherTimer recoveryTimer;
     private readonly DispatcherTimer workspaceSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer terminalTabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer terminalDragSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly bool automationMode;
     private readonly SessionRecoverySnapshot loadedRecovery;
@@ -63,6 +64,9 @@ public partial class MainWindow : Window
     private TerminalSession? workspaceSessionHoverCandidate;
     private TerminalSession? workspaceSessionHoverOrigin;
     private bool workspaceSessionHoverPreviewActive;
+    private SessionProfile? terminalTabHoverCandidate;
+    private TerminalPane? terminalTabHoverOrigin;
+    private bool terminalTabHoverPreviewActive;
     private bool automationCheckRunning;
     private WindowsTerminalDragMonitor? windowsTerminalDragMonitor;
     private bool windowsTerminalImportRunning;
@@ -104,6 +108,7 @@ public partial class MainWindow : Window
         SessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
         WorkspaceSessionAccentEdit.ItemsSource = WorkspaceAccentPalette.Choices;
         workspaceSessionHoverTimer.Tick += WorkspaceSessionHoverTimerTick;
+        terminalTabHoverTimer.Tick += TerminalTabHoverTimerTick;
         terminalDragSessionHoverTimer.Tick += TerminalDragSessionHoverTimerTick;
         SnippetList.ItemsSource = state.Snippets;
         AutomationList.ItemsSource = state.Automations;
@@ -218,6 +223,7 @@ public partial class MainWindow : Window
         automationTimer.Stop();
         recoveryTimer.Stop();
         workspaceSessionHoverTimer.Stop();
+        terminalTabHoverTimer.Stop();
         terminalDragSessionHoverTimer.Stop();
         saveTimer.Stop();
         windowsTerminalDragMonitor?.Dispose();
@@ -3117,6 +3123,7 @@ public partial class MainWindow : Window
             var remoteImagePasteModesWork = TerminalPane.RemoteImagePasteModesFormatForTest();
             var remoteSshPasteConsumesAllClipboardKinds = TerminalPane.RemoteSshPasteRoutingConsumesAllClipboardKindsForTest();
             var threadMessagePasteInterceptsBeforeConPty = activationTarget.ExerciseThreadMessagePasteInterceptionForTest();
+            var terminalTabQueuesInsideConPty = activationTarget.ExerciseThreadMessageTabInterceptionForTest();
             var remoteImagePasteIndicatorStatesWork = activationTarget.ExerciseRemoteImagePasteIndicatorForTest();
             var attachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-preview-fixture.png");
             File.WriteAllBytes(attachmentFixture, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
@@ -3559,6 +3566,19 @@ public partial class MainWindow : Window
             activeWorkspaceSession.AccentColor = originalSessionAccent;
             panes[tabReorderTarget.Id].RefreshProfileDisplay(tabReorderTarget);
             RefreshWorkspaceSessionViews();
+            var terminalHoverOrigin = activePane!;
+            var terminalHoverCandidate = activeSessionTerminals.First(value => value.Id != terminalHoverOrigin.Profile.Id);
+            BeginTerminalTabHoverPreviewForTest(terminalHoverCandidate);
+            var terminalTabPreviewWaitsForDelay = !TerminalTabHoverPreviewActiveForTest;
+            CompleteTerminalTabHoverDelayForTest();
+            var terminalTabHoverPreviews = terminalTabPreviewWaitsForDelay && TerminalTabHoverDelayConfiguredForTest
+                && TerminalTabHoverPreviewActiveForTest && activePane?.Profile.Id == terminalHoverCandidate.Id
+                && state.ActiveSessionId == terminalHoverOrigin.Profile.Id
+                && TerminalHost.Children.OfType<TerminalPane>().SingleOrDefault()?.Profile.Id == terminalHoverCandidate.Id;
+            EndTerminalTabHoverPreviewForTest();
+            var terminalTabHoverRestores = !TerminalTabHoverPreviewActiveForTest
+                && ReferenceEquals(activePane, terminalHoverOrigin) && state.ActiveSessionId == terminalHoverOrigin.Profile.Id
+                && TerminalHost.Children.OfType<TerminalPane>().SingleOrDefault()?.Profile.Id == terminalHoverOrigin.Profile.Id;
             SetLayout("Grid");
 
             var primaryWorkspaceSession = activeWorkspaceSession!;
@@ -3812,7 +3832,7 @@ public partial class MainWindow : Window
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
-                && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
+                && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && terminalTabQueuesInsideConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTypingAvoidsPillRebuild
                 && composerTokensMatchCanonicalPaths && composerBlankSpacePreservesTokens && attachmentPillReorderUpdatesCommand && composerScrollbarThemed && perTerminalFontZoomPersists
@@ -3822,7 +3842,7 @@ public partial class MainWindow : Window
                 && terminalSurfaceActivatesPane && terminalSurfaceTakesKeyboardFocus && windowIconLoaded && executableIconEmbedded
                 && rows && columns && focus && grid && tabs && terminalTabsShowAgentAndName && tabContextMenusWork && terminalReorderSynchronizes
                 && terminalMovesAcrossSessions && tmuxBadgeTracksManagedState && terminalDragInteractionReady
-                && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave
+                && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave && terminalTabHoverPreviews && terminalTabHoverRestores
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && plainPowerShellHeaderVisible && terminalTabAgentStateMirrorsPane
                 && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && codexActivityGrowthScanBounded && bracketedPasteSubmissionContract
@@ -3841,7 +3861,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nCodexActivityGrowthScanBounded={codexActivityGrowthScanBounded}\nBracketedPasteSubmissionContract={bracketedPasteSubmissionContract}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nRemoteVtStreamTransparent={remoteVtStreamTransparent}\nCodexInteractivePromptsDriveWaiting={codexInteractivePromptsDriveWaiting}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
-            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
+            File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalTabHoverPreviews={terminalTabHoverPreviews}\nTerminalTabHoverRestores={terminalTabHoverRestores}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
@@ -3849,7 +3869,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
-            File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
+            File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nTerminalTabQueuesInsideConPty={terminalTabQueuesInsideConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
             File.AppendAllText(reportPath, $"\nPlainTextPathPromoted={plainTextPathPromoted}\nSecondComposerAttachmentAdded={secondComposerAttachmentAdded}\nComposerTokensMatchCanonicalPaths={composerTokensMatchCanonicalPaths}\nComposerBlankSpacePreservesTokens={composerBlankSpacePreservesTokens}\nAttachmentPillReorderUpdatesCommand={attachmentPillReorderUpdatesCommand}\nComposerScrollbarThemed={composerScrollbarThemed}\nPerTerminalFontZoomPersists={perTerminalFontZoomPersists}");
@@ -3999,6 +4019,7 @@ public partial class MainWindow : Window
     {
         if (workspaceSessionSelectionSync || sender is not ListBox list || list.SelectedItem is not TerminalSession value) return;
         CancelWorkspaceSessionHoverPreview(false);
+        CancelTerminalTabHoverPreview(false);
         SelectWorkspaceSession(value.Id, false);
         selectedEditableValue = value;
     }
@@ -4015,6 +4036,8 @@ public partial class MainWindow : Window
     }
     private void BeginWorkspaceSessionHoverPreview(TerminalSession session)
     {
+        if (terminalDragSourceId is not null) return;
+        CancelTerminalTabHoverPreview(true);
         workspaceSessionHoverTimer.Stop();
         workspaceSessionHoverCandidate = session;
         if (session.Id == state.ActiveTerminalSessionId) return;
@@ -4050,6 +4073,67 @@ public partial class MainWindow : Window
     internal bool WorkspaceSessionHoverDelayConfiguredForTest => workspaceSessionHoverTimer.Interval == TimeSpan.FromMilliseconds(500);
     internal void EndWorkspaceSessionHoverPreviewForTest() => CancelWorkspaceSessionHoverPreview(true);
     internal bool WorkspaceSessionHoverPreviewActiveForTest => workspaceSessionHoverPreviewActive;
+
+    private void TerminalTabMouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: SessionProfile profile }
+            || activeWorkspaceSession?.Layout != "Tabs" || terminalDragSourceId is not null || e.LeftButton == MouseButtonState.Pressed) return;
+        terminalTabHoverTimer.Stop();
+        terminalTabHoverCandidate = profile;
+        if (profile.Id == activePane?.Profile.Id) return;
+        terminalTabHoverTimer.Start();
+    }
+
+    private void TerminalTabMouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: SessionProfile profile } && terminalTabHoverCandidate != profile
+            && (!terminalTabHoverPreviewActive || activePane?.Profile != profile)) return;
+        CancelTerminalTabHoverPreview(true);
+    }
+
+    private void TerminalTabHoverTimerTick(object? sender, EventArgs e)
+    {
+        terminalTabHoverTimer.Stop();
+        var candidate = terminalTabHoverCandidate;
+        if (candidate is null || candidate.Id == activePane?.Profile.Id || activeWorkspaceSession?.Layout != "Tabs"
+            || !activeSessionTerminals.Contains(candidate) || !panes.TryGetValue(candidate.Id, out var pane)) return;
+        terminalTabHoverOrigin = activePane;
+        if (terminalTabHoverOrigin is null) return;
+        terminalTabHoverPreviewActive = true;
+        DisplayTerminalTabPreview(pane);
+    }
+
+    private void DisplayTerminalTabPreview(TerminalPane pane)
+    {
+        activePane = pane;
+        foreach (var value in panes.Values) value.SetActive(value == pane);
+        ApplyLayout(false);
+        UpdateStatus($"Previewing {pane.Profile.Name} · move away to return");
+    }
+
+    private void CancelTerminalTabHoverPreview(bool restoreOrigin)
+    {
+        terminalTabHoverTimer.Stop();
+        var origin = terminalTabHoverOrigin;
+        var wasPreviewing = terminalTabHoverPreviewActive;
+        terminalTabHoverCandidate = null;
+        terminalTabHoverOrigin = null;
+        terminalTabHoverPreviewActive = false;
+        if (!restoreOrigin || !wasPreviewing || origin is null) return;
+        DisplayTerminalTabPreview(origin);
+        UpdateStatus(activeWorkspaceSession is null ? origin.Profile.Name : $"{activeWorkspaceSession.Name} · {origin.Profile.Name}");
+    }
+
+    internal void BeginTerminalTabHoverPreviewForTest(SessionProfile profile)
+    {
+        terminalTabHoverTimer.Stop();
+        terminalTabHoverCandidate = profile;
+        terminalTabHoverTimer.Start();
+    }
+    internal void CompleteTerminalTabHoverDelayForTest() => TerminalTabHoverTimerTick(null, EventArgs.Empty);
+    internal void EndTerminalTabHoverPreviewForTest() => CancelTerminalTabHoverPreview(true);
+    internal bool TerminalTabHoverPreviewActiveForTest => terminalTabHoverPreviewActive;
+    internal bool TerminalTabHoverDelayConfiguredForTest => terminalTabHoverTimer.Interval == TimeSpan.FromMilliseconds(500);
     private void NewWorkspaceSessionClick(object sender, RoutedEventArgs e)
     {
         var session = new TerminalSession { Name = $"Session {state.TerminalSessions.Count + 1}" };
@@ -4135,6 +4219,7 @@ public partial class MainWindow : Window
     private void TerminalTabSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (terminalTabSelectionSync || TerminalTabList.SelectedItem is not SessionProfile value) return;
+        CancelTerminalTabHoverPreview(false);
         SelectPane(value.Id, false);
         selectedEditableValue = value;
     }
