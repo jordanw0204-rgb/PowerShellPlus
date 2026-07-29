@@ -527,6 +527,13 @@ public static class CodexSessionLocator
             File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:17:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"request_user_input\"}}\n");
             if (FindActivity(sessionId, root).State != CodexTurnActivityState.Waiting) return false;
             File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:28.703Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Idle) return false;
+            // A bounded scan can miss task_started after a multi-megabyte burst.
+            // Any later tool output must recover Working even from a previously
+            // completed/Idle state.
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:22:00.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:23:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-2\"}}\n");
             return FindActivity(sessionId, root).State == CodexTurnActivityState.Idle;
         }
         catch { return false; }
@@ -669,7 +676,7 @@ public static class CodexSessionLocator
             && !line.Contains("turn_aborted", StringComparison.Ordinal)
             && !line.Contains("approval_request", StringComparison.Ordinal)
             && !line.Contains("request_user_input", StringComparison.Ordinal)
-            && !(cursor.WaitingForUser && line.Contains("_output", StringComparison.Ordinal))) return;
+            && !line.Contains("_output", StringComparison.Ordinal)) return;
         try
         {
             using var document = JsonDocument.Parse(line);
@@ -698,8 +705,12 @@ public static class CodexSessionLocator
                 cursor.WaitingForUser = true;
                 cursor.UpdatedUtc = timestamp;
             }
-            else if (cursor.WaitingForUser && payloadType?.EndsWith("_output", StringComparison.Ordinal) == true)
+            else if (payloadType?.EndsWith("_output", StringComparison.Ordinal) == true)
             {
+                // A busy Codex thread can append more than the bounded scan window
+                // between probes. In that case task_started may have fallen before
+                // the window, but a new tool/function output still proves the turn
+                // is active. Do not require a preceding approval state here.
                 cursor.State = CodexTurnActivityState.Working;
                 cursor.WaitingForUser = false;
                 cursor.UpdatedUtc = timestamp;

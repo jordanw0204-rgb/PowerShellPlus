@@ -19,6 +19,9 @@ public static class WorkspaceAccentPalette
         Choice("Pink", "#F5C2E7"), Choice("Mauve", "#CBA6F7"), Choice("Red", "#F38BA8")
     ];
 
+    public static string RandomTerminalAccent()
+        => Choices[Random.Shared.Next(Choices.Count)].Value;
+
     private static readonly object BrushCacheSync = new();
     private static readonly Dictionary<string, Brush> OpaqueBrushes = Choices.ToDictionary(value => value.Value, value => value.Brush, StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<(string Value, byte Alpha), Brush> TintBrushes = Choices
@@ -119,6 +122,7 @@ public sealed class WorkspaceSettings
     public bool CursorBlink { get; set; } = true;
     public string? DefaultCommandLine { get; set; }
     public string? DefaultWorkingDirectory { get; set; }
+    public bool AutomaticallySetTerminalColor { get; set; } = true;
     public bool ConfirmBeforeRemove { get; set; } = true;
     public bool KeepSessionsRunningInTray { get; set; } = true;
     public bool RestoreSessionsAfterRestart { get; set; } = true;
@@ -141,6 +145,7 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public bool CommandBarExpanded { get; set; } = true;
     public int? TerminalFontSize { get; set; }
     public int? CommandFontSize { get; set; }
+    public bool PressEnterAfterComposerSend { get; set; }
     public string CommandDraft { get; set; } = string.Empty;
     public List<ComposerAttachmentState> ComposerAttachments { get; set; } = [];
     public List<string> PendingCommands { get; set; } = [];

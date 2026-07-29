@@ -259,6 +259,8 @@
                   <TextBox x:Name="SettingsDefaultDirectory" LostFocus="SettingsDefaultsChanged" KeyDown="SettingsTextBoxKeyDown"/>
                   <Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="SettingsBrowseDirectoryClick"/>
                 </Grid>
+                <CheckBox x:Name="SettingsAutomaticTerminalColors" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="SettingsAutomaticTerminalColorsChanged"><TextBlock Text="Automatically set a color for new terminals" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Each newly created terminal gets a random color from the PowerShellPlus palette. Turn this off to use the default blue." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
                 <TextBlock Text="BEHAVIOR" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsConfirmRemove" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Confirm before removing a session" TextWrapping="Wrap" Width="178"/></CheckBox>

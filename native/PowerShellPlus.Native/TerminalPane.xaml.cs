@@ -594,7 +594,12 @@ public partial class TerminalPane : UserControl
 
     public async void SendCommand(string command) => await SendCommandAsync(command);
 
-    public async Task<bool> SendCommandAsync(string command)
+    public Task<bool> SendCommandAsync(string command) => SendCommandAsync(command, false);
+
+    public Task<bool> SendComposerCommandAsync(string command)
+        => SendCommandAsync(command, Profile.PressEnterAfterComposerSend);
+
+    private async Task<bool> SendCommandAsync(string command, bool pressEnterAfterInsert)
     {
         if (string.IsNullOrWhiteSpace(command)) return false;
         var restarted = false;
@@ -630,6 +635,16 @@ public partial class TerminalPane : UserControl
                     if (detectedAgentKind == AgentKind.Codex) codexOutputActivity.UserResponded(now);
                     if (detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
                     Terminal.ConPTYTerm.WriteToTerm(bracketedPasteMode.FormatSubmission(command));
+                    if (pressEnterAfterInsert)
+                    {
+                        // Some full-screen agents accept a bracketed paste into
+                        // their editor without submitting it. A separate Enter is
+                        // intentionally delayed so it cannot become part of the
+                        // bracketed-paste payload itself.
+                        await Task.Delay(35);
+                        if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
+                            Terminal.ConPTYTerm.WriteToTerm("\r");
+                    }
                     Terminal.Focus();
                     return true;
                 }
@@ -752,6 +767,11 @@ public partial class TerminalPane : UserControl
         queueSelectionIndex = null;
         queueNavigationDraft = string.Empty;
         CommandInput.Text = command;
+        var historyPaths = DiscoverExistingLocalFiles(command).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var staleAttachments = composerAttachments
+            .Where(value => !historyPaths.Contains(value.LocalPath))
+            .ToArray();
+        if (staleAttachments.Length > 0) RemoveComposerAttachments(staleAttachments);
         // History is another composer input source. Re-run the canonical
         // attachment discovery so saved paths regain tokens, pills, previews,
         // and SSH-transfer behavior just like pasted or dropped paths.
@@ -783,7 +803,7 @@ public partial class TerminalPane : UserControl
                     : (int?)null;
             var preparedCommand = await PrepareComposerCommandAsync(command, referencedAttachments);
             if (preparedCommand is null) return false;
-            if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendCommandAsync(preparedCommand))) return false;
+            if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendComposerCommandAsync(preparedCommand))) return false;
             RecordCommandHistory(command);
             if (queuedIndex is int index) Profile.PendingCommands.RemoveAt(index);
             RemoveComposerAttachments(referencedAttachments);
@@ -1176,7 +1196,7 @@ public partial class TerminalPane : UserControl
             RunCommandButton.Foreground = new SolidColorBrush(Color.FromRgb(203, 166, 247));
             RunCommandButton.Background = new SolidColorBrush(Color.FromRgb(59, 49, 84));
             RunCommandButton.BorderBrush = new SolidColorBrush(Color.FromRgb(203, 166, 247));
-            RunCommandButton.ToolTip = $"Send to all terminals ({SendToAllModifierLabel()}+Enter)";
+            RunCommandButton.ToolTip = $"Send to all terminals ({SendToAllModifierLabel()}+Enter) · Right-click for send behavior";
         }
         else
         {
@@ -1184,13 +1204,53 @@ public partial class TerminalPane : UserControl
             RunCommandButton.ClearValue(ForegroundProperty);
             RunCommandButton.ClearValue(BackgroundProperty);
             RunCommandButton.ClearValue(BorderBrushProperty);
-            RunCommandButton.ToolTip = sendAllModifierEnabled()
+            var behavior = Profile.PressEnterAfterComposerSend ? " · extra Enter enabled" : " · right-click for send behavior";
+            RunCommandButton.ToolTip = (sendAllModifierEnabled()
                 ? $"Run in this terminal (Enter) · Hold {SendToAllModifierLabel()} for all terminals"
-                : "Run in this terminal (Enter)";
+                : "Run in this terminal (Enter)") + behavior;
         }
     }
 
     private void RefreshSendButtonVisual() => UpdateSendButtonVisual(IsSendToAllActive(Keyboard.Modifiers));
+
+    private ContextMenu BuildRunCommandSettingsMenu()
+    {
+        var menu = new ContextMenu
+        {
+            PlacementTarget = RunCommandButton,
+            Placement = PlacementMode.Top,
+            VerticalOffset = -4,
+            Style = TryFindResource("CardContextMenu") as Style
+        };
+        menu.Items.Add(new MenuItem
+        {
+            Header = "SEND BEHAVIOR",
+            IsEnabled = false,
+            Style = TryFindResource("CardMenuItem") as Style
+        });
+        var pressEnter = new MenuItem
+        {
+            Header = "Press Enter automatically",
+            ToolTip = "After inserting the composer message, send one separate Enter key to submit it in full-screen agents.",
+            IsCheckable = true,
+            IsChecked = Profile.PressEnterAfterComposerSend,
+            Style = TryFindResource("CardMenuItem") as Style
+        };
+        pressEnter.Click += (_, _) =>
+        {
+            Profile.PressEnterAfterComposerSend = pressEnter.IsChecked == true;
+            commandStateChanged();
+            UpdateSendButtonVisual(sendButtonShowsAll == true, true);
+        };
+        menu.Items.Add(pressEnter);
+        return menu;
+    }
+
+    private void ShowRunCommandSettingsMenu()
+    {
+        RunCommandButton.ContextMenu = BuildRunCommandSettingsMenu();
+        RunCommandButton.ContextMenu.IsOpen = true;
+    }
 
     private void ShowQuickAccessMenu()
     {
@@ -1912,6 +1972,19 @@ public partial class TerminalPane : UserControl
         && DetachButton.ToolTip?.ToString()?.Contains("Windows Terminal", StringComparison.Ordinal) == true;
     public string SendCommandGlyphForTest => RunCommandButton.Content?.ToString() ?? string.Empty;
     public string SendCommandToolTipForTest => RunCommandButton.ToolTip?.ToString() ?? string.Empty;
+    public bool RunCommandSettingsMenuReadyForTest()
+    {
+        var menu = BuildRunCommandSettingsMenu();
+        var item = menu.Items.OfType<MenuItem>().FirstOrDefault(value => value.Header?.ToString() == "Press Enter automatically");
+        return item is { IsCheckable: true } && (item.IsChecked == true) == Profile.PressEnterAfterComposerSend
+            && item.ToolTip?.ToString()?.Contains("separate Enter", StringComparison.OrdinalIgnoreCase) == true;
+    }
+    public void SetPressEnterAfterComposerSendForTest(bool enabled)
+    {
+        Profile.PressEnterAfterComposerSend = enabled;
+        commandStateChanged();
+        UpdateSendButtonVisual(sendButtonShowsAll == true, true);
+    }
     public int QuickAccessCommandCountForTest => quickAccessProvider().Count(value => value.ShowInQuickAccess && !string.IsNullOrWhiteSpace(value.Command));
     public bool AutomationButtonReadyForTest => AutomationButton.ToolTip is not null && AutomationCountText is not null;
     public int AssignedAutomationCountForTest => Profile.AutomationBindings.Count;
@@ -3583,6 +3656,7 @@ public partial class TerminalPane : UserControl
     }
     private void QueueCommandClick(object sender, RoutedEventArgs e) { ShowQueueMenu(); e.Handled = true; }
     private async void RunCommandClick(object sender, RoutedEventArgs e) { await RunCommandInputAsync(IsSendToAllActive(Keyboard.Modifiers)); e.Handled = true; }
+    private void RunCommandRightButtonUp(object sender, MouseButtonEventArgs e) { ShowRunCommandSettingsMenu(); e.Handled = true; }
     private async void CommandInputPreviewKeyDown(object sender, KeyEventArgs e)
     {
         RefreshSendButtonVisual();

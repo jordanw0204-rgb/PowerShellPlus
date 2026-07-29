@@ -215,7 +215,7 @@
           <Button x:Name="QueueCommandButton" Grid.Row="2" Grid.Column="3" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
             <Grid><TextBlock Text="Queue" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="#89B4FA" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
           </Button>
-          <Button x:Name="RunCommandButton" Grid.Row="2" Grid.Column="4" Content="&#x25B6;" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom" Click="RunCommandClick" MouseEnter="RunCommandMouseEnter" ToolTip="Run in this terminal (Enter)"/>
+          <Button x:Name="RunCommandButton" Grid.Row="2" Grid.Column="4" Content="&#x25B6;" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom" Click="RunCommandClick" PreviewMouseRightButtonUp="RunCommandRightButtonUp" MouseEnter="RunCommandMouseEnter" ToolTip="Run in this terminal (Enter)"/>
         </Grid>
       </Border>
       <Border x:Name="BottomCommandReveal" Grid.Row="2" Panel.ZIndex="5" Width="62" Height="16" Background="#01000000" HorizontalAlignment="Center" VerticalAlignment="Bottom">

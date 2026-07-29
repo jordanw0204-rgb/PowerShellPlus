@@ -894,6 +894,31 @@ public partial class MainWindow : Window
         ? state.Settings.DefaultWorkingDirectory
         : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+    private string NewTerminalAccent => state.Settings.AutomaticallySetTerminalColor
+        ? WorkspaceAccentPalette.RandomTerminalAccent()
+        : WorkspaceAccentPalette.DefaultTerminal;
+
+    private SessionProfile CreateDefaultTerminalProfile() => new()
+    {
+        Name = terminalProfile.ProfileName,
+        AccentColor = NewTerminalAccent,
+        CommandLine = DefaultSessionCommandLine,
+        WorkingDirectory = DefaultSessionDirectory,
+        AutoStart = true,
+        UseRemoteTmux = true
+    };
+
+    private void CreateDefaultTerminal()
+    {
+        var created = CreateDefaultTerminalProfile();
+        AddTerminalToActiveSession(created);
+        CreatePane(created);
+        SelectPane(created.Id, true);
+        ApplyLayout();
+        ScheduleSave();
+        UpdateStatus($"Created {created.Name}");
+    }
+
     private ModifierKeys SendToAllModifier => state.Settings.SendToAllModifier switch
     {
         "Ctrl" => ModifierKeys.Control,
@@ -905,7 +930,7 @@ public partial class MainWindow : Window
     {
         var targets = panes.Values.ToList();
         if (targets.Count == 0) return false;
-        var results = await Task.WhenAll(targets.Select(pane => pane.SendCommandAsync(command)));
+        var results = await Task.WhenAll(targets.Select(pane => pane.SendComposerCommandAsync(command)));
         var accepted = results.Count(value => value);
         UpdateStatus(accepted == targets.Count
             ? $"Command sent to all {accepted} terminals"
@@ -1332,7 +1357,7 @@ public partial class MainWindow : Window
         editorMode = EditorMode.Terminal; editingValue = profile;
         EditorTitle.Text = profile is null ? "New native terminal" : "Edit terminal";
         SessionNameEdit.Text = profile?.Name ?? terminalProfile.ProfileName;
-        SetTerminalEditorAccent(profile?.AccentColor);
+        SetTerminalEditorAccent(profile?.AccentColor ?? NewTerminalAccent);
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
@@ -3179,6 +3204,17 @@ public partial class MainWindow : Window
             var inputEchoDoesNotActivateAgent = TerminalPane.ActivityTrackerRejectsInputEchoForTest();
             var codexTurnEventsDriveAgent = CodexSessionLocator.ActivityRecordsClassifyForTest();
             var codexActivityGrowthScanBounded = CodexSessionLocator.ActivityGrowthScanIsBoundedForTest();
+            var shiftClickQuickCreatesTerminal = ShouldQuickCreateTerminal(ModifierKeys.Shift)
+                && ShouldQuickCreateTerminal(ModifierKeys.Shift | ModifierKeys.Control)
+                && !ShouldQuickCreateTerminal(ModifierKeys.None);
+            var originalAutomaticTerminalColors = state.Settings.AutomaticallySetTerminalColor;
+            state.Settings.AutomaticallySetTerminalColor = true;
+            var randomColorProfile = CreateDefaultTerminalProfile();
+            state.Settings.AutomaticallySetTerminalColor = false;
+            var defaultColorProfile = CreateDefaultTerminalProfile();
+            state.Settings.AutomaticallySetTerminalColor = originalAutomaticTerminalColors;
+            var automaticTerminalColorsWork = WorkspaceAccentPalette.Choices.Any(value => value.Value == randomColorProfile.AccentColor)
+                && defaultColorProfile.AccentColor == WorkspaceAccentPalette.DefaultTerminal;
             var bracketedPasteSubmissionContract = BracketedPasteModeTracker.SubmissionContractPassesForTest();
             var agentActivityClassificationExact = TerminalPane.AgentActivityClassificationForTest();
             var codexInteractivePromptsDriveWaiting = CodexOutputActivityTracker.StateTransitionsPassForTest();
@@ -3390,22 +3426,32 @@ public partial class MainWindow : Window
                 && !activationTarget.CommandHistoryPanelVisibleForTest;
             var historyAttachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "history-attachment-fixture.png");
             File.WriteAllBytes(historyAttachmentFixture, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+            var staleHistoryAttachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "stale-history-attachment-fixture.png");
+            File.Copy(historyAttachmentFixture, staleHistoryAttachmentFixture, true);
             var historyAttachmentCommand = $"inspect {historyAttachmentFixture}";
             activationTarget.ClearComposerAttachmentsForTest();
+            _ = activationTarget.AddComposerAttachmentForTest(staleHistoryAttachmentFixture, true);
             activationTarget.AddCommandHistoryForTest(historyAttachmentCommand);
             activationTarget.ShowCommandHistoryForTest();
             activationTarget.RestoreLatestCommandHistoryForTest();
             var historyAttachmentsRehydrate = activationTarget.CommandInputTextForTest.Contains(historyAttachmentFixture, StringComparison.OrdinalIgnoreCase)
                 && activationTarget.ComposerAttachmentCountForTest == 1
+                && !activationTarget.CommandInputTextForTest.Contains(staleHistoryAttachmentFixture, StringComparison.OrdinalIgnoreCase)
                 && activationTarget.AttachmentStripVisibleForTest
                 && activationTarget.ComposerTokensMatchCanonicalPathsForTest
                 && !activationTarget.CommandHistoryPanelVisibleForTest;
             activationTarget.ClearComposerAttachmentsForTest();
             try { File.Delete(historyAttachmentFixture); } catch { }
+            try { File.Delete(staleHistoryAttachmentFixture); } catch { }
+            var composerSendSettingsMenuReady = activationTarget.RunCommandSettingsMenuReadyForTest();
+            var originalPressEnterAfterSend = activationTarget.Profile.PressEnterAfterComposerSend;
+            activationTarget.SetPressEnterAfterComposerSendForTest(true);
             WorkspaceStore.Save(state);
             var persistedHistoryProfile = WorkspaceStore.Load(terminalProfile).Sessions.First(value => value.Id == activationTarget.Profile.Id);
             var commandHistoryPersists = persistedHistoryProfile.CommandHistory.SequenceEqual(activationTarget.Profile.CommandHistory)
                 && persistedHistoryProfile.CommandHistoryTimestampsUtc.SequenceEqual(activationTarget.Profile.CommandHistoryTimestampsUtc);
+            var composerSendBehaviorPersists = persistedHistoryProfile.PressEnterAfterComposerSend;
+            activationTarget.SetPressEnterAfterComposerSendForTest(originalPressEnterAfterSend);
             var commandHistoryIsPerTerminal = panes[added[1].Id].Profile.CommandHistory.Count == 0;
             var historyCountBeforeClear = activationTarget.CommandHistoryCountForTest;
             var clearHistoryRequiresConfirmation = !activationTarget.ClearCommandHistoryForTest(false)
@@ -3755,6 +3801,7 @@ public partial class MainWindow : Window
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
                 && commandHistoryRestoresInput && historyAttachmentsRehydrate && commandHistoryPersists && commandHistoryIsPerTerminal
+                && composerSendSettingsMenuReady && composerSendBehaviorPersists && shiftClickQuickCreatesTerminal && automaticTerminalColorsWork
                 && clearHistoryRequiresConfirmation && clearHistoryButtonReady && clearHistoryWorks && clearHistoryPersists
                 && ctrlUDeletesToLineStart && ctrlKDeletesToLineEnd && ctrlJAddsLine && shiftEnterAddsLine
                 && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerStateDebouncesSustainedTyping && composerTypingLatencyBounded;
@@ -3798,7 +3845,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
-            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
@@ -3936,7 +3983,18 @@ public partial class MainWindow : Window
         }
         return panel;
     }
-    private void NewSessionClick(object sender, RoutedEventArgs e) => OpenSessionEditor(null);
+    private void NewSessionClick(object sender, RoutedEventArgs e)
+    {
+        if (ShouldQuickCreateTerminal(Keyboard.Modifiers))
+        {
+            CreateDefaultTerminal();
+            return;
+        }
+        OpenSessionEditor(null);
+    }
+
+    internal static bool ShouldQuickCreateTerminal(ModifierKeys modifiers)
+        => modifiers.HasFlag(ModifierKeys.Shift);
     private void WorkspaceSessionSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (workspaceSessionSelectionSync || sender is not ListBox list || list.SelectedItem is not TerminalSession value) return;
@@ -3997,13 +4055,7 @@ public partial class MainWindow : Window
         var session = new TerminalSession { Name = $"Session {state.TerminalSessions.Count + 1}" };
         state.TerminalSessions.Add(session);
         SelectWorkspaceSession(session.Id, false);
-        var terminal = new SessionProfile
-        {
-            Name = terminalProfile.ProfileName,
-            CommandLine = DefaultSessionCommandLine,
-            WorkingDirectory = DefaultSessionDirectory,
-            AutoStart = true
-        };
+        var terminal = CreateDefaultTerminalProfile();
         AddTerminalToActiveSession(terminal);
         CreatePane(terminal);
         SelectPane(terminal.Id, true);
@@ -4538,6 +4590,7 @@ public partial class MainWindow : Window
         SettingsCursorBlink.IsChecked = settings.CursorBlink;
         SettingsDefaultShell.Text = settings.DefaultCommandLine ?? string.Empty;
         SettingsDefaultDirectory.Text = settings.DefaultWorkingDirectory ?? string.Empty;
+        SettingsAutomaticTerminalColors.IsChecked = settings.AutomaticallySetTerminalColor;
         SettingsConfirmRemove.IsChecked = settings.ConfirmBeforeRemove;
         SettingsKeepSessionsInTray.IsChecked = settings.KeepSessionsRunningInTray;
         SettingsRestoreAfterRestart.IsChecked = settings.RestoreSessionsAfterRestart;
@@ -4609,6 +4662,16 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true) return;
         SettingsDefaultDirectory.Text = dialog.FolderName;
         SettingsDefaultsChanged(sender, e);
+    }
+
+    private void SettingsAutomaticTerminalColorsChanged(object sender, RoutedEventArgs e)
+    {
+        if (!settingsUiReady) return;
+        state.Settings.AutomaticallySetTerminalColor = SettingsAutomaticTerminalColors.IsChecked == true;
+        ScheduleSave();
+        UpdateStatus(state.Settings.AutomaticallySetTerminalColor
+            ? "New terminals will receive a random color"
+            : "New terminals will use the default color");
     }
 
     private void SettingsBehaviorChanged(object sender, RoutedEventArgs e)
