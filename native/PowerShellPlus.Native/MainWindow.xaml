@@ -444,7 +444,8 @@
               <TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
               <TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
               <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/>
-              <CheckBox x:Name="SessionUseTmuxEdit" Content="Keep SSH sessions running with tmux" Foreground="{StaticResource Text}" Margin="0,10,0,0" ToolTip="When enabled, SSH commands in this terminal attach to a persistent remote tmux session. Disable it for a standard SSH connection."/>
+              <CheckBox x:Name="SessionUseTmuxEdit" Content="Use tmux after this terminal connects through SSH" Foreground="{StaticResource Text}" Margin="0,10,0,0" Click="SessionUseTmuxEditClick" ToolTip="This is an SSH policy, not a local Windows PowerShell mode. The TMUX badge appears only after a remote tmux session is attached."/>
+              <TextBlock x:Name="SessionTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
             </StackPanel>
             <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed">
               <TextBlock Text="Session name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/>

@@ -1337,7 +1337,27 @@ public partial class MainWindow : Window
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
         SessionUseTmuxEdit.IsChecked = profile?.UseRemoteTmux ?? true;
+        UpdateTerminalTmuxEditorStatus(profile);
         ShowEditor(SessionEditor);
+    }
+
+    private void UpdateTerminalTmuxEditorStatus(SessionProfile? profile)
+    {
+        SessionTmuxStatusText.Text = TerminalTmuxEditorStatus(profile, SessionUseTmuxEdit.IsChecked == true);
+    }
+
+    private void SessionUseTmuxEditClick(object sender, RoutedEventArgs e)
+        => UpdateTerminalTmuxEditorStatus(editingValue as SessionProfile);
+
+    internal static string TerminalTmuxEditorStatus(SessionProfile? profile, bool enabled)
+    {
+        if (profile?.IsTmuxTerminal == true)
+            return enabled
+                ? "Active on the SSH host · this terminal has a real persistent tmux session and shows the TMUX badge."
+                : "Active now · saving this change reconnects the SSH terminal without tmux.";
+        return enabled
+            ? "SSH only · this setting is armed for the next SSH connection. Native Windows PowerShell stays live through the PowerShellPlus tray host and does not show a TMUX badge."
+            : "Disabled · future SSH connections in this terminal use standard SSH without tmux.";
     }
 
     private void SetTerminalEditorAccent(string? value)
@@ -1565,9 +1585,7 @@ public partial class MainWindow : Window
     private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart,
         string? accentColor = null, bool? useRemoteTmux = null)
     {
-        var restartRequired = !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
-            || !PathsEqual(profile.WorkingDirectory, workingDirectory)
-            || useRemoteTmux is bool requestedTmux && profile.UseRemoteTmux != requestedTmux;
+        var restartRequired = TerminalEditRequiresRestart(profile, commandLine, workingDirectory, useRemoteTmux);
         profile.Name = name;
         profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         profile.CommandLine = commandLine;
@@ -1584,6 +1602,15 @@ public partial class MainWindow : Window
         SessionList.Items.Refresh();
         TerminalTabList.Items.Refresh();
         return restartRequired;
+    }
+
+    internal static bool TerminalEditRequiresRestart(SessionProfile profile, string commandLine, string workingDirectory, bool? useRemoteTmux)
+    {
+        if (!string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
+            || !PathsEqual(profile.WorkingDirectory, workingDirectory)) return true;
+        return useRemoteTmux is bool requestedTmux
+            && profile.UseRemoteTmux != requestedTmux
+            && (profile.LiveWorkingDirectoryIsSsh || profile.IsTmuxTerminal);
     }
 
     private static bool PathsEqual(string left, string right)
@@ -3158,6 +3185,8 @@ public partial class MainWindow : Window
             var hermesActivityTransitionsExact = HermesOutputActivityTracker.StateTransitionsPassForTest();
             var remoteCodexActivityProbeBounded = RemoteCodexActivityProbe.CommandIsReadOnlyAndBoundedForTest();
             var cursorTransformConfigured = activationTarget.ForceCursorStyleForTest("\u001b[3 q") == "\u001b[5 q";
+            var rendererVtStreamTransparent = activationTarget.RendererFilterPreservesVtStreamForTest();
+            var remoteVtStreamTransparent = activationTarget.RemoteOutputRelayPreservesVtStreamForTest();
             var windowIconLoaded = Icon is not null;
             var executableIconEmbedded = false;
             try
@@ -3619,6 +3648,22 @@ public partial class MainWindow : Window
             var terminalTmuxChoiceWorks = !directSshDirectoryHook.Contains("tmux new-session", StringComparison.Ordinal)
                 && directSshDirectoryHook.Contains("$PWD", StringComparison.Ordinal)
                 && new SessionProfile().UseRemoteTmux;
+            var localTmuxPolicyFixture = new SessionProfile
+            {
+                CommandLine = "powershell.exe",
+                WorkingDirectory = activationTarget.Profile.WorkingDirectory,
+                UseRemoteTmux = false
+            };
+            var localTmuxPolicyDoesNotRestart = !TerminalEditRequiresRestart(localTmuxPolicyFixture,
+                localTmuxPolicyFixture.CommandLine, localTmuxPolicyFixture.WorkingDirectory, true);
+            localTmuxPolicyFixture.LiveWorkingDirectoryIsSsh = true;
+            var activeSshTmuxPolicyRestarts = TerminalEditRequiresRestart(localTmuxPolicyFixture,
+                localTmuxPolicyFixture.CommandLine, localTmuxPolicyFixture.WorkingDirectory, true);
+            localTmuxPolicyFixture.SetTmuxTerminal(true);
+            var tmuxEditorStatusIsTruthful = TerminalTmuxEditorStatus(new SessionProfile(), true).Contains("SSH only", StringComparison.Ordinal)
+                && TerminalTmuxEditorStatus(new SessionProfile(), false).StartsWith("Disabled", StringComparison.Ordinal)
+                && TerminalTmuxEditorStatus(localTmuxPolicyFixture, true).Contains("Active on the SSH host", StringComparison.Ordinal)
+                && TerminalTmuxEditorStatus(localTmuxPolicyFixture, false).Contains("Active now", StringComparison.Ordinal);
             var bareSshResumePlan = SshRecovery.BuildResumePlan(new SessionRecoveryEntry
             {
                 SessionId = "directory-hook-fixture",
@@ -3706,6 +3751,7 @@ public partial class MainWindow : Window
                 && nextQueuedCommandPromoted && upArrowBrowsesQueue && firstQueuedCommandRuns && queueAdvances && secondQueuedCommandRuns && queueDrains
                 && quickAccessFiltersCommands && quickAccessTogglePersists && quickAccessPopulatesInput && queueCommandsExecuted && queueMenuListsCommands
                 && ctrlEnterQueues && queueButtonOpensQueue && commandInputAutoGrows && composerChromeStaysCompact && textPasteWorks && cursorBarEnforced
+                && rendererVtStreamTransparent && remoteVtStreamTransparent
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
                 && commandHistoryRestoresInput && historyAttachmentsRehydrate && commandHistoryPersists && commandHistoryIsPerTerminal
@@ -3741,12 +3787,13 @@ public partial class MainWindow : Window
                 && automationEditorSupportsManualTargetAndClearLine && terminalAutomationStatePersists
                 && localDirectoryUpdates && sshDirectoryUpdates && workingDirectoryMarkersParse && localDirectoryHookReady && sshDirectoryHookReady
                 && terminalTmuxChoiceWorks && terminalTmuxChoicePersists && terminalTmuxEditorToggleReflectsProfile
+                && localTmuxPolicyDoesNotRestart && activeSshTmuxPolicyRestarts && tmuxEditorStatusIsTruthful
                 && terminalProtocolTextSanitized && interactiveSshWrapperForcesPty && bareSshRecoveryKeepsDirectoryHook
                 && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
-            File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nCodexActivityGrowthScanBounded={codexActivityGrowthScanBounded}\nBracketedPasteSubmissionContract={bracketedPasteSubmissionContract}\nCodexInteractivePromptsDriveWaiting={codexInteractivePromptsDriveWaiting}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
+            File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nCodexActivityGrowthScanBounded={codexActivityGrowthScanBounded}\nBracketedPasteSubmissionContract={bracketedPasteSubmissionContract}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nRemoteVtStreamTransparent={remoteVtStreamTransparent}\nCodexInteractivePromptsDriveWaiting={codexInteractivePromptsDriveWaiting}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
@@ -3754,7 +3801,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
-            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
+            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");

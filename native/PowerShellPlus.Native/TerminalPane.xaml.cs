@@ -355,7 +355,6 @@ public partial class TerminalPane : UserControl
     private readonly StringBuilder recentAgentOutput = new();
     private readonly StringBuilder recoveryOutput = new();
     private readonly StringBuilder workingDirectoryOscBuffer = new();
-    private char[]? terminalOutputScratch;
     private volatile bool lastRecoverySnapshotReadUsedDispatcher;
     private DateTime lastAgentProbeUtc = DateTime.MinValue;
     private bool agentStatusRefreshPending;
@@ -2053,6 +2052,32 @@ public partial class TerminalPane : UserControl
         EnforceCursorStyle(ref span);
         return new string(buffer);
     }
+    public bool RendererFilterPreservesVtStreamForTest()
+    {
+        const string source = "prefix\u001b[4:4mdotted\u001b[24m\u001b[>0;10;1csuffix\u001b[3 q";
+        var expected = source.Replace("\u001b[3 q", $"\u001b[{configuredCursorStyleCode} q", StringComparison.Ordinal);
+        var actual = ForceCursorStyleForTest(source);
+        const string splitSource = "\u001b[4:4mdotted\u001b[24m";
+        var splitActual = ForceCursorStyleForTest("\u001b[4:")
+            + ForceCursorStyleForTest("4mdotted\u001b[2")
+            + ForceCursorStyleForTest("4m");
+        return actual.Length == source.Length
+            && actual == expected
+            && splitActual == splitSource
+            && actual.Contains("\u001b[4:4m", StringComparison.Ordinal)
+            && actual.Contains("\u001b[24m", StringComparison.Ordinal)
+            && actual.Contains("\u001b[>0;10;1c", StringComparison.Ordinal);
+    }
+    public bool RemoteOutputRelayPreservesVtStreamForTest()
+    {
+        const string source = "\u001b[>0;10;1c";
+        string? relayed = null;
+        void Handler(TerminalPane _, string data) => relayed = data;
+        RawOutputReceived += Handler;
+        try { CaptureTerminalOutput(this, new TerminalOutputEventArgs(source)); }
+        finally { RawOutputReceived -= Handler; }
+        return relayed == source;
+    }
     public bool PasteTextForTest(string text)
     {
         var terminal = Terminal.ConPTYTerm;
@@ -2615,7 +2640,13 @@ public partial class TerminalPane : UserControl
         bracketedPasteMode.RecordOutput(args.Data);
         QueueScrollbarRefreshFromOutput();
         CaptureWorkingDirectory(args.Data);
-        var output = TerminalTextSanitizer.ForLiveOutput(args.Data);
+        var rawOutput = args.Data;
+        // Browser xterm clients must receive the same complete VT stream as the
+        // native renderer. Removing variable-length fragments would desynchronize
+        // cursor positioning and persistent SGR attributes in full-screen TUIs.
+        try { RawOutputReceived?.Invoke(this, rawOutput); }
+        catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
+        var output = TerminalTextSanitizer.ForLiveOutput(rawOutput);
         if (output.Length == 0) return;
         var now = DateTime.UtcNow;
         var meaningful = terminalActivity.RecordOutput(output, now);
@@ -2627,8 +2658,6 @@ public partial class TerminalPane : UserControl
             if (recentAgentOutput.Length > 8192) recentAgentOutput.Remove(0, recentAgentOutput.Length - 8192);
             AppendBoundedRecoveryOutput(recoveryOutput, output);
         }
-        try { RawOutputReceived?.Invoke(this, output); }
-        catch { /* A remote viewer must never interrupt the ConPTY read loop. */ }
     }
 
     private void CaptureWorkingDirectory(string data)
@@ -2951,15 +2980,11 @@ public partial class TerminalPane : UserControl
 
     private void EnforceCursorStyle(ref Span<char> output)
     {
-        var sanitized = TerminalTextSanitizer.ForLiveOutput(output.ToString());
-        if (sanitized.Length != output.Length)
-        {
-            // The terminal-control library explicitly permits replacing the
-            // intercepted span. Keep the backing array rooted until the next
-            // callback so the native renderer can consume it safely.
-            terminalOutputScratch = sanitized.ToCharArray();
-            output = terminalOutputScratch.AsSpan();
-        }
+        // Keep backend output byte-for-byte transparent. Full-screen TUIs track
+        // cursor position and SGR state across chunks, so deleting a protocol
+        // fragment here can leave attributes (such as dotted underline) latched
+        // across the entire viewport. Cursor normalization below is deliberately
+        // same-length and in-place.
         // DECSCUSR is ESC [ Ps SP q. Applications such as TUIs can emit it
         // after the theme is applied, so normalize it to the user's setting.
         for (var index = 0; index <= output.Length - 5; index++)
