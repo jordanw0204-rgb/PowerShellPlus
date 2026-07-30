@@ -422,7 +422,7 @@ public partial class TerminalPane : UserControl
         Func<IEnumerable<AutomationRule>>? automationProvider = null, Action<AutomationRule>? automationEditRequested = null)
     {
         Profile = profile;
-        Profile.SetTmuxTerminal(recovery is { SshWasActive: true, RemoteTmuxManaged: true });
+        Profile.SetTmuxTerminal(profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
         currentAppearance = appearance;
         terminalWindowSubclassProc = TerminalWindowSubclassProc;
         startupRecovery = recovery;
@@ -1461,18 +1461,19 @@ public partial class TerminalPane : UserControl
 
     public async Task RestartAsync(SessionRecoveryEntry? recoveryOverride = null)
     {
-        var sshRecovery = recoveryOverride?.SshWasActive == true ? recoveryOverride
+        var recovery = Profile.UseLocalTmux ? recoveryOverride ?? startupRecovery
+            : recoveryOverride?.SshWasActive == true ? recoveryOverride
             : startupRecovery?.SshWasActive == true ? startupRecovery : null;
         SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
-        startupRecovery = sshRecovery;
+        startupRecovery = recovery;
         codexOutputActivity.Reset();
-        Profile.SetTmuxTerminal(sshRecovery is { SshWasActive: true, RemoteTmuxManaged: true });
+        Profile.SetTmuxTerminal(Profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
         DisposeTmuxScrollbackClient();
         Interlocked.Increment(ref tmuxScrollbarGeneration);
         tmuxScrollbackState = default;
         pendingTmuxScrollPosition = null;
         hermesExitObserved = false;
-        Terminal.StartupCommandLine = BuildCommandLine(Profile, sshRecovery);
+        Terminal.StartupCommandLine = BuildCommandLine(Profile, recovery);
         bracketedPasteMode.Reset();
         await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
@@ -1844,7 +1845,7 @@ public partial class TerminalPane : UserControl
         Profile = profile;
         startupRecovery = null;
         codexOutputActivity.Reset();
-        Profile.SetTmuxTerminal(false);
+        Profile.SetTmuxTerminal(profile.UseLocalTmux);
         TitleText.Text = profile.Name;
         ApplyAccent();
         Terminal.StartupCommandLine = BuildCommandLine(profile, null);
@@ -2738,6 +2739,9 @@ public partial class TerminalPane : UserControl
         QueueScrollbarRefreshFromOutput();
         CaptureWorkingDirectory(args.Data);
         var rawOutput = args.Data;
+        if (Profile.UseLocalTmux && rawOutput.Contains(LocalTmuxSession.UnavailableText, StringComparison.OrdinalIgnoreCase))
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                new Action(() => Profile.SetTmuxTerminal(false)));
         // Browser xterm clients must receive the same complete VT stream as the
         // native renderer. Removing variable-length fragments would desynchronize
         // cursor positioning and persistent SGR attributes in full-screen TUIs.
@@ -3565,6 +3569,12 @@ public partial class TerminalPane : UserControl
     private static extern IntPtr DefSubclassProc(IntPtr windowHandle, uint message, IntPtr wParam, IntPtr lParam);
 
     public static string BuildCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery, bool skipPowerShellProfile = false)
+    {
+        var workload = BuildDirectCommandLine(profile, recovery, skipPowerShellProfile);
+        return profile.UseLocalTmux ? LocalTmuxSession.BuildStartupCommandLine(profile, workload) : workload;
+    }
+
+    private static string BuildDirectCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery, bool skipPowerShellProfile = false)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
         var sshResumeCommand = SshRecovery.BuildPowerShellResumeCommand(recovery);

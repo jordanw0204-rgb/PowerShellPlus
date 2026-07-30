@@ -40,6 +40,9 @@ public sealed class SessionRecoveryEntry
     public string? RemoteCodexApprovalsReviewer { get; set; }
     public bool RemoteTmuxManaged { get; set; }
     public string? RemoteTmuxSessionName { get; set; }
+    public bool LocalTmuxManaged { get; set; }
+    public string? LocalTmuxSessionName { get; set; }
+    public string? LocalTmuxDistribution { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
 }
 

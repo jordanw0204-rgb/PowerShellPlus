@@ -142,6 +142,8 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
     public bool UseRemoteTmux { get; set; } = true;
+    public bool UseLocalTmux { get; set; }
+    public string? LocalTmuxDistribution { get; set; }
     public bool CommandBarExpanded { get; set; } = true;
     public int? TerminalFontSize { get; set; }
     public int? CommandFontSize { get; set; }

@@ -253,11 +253,11 @@ public partial class MainWindow : Window
         var restartItem = new System.Windows.Forms.ToolStripMenuItem(TrayRestartLabel, null, (_, _) =>
         {
             Dispatcher.BeginInvoke(new Action(() => _ = RestartPowerShellPlusAsync()));
-        }) { ToolTipText = "Restart the UI and restore saved local sessions without stopping managed remote tmux terminals." };
+        }) { ToolTipText = "Restart the UI and reattach managed local and remote tmux terminals without stopping them." };
         var fullQuitItem = new System.Windows.Forms.ToolStripMenuItem(TrayFullQuitLabel, null, (_, _) =>
         {
             Dispatcher.BeginInvoke(new Action(() => _ = FullyQuitPowerShellPlusAsync()));
-        }) { ToolTipText = "Stop local terminals, stop every managed remote tmux terminal, and exit PowerShellPlus." };
+        }) { ToolTipText = "Stop every managed local and remote tmux terminal, close other terminals, and exit PowerShellPlus." };
         menu.Items.Add(quitItem);
         menu.Items.Add(restartItem);
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
@@ -312,7 +312,7 @@ public partial class MainWindow : Window
         if (shutdownComplete || lifecycleOperationInProgress) return;
         RestoreWindow(true);
         if (!PowerShellPlusDialog.Confirm(this,
-            "This closes every local terminal and permanently stops every remote tmux terminal managed by PowerShellPlus. Running commands and agents in those tmux terminals will stop.",
+            "This permanently stops every local and remote tmux terminal managed by PowerShellPlus, then closes the app. Running commands and agents in those tmux terminals will stop.",
             "Fully quit PowerShellPlus?", PowerShellPlusDialogKind.Warning,
             "Fully quit", "Cancel", defaultToPrimary: false, primaryIsDangerous: true)) return;
 
@@ -325,7 +325,10 @@ public partial class MainWindow : Window
                 .Where(entry => entry.SshWasActive && entry.RemoteTmuxManaged)
                 .ToArray();
             var results = await Task.WhenAll(managedRemoteSessions.Select(entry => RemoteTmuxSession.KillAsync(entry)));
-            var failures = results.Where(result => !result.CommandSucceeded).Select(result => result.Message).Distinct().ToArray();
+            var localResults = await Task.WhenAll(state.Sessions.Where(profile => profile.UseLocalTmux)
+                .Select(profile => LocalTmuxSession.KillAsync(profile.Id, profile.LocalTmuxDistribution)));
+            var failures = results.Where(result => !result.CommandSucceeded).Select(result => result.Message)
+                .Concat(localResults.Where(result => !result.CommandSucceeded).Select(result => result.Message)).Distinct().ToArray();
             if (failures.Length > 0)
             {
                 lifecycleOperationInProgress = false;
@@ -621,7 +624,7 @@ public partial class MainWindow : Window
     {
         foreach (var profile in state.Sessions)
             profile.SetTmuxTerminal(snapshot.Sessions.TryGetValue(profile.Id, out var recovery)
-                && recovery.SshWasActive && recovery.RemoteTmuxManaged);
+                && (recovery.LocalTmuxManaged || recovery.SshWasActive && recovery.RemoteTmuxManaged));
     }
 
     private void CaptureRecoverySnapshotCore(IReadOnlyList<RecoveryPaneCapture> captures, bool saveTerminalTranscripts)
@@ -781,6 +784,10 @@ public partial class MainWindow : Window
                         RemoteCodexApprovalsReviewer = remoteCodex.ApprovalsReviewer,
                         RemoteTmuxManaged = remoteTmuxManaged,
                         RemoteTmuxSessionName = remoteTmuxManaged ? RemoteTmuxSession.GetSessionName(capture.SessionId) : null,
+                        LocalTmuxManaged = profile?.UseLocalTmux == true
+                            && !capture.Output.Contains(LocalTmuxSession.UnavailableText, StringComparison.OrdinalIgnoreCase),
+                        LocalTmuxSessionName = profile?.UseLocalTmux == true ? LocalTmuxSession.GetSessionName(capture.SessionId) : null,
+                        LocalTmuxDistribution = profile?.UseLocalTmux == true ? profile.LocalTmuxDistribution : null,
                         CapturedUtc = DateTime.UtcNow
                     };
                 }
@@ -1367,6 +1374,7 @@ public partial class MainWindow : Window
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
+        SessionUseLocalTmuxEdit.IsChecked = profile?.UseLocalTmux ?? false;
         SessionUseTmuxEdit.IsChecked = profile?.UseRemoteTmux ?? true;
         UpdateTerminalTmuxEditorStatus(profile);
         ShowEditor(SessionEditor);
@@ -1374,7 +1382,26 @@ public partial class MainWindow : Window
 
     private void UpdateTerminalTmuxEditorStatus(SessionProfile? profile)
     {
+        SessionLocalTmuxStatusText.Text = LocalTmuxEditorStatus(profile, SessionUseLocalTmuxEdit.IsChecked == true);
         SessionTmuxStatusText.Text = TerminalTmuxEditorStatus(profile, SessionUseTmuxEdit.IsChecked == true);
+    }
+
+    private async void SessionUseLocalTmuxEditClick(object sender, RoutedEventArgs e)
+    {
+        if (SessionUseLocalTmuxEdit.IsChecked != true)
+        {
+            UpdateTerminalTmuxEditorStatus(editingValue as SessionProfile);
+            return;
+        }
+        SessionUseLocalTmuxEdit.IsEnabled = false;
+        SessionLocalTmuxStatusText.Text = "Checking WSL and tmux...";
+        try
+        {
+            var profile = editingValue as SessionProfile;
+            var status = await LocalTmuxSession.ProbeAsync(profile?.LocalTmuxDistribution, profile?.Id);
+            SessionLocalTmuxStatusText.Text = status.Message;
+        }
+        finally { SessionUseLocalTmuxEdit.IsEnabled = true; }
     }
 
     private void SessionUseTmuxEditClick(object sender, RoutedEventArgs e)
@@ -1382,13 +1409,22 @@ public partial class MainWindow : Window
 
     internal static string TerminalTmuxEditorStatus(SessionProfile? profile, bool enabled)
     {
-        if (profile?.IsTmuxTerminal == true)
+        if (profile is { IsTmuxTerminal: true, UseLocalTmux: false } && profile.LiveWorkingDirectoryIsSsh)
             return enabled
                 ? "Active on the SSH host · this terminal has a real persistent tmux session and shows the TMUX badge."
                 : "Active now · saving this change reconnects the SSH terminal without tmux.";
         return enabled
-            ? "SSH only · this setting is armed for the next SSH connection. Native Windows PowerShell stays live through the PowerShellPlus tray host and does not show a TMUX badge."
-            : "Disabled · future SSH connections in this terminal use standard SSH without tmux.";
+            ? "Remote policy armed - the next SSH connection in this terminal is placed inside tmux on the SSH host."
+            : "Disabled - future SSH connections in this terminal use standard SSH without tmux.";
+    }
+
+    internal static string LocalTmuxEditorStatus(SessionProfile? profile, bool enabled)
+    {
+        if (enabled && profile is { UseLocalTmux: true, IsTmuxTerminal: true })
+            return $"Active locally through WSL{(string.IsNullOrWhiteSpace(profile.LocalTmuxDistribution) ? string.Empty : $" - {profile.LocalTmuxDistribution}")} - this exact Windows terminal survives app restarts.";
+        return enabled
+            ? "Requires WSL, a registered Linux distribution, and tmux. PowerShellPlus verifies all three before changing this terminal."
+            : "Off - this local Windows terminal closes when PowerShellPlus fully exits.";
     }
 
     private void SetTerminalEditorAccent(string? value)
@@ -1614,15 +1650,25 @@ public partial class MainWindow : Window
     }
 
     private async Task<bool> ApplyTerminalEditAsync(SessionProfile profile, string name, string commandLine, string workingDirectory, bool autoStart,
-        string? accentColor = null, bool? useRemoteTmux = null)
+        string? accentColor = null, bool? useRemoteTmux = null, bool? useLocalTmux = null, string? localTmuxDistribution = null)
     {
-        var restartRequired = TerminalEditRequiresRestart(profile, commandLine, workingDirectory, useRemoteTmux);
+        var restartRequired = TerminalEditRequiresRestart(profile, commandLine, workingDirectory, useRemoteTmux, useLocalTmux);
+        var replaceLocalSession = profile.UseLocalTmux
+            && (useLocalTmux == false || !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
+                || !PathsEqual(profile.WorkingDirectory, workingDirectory));
+        if (replaceLocalSession)
+        {
+            var stopped = await LocalTmuxSession.KillAsync(profile.Id, profile.LocalTmuxDistribution);
+            if (!stopped.CommandSucceeded) throw new InvalidOperationException(stopped.Message);
+        }
         profile.Name = name;
         profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
         profile.CommandLine = commandLine;
         profile.WorkingDirectory = workingDirectory;
         profile.AutoStart = autoStart;
         if (useRemoteTmux is bool tmuxEnabled) profile.UseRemoteTmux = tmuxEnabled;
+        if (useLocalTmux is bool localTmuxEnabled) profile.UseLocalTmux = localTmuxEnabled;
+        profile.LocalTmuxDistribution = profile.UseLocalTmux ? localTmuxDistribution ?? profile.LocalTmuxDistribution : null;
         if (!panes.TryGetValue(profile.Id, out var pane)) return restartRequired;
         if (restartRequired)
         {
@@ -1635,13 +1681,14 @@ public partial class MainWindow : Window
         return restartRequired;
     }
 
-    internal static bool TerminalEditRequiresRestart(SessionProfile profile, string commandLine, string workingDirectory, bool? useRemoteTmux)
+    internal static bool TerminalEditRequiresRestart(SessionProfile profile, string commandLine, string workingDirectory, bool? useRemoteTmux,
+        bool? useLocalTmux = null)
     {
         if (!string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
             || !PathsEqual(profile.WorkingDirectory, workingDirectory)) return true;
-        return useRemoteTmux is bool requestedTmux
-            && profile.UseRemoteTmux != requestedTmux
-            && (profile.LiveWorkingDirectoryIsSsh || profile.IsTmuxTerminal);
+        if (useLocalTmux is bool requestedLocalTmux && profile.UseLocalTmux != requestedLocalTmux) return true;
+        return useRemoteTmux is bool requestedTmux && profile.UseRemoteTmux != requestedTmux
+            && (profile.LiveWorkingDirectoryIsSsh || profile.IsTmuxTerminal && !profile.UseLocalTmux);
     }
 
     private static bool PathsEqual(string left, string right)
@@ -1658,20 +1705,57 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task<(bool Valid, string? Distribution)> ValidateLocalTmuxSelectionAsync(SessionProfile? profile)
+    {
+        if (SessionUseLocalTmuxEdit.IsChecked != true) return (true, null);
+        SessionUseLocalTmuxEdit.IsEnabled = false;
+        SessionLocalTmuxStatusText.Text = "Verifying WSL and tmux before saving...";
+        try
+        {
+            var status = await LocalTmuxSession.ProbeAsync(profile?.LocalTmuxDistribution, profile?.Id);
+            SessionLocalTmuxStatusText.Text = status.Message;
+            if (status.WslAvailable && status.TmuxAvailable && !string.IsNullOrWhiteSpace(status.Distribution))
+                return (true, status.Distribution);
+            PowerShellPlusDialog.ShowMessage(this,
+                status.Message + "\n\nLocal tmux was not enabled and this terminal was not restarted.",
+                "Local tmux needs WSL", PowerShellPlusDialogKind.Warning);
+            return (false, null);
+        }
+        finally { SessionUseLocalTmuxEdit.IsEnabled = true; }
+    }
+
     private async void SaveEditorClick(object sender, RoutedEventArgs e)
     {
         if (editorMode == EditorMode.Terminal)
         {
             if (string.IsNullOrWhiteSpace(SessionNameEdit.Text) || string.IsNullOrWhiteSpace(SessionCommandEdit.Text) || !Directory.Exists(SessionDirectoryEdit.Text)) { UpdateStatus("Session fields are incomplete"); return; }
-            if (editingValue is SessionProfile existing)
+            var localTmux = await ValidateLocalTmuxSelectionAsync(editingValue as SessionProfile);
+            if (!localTmux.Valid) return;
+            try
             {
-                await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true,
-                    terminalEditorAccentColor, SessionUseTmuxEdit.IsChecked == true);
+                if (editingValue is SessionProfile existing)
+                {
+                    await ApplyTerminalEditAsync(existing, SessionNameEdit.Text.Trim(), SessionCommandEdit.Text.Trim(), SessionDirectoryEdit.Text.Trim(), SessionAutoStartEdit.IsChecked == true,
+                        terminalEditorAccentColor, SessionUseTmuxEdit.IsChecked == true, SessionUseLocalTmuxEdit.IsChecked == true, localTmux.Distribution);
+                }
+                else
+                {
+                    var created = new SessionProfile
+                    {
+                        Name = SessionNameEdit.Text.Trim(), AccentColor = terminalEditorAccentColor,
+                        CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(),
+                        AutoStart = SessionAutoStartEdit.IsChecked == true, UseRemoteTmux = SessionUseTmuxEdit.IsChecked == true,
+                        UseLocalTmux = SessionUseLocalTmuxEdit.IsChecked == true, LocalTmuxDistribution = localTmux.Distribution
+                    };
+                    AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
+                }
             }
-            else
+            catch (InvalidOperationException exception)
             {
-                var created = new SessionProfile { Name = SessionNameEdit.Text.Trim(), AccentColor = terminalEditorAccentColor, CommandLine = SessionCommandEdit.Text.Trim(), WorkingDirectory = SessionDirectoryEdit.Text.Trim(), AutoStart = SessionAutoStartEdit.IsChecked == true, UseRemoteTmux = SessionUseTmuxEdit.IsChecked == true };
-                AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
+                LogNativeError("Local tmux terminal edit", exception);
+                PowerShellPlusDialog.ShowMessage(this, exception.Message + "\n\nThe terminal was left unchanged.",
+                    "Local tmux could not be changed", PowerShellPlusDialogKind.Error);
+                return;
             }
         }
         else if (editorMode == EditorMode.WorkspaceSession)
@@ -1721,6 +1805,15 @@ public partial class MainWindow : Window
     {
         if (!panes.ContainsKey(profile.Id) || remoteDetachOperations.Contains(profile.Id)) return;
         CaptureRecoverySnapshot();
+        if (profile.UseLocalTmux)
+        {
+            if (state.Settings.ConfirmBeforeRemove && !PowerShellPlusDialog.Confirm(this,
+                    $"Remove {profile.Name}?\n\nIts local tmux session and every process inside it will be stopped. Closing or restarting PowerShellPlus itself keeps this terminal running instead.",
+                    "Stop local tmux terminal?", PowerShellPlusDialogKind.Question,
+                    "Stop & remove", "Cancel", defaultToPrimary: false, primaryIsDangerous: true)) return;
+            await StopLocalAndRemoveAsync(profile);
+            return;
+        }
         var snapshot = SessionRecoveryStore.Load();
         if (!snapshot.Sessions.TryGetValue(profile.Id, out var recovery) || recovery.SshWasActive != true)
         {
@@ -1734,6 +1827,24 @@ public partial class MainWindow : Window
             "Keep running", "Stop & remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: false);
         if (choice == PowerShellPlusDialogResult.Primary) await DetachRemoteTerminalAsync(profile, recovery);
         else if (choice == PowerShellPlusDialogResult.Secondary) await StopRemoteAndRemoveAsync(profile, recovery);
+    }
+
+    private async Task<bool> StopLocalAndRemoveAsync(SessionProfile profile)
+    {
+        if (!remoteDetachOperations.Add(profile.Id)) return false;
+        try
+        {
+            var stopped = await LocalTmuxSession.KillAsync(profile.Id, profile.LocalTmuxDistribution);
+            if (!stopped.CommandSucceeded)
+            {
+                PowerShellPlusDialog.ShowMessage(this,
+                    stopped.Message + "\n\nNothing was removed, so PowerShellPlus did not orphan a terminal it could not verify as stopped.",
+                    "Local tmux session could not be stopped", PowerShellPlusDialogKind.Error);
+                return false;
+            }
+            return RemoveSession(profile, alreadyConfirmed: true);
+        }
+        finally { remoteDetachOperations.Remove(profile.Id); }
     }
 
     private async Task DetachRemoteTerminalAsync(SessionProfile profile, SessionRecoveryEntry? suppliedRecovery = null)
@@ -1910,6 +2021,7 @@ public partial class MainWindow : Window
         if (stopPane) pane.Stop();
         else pane.ReleaseAuxiliaryResources();
         TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
+        LocalTmuxSession.DeleteLaunchArtifacts(profile.Id);
         foreach (var session in state.TerminalSessions)
         {
             session.TerminalIds.Remove(profile.Id);
@@ -2878,7 +2990,9 @@ public partial class MainWindow : Window
             RemoteCodexWorkingDirectory = remoteCodexDirectory, RemoteCodexModel = savedModel,
             RemoteCodexSandboxMode = savedSandboxMode, RemoteCodexApprovalPolicy = savedApprovalPolicy,
             RemoteCodexApprovalsReviewer = savedApprovalsReviewer,
-            RemoteTmuxManaged = true, RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName("test-session")
+            RemoteTmuxManaged = true, RemoteTmuxSessionName = RemoteTmuxSession.GetSessionName("test-session"),
+            LocalTmuxManaged = true, LocalTmuxSessionName = LocalTmuxSession.GetSessionName("test-session"),
+            LocalTmuxDistribution = "Ubuntu"
         };
         SessionRecoveryStore.Save(recoveryFixture, recoveryRoot);
         var reloadedFixture = SessionRecoveryStore.Load(recoveryRoot);
@@ -2895,6 +3009,8 @@ public partial class MainWindow : Window
             && reloadedEntry.RemoteCodexSandboxMode == savedSandboxMode && reloadedEntry.RemoteCodexApprovalPolicy == savedApprovalPolicy
             && reloadedEntry.RemoteCodexApprovalsReviewer == savedApprovalsReviewer
             && reloadedEntry.RemoteTmuxManaged && reloadedEntry.RemoteTmuxSessionName == RemoteTmuxSession.GetSessionName("test-session")
+            && reloadedEntry.LocalTmuxManaged && reloadedEntry.LocalTmuxSessionName == LocalTmuxSession.GetSessionName("test-session")
+            && reloadedEntry.LocalTmuxDistribution == "Ubuntu"
             && SessionRecoveryStore.ReadTranscript(reloadedEntry, recoveryRoot) == "previous terminal output";
         try { Directory.Delete(recoveryRoot, true); } catch { }
         var legacyRoot = Path.Combine(Path.GetDirectoryName(reportPath)!, "legacy-recovery-fixture");
@@ -3722,14 +3838,19 @@ public partial class MainWindow : Window
             };
             var localTmuxPolicyDoesNotRestart = !TerminalEditRequiresRestart(localTmuxPolicyFixture,
                 localTmuxPolicyFixture.CommandLine, localTmuxPolicyFixture.WorkingDirectory, true);
+            var localTmuxPolicyRequiresRestart = TerminalEditRequiresRestart(localTmuxPolicyFixture,
+                localTmuxPolicyFixture.CommandLine, localTmuxPolicyFixture.WorkingDirectory, false, true);
             localTmuxPolicyFixture.LiveWorkingDirectoryIsSsh = true;
             var activeSshTmuxPolicyRestarts = TerminalEditRequiresRestart(localTmuxPolicyFixture,
                 localTmuxPolicyFixture.CommandLine, localTmuxPolicyFixture.WorkingDirectory, true);
             localTmuxPolicyFixture.SetTmuxTerminal(true);
-            var tmuxEditorStatusIsTruthful = TerminalTmuxEditorStatus(new SessionProfile(), true).Contains("SSH only", StringComparison.Ordinal)
+            var tmuxEditorStatusIsTruthful = TerminalTmuxEditorStatus(new SessionProfile(), true).Contains("Remote policy armed", StringComparison.Ordinal)
                 && TerminalTmuxEditorStatus(new SessionProfile(), false).StartsWith("Disabled", StringComparison.Ordinal)
                 && TerminalTmuxEditorStatus(localTmuxPolicyFixture, true).Contains("Active on the SSH host", StringComparison.Ordinal)
-                && TerminalTmuxEditorStatus(localTmuxPolicyFixture, false).Contains("Active now", StringComparison.Ordinal);
+                && TerminalTmuxEditorStatus(localTmuxPolicyFixture, false).Contains("Active now", StringComparison.Ordinal)
+                && LocalTmuxEditorStatus(new SessionProfile(), true).Contains("Requires WSL", StringComparison.Ordinal)
+                && LocalTmuxEditorStatus(new SessionProfile(), false).StartsWith("Off", StringComparison.Ordinal);
+            var localTmuxLaunchContract = LocalTmuxSession.ContractPassesForTest();
             var bareSshResumePlan = SshRecovery.BuildResumePlan(new SessionRecoveryEntry
             {
                 SessionId = "directory-hook-fixture",
@@ -3741,7 +3862,11 @@ public partial class MainWindow : Window
                 && decodedBareSshRemoteCommand.Contains("PROMPT_COMMAND", StringComparison.Ordinal)
                 && decodedBareSshRemoteCommand.Contains("]9;9;", StringComparison.Ordinal);
             var originalUseRemoteTmux = activationTarget.Profile.UseRemoteTmux;
+            var originalUseLocalTmux = activationTarget.Profile.UseLocalTmux;
+            var originalLocalTmuxDistribution = activationTarget.Profile.LocalTmuxDistribution;
             activationTarget.Profile.UseRemoteTmux = false;
+            activationTarget.Profile.UseLocalTmux = true;
+            activationTarget.Profile.LocalTmuxDistribution = "Ubuntu";
             WorkspaceStore.Save(state);
             var automationPersistenceWorkspace = WorkspaceStore.Load(terminalProfile);
             var automationPersistenceProfile = automationPersistenceWorkspace.Sessions.First(value => value.Id == activationTarget.Profile.Id);
@@ -3755,7 +3880,12 @@ public partial class MainWindow : Window
                 && automationPersistenceProfile.LiveWorkingDirectory == "/home/ubuntu/illest.bot"
                 && automationPersistenceProfile.LiveWorkingDirectoryIsSsh;
             var terminalTmuxChoicePersists = !automationPersistenceProfile.UseRemoteTmux;
+            var localTmuxChoicePersists = automationPersistenceProfile.UseLocalTmux
+                && automationPersistenceProfile.LocalTmuxDistribution == "Ubuntu";
             activationTarget.Profile.UseRemoteTmux = originalUseRemoteTmux;
+            activationTarget.Profile.UseLocalTmux = originalUseLocalTmux;
+            activationTarget.Profile.LocalTmuxDistribution = originalLocalTmuxDistribution;
+            WorkspaceStore.Save(state);
             activationTarget.Profile.LiveWorkingDirectory = originalLiveDirectory;
             activationTarget.Profile.LiveWorkingDirectoryIsSsh = originalLiveDirectoryIsSsh;
             activationTarget.Profile.NotifyDirectoryChanged();
@@ -3765,7 +3895,8 @@ public partial class MainWindow : Window
             selectedEditableValue = activationTarget.Profile;
             var f2OpensTerminalEditor = TryOpenSelectedEditor() && editorMode == EditorMode.Terminal
                 && ReferenceEquals(editingValue, activationTarget.Profile) && EditorOverlay.Visibility == Visibility.Visible;
-            var terminalTmuxEditorToggleReflectsProfile = SessionUseTmuxEdit.IsChecked == activationTarget.Profile.UseRemoteTmux;
+            var terminalTmuxEditorToggleReflectsProfile = SessionUseTmuxEdit.IsChecked == activationTarget.Profile.UseRemoteTmux
+                && SessionUseLocalTmuxEdit.IsChecked == activationTarget.Profile.UseLocalTmux;
             var editorCardKeepsEditorOpen = !TryDismissEditorFromBackdrop(EditorCard) && EditorOverlay.Visibility == Visibility.Visible;
             var backdropDismissesEditor = TryDismissEditorFromBackdrop(EditorOverlay)
                 && EditorOverlay.Visibility == Visibility.Collapsed && TerminalHost.Visibility == Visibility.Visible;
@@ -3854,7 +3985,8 @@ public partial class MainWindow : Window
                 && automationEditorSupportsManualTargetAndClearLine && terminalAutomationStatePersists
                 && localDirectoryUpdates && sshDirectoryUpdates && workingDirectoryMarkersParse && localDirectoryHookReady && sshDirectoryHookReady
                 && terminalTmuxChoiceWorks && terminalTmuxChoicePersists && terminalTmuxEditorToggleReflectsProfile
-                && localTmuxPolicyDoesNotRestart && activeSshTmuxPolicyRestarts && tmuxEditorStatusIsTruthful
+                && localTmuxPolicyDoesNotRestart && localTmuxPolicyRequiresRestart && activeSshTmuxPolicyRestarts
+                && tmuxEditorStatusIsTruthful && localTmuxLaunchContract && localTmuxChoicePersists
                 && terminalProtocolTextSanitized && interactiveSshWrapperForcesPty && bareSshRecoveryKeepsDirectoryHook
                 && terminalRenamePreservesLiveState
                 && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
@@ -3868,7 +4000,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
-            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
+            File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nLocalTmuxChoicePersists={localTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nLocalTmuxPolicyRequiresRestart={localTmuxPolicyRequiresRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nLocalTmuxLaunchContract={localTmuxLaunchContract}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nTerminalTabQueuesInsideConPty={terminalTabQueuesInsideConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");
             File.AppendAllText(reportPath, $"\nComposerTypingAvoidsPillRebuild={composerTypingAvoidsPillRebuild}");
             File.AppendAllText(reportPath, $"\nComposerDraftTracksAttachments={composerDraftTracksAttachments}\nAttachmentPreviewKindsWork={attachmentPreviewKindsWork}\nRemovingPathRemovesPill={removingPathRemovesPill}");
@@ -4180,10 +4312,12 @@ public partial class MainWindow : Window
         foreach (var terminalId in value.TerminalIds.ToArray())
         {
             if (state.Sessions.FirstOrDefault(item => item.Id == terminalId) is not { } profile) continue;
-            var removed = recoverySnapshot.Sessions.TryGetValue(profile.Id, out var recovery)
-                && recovery.SshWasActive && recovery.RemoteTmuxManaged
-                ? await StopRemoteAndRemoveAsync(profile, recovery)
-                : RemoveSession(profile, true);
+            var removed = profile.UseLocalTmux
+                ? await StopLocalAndRemoveAsync(profile)
+                : recoverySnapshot.Sessions.TryGetValue(profile.Id, out var recovery)
+                    && recovery.SshWasActive && recovery.RemoteTmuxManaged
+                    ? await StopRemoteAndRemoveAsync(profile, recovery)
+                    : RemoveSession(profile, true);
             if (!removed)
             {
                 RefreshWorkspaceSessionViews();

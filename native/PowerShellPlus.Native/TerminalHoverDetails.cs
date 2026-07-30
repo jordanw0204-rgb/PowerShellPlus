@@ -21,6 +21,13 @@ internal static class TerminalHoverDetailsBuilder
 
         if (detachedRemote && !string.IsNullOrWhiteSpace(recovery?.RemoteTmuxSessionName))
             rows.Add(new("Remote session", recovery.RemoteTmuxSessionName!));
+        if (profile.UseLocalTmux)
+        {
+            rows.Add(new("Local persistence", "tmux through WSL"));
+            if (!string.IsNullOrWhiteSpace(profile.LocalTmuxDistribution ?? recovery?.LocalTmuxDistribution))
+                rows.Add(new("WSL distribution", profile.LocalTmuxDistribution ?? recovery!.LocalTmuxDistribution!));
+            rows.Add(new("Local tmux session", recovery?.LocalTmuxSessionName ?? LocalTmuxSession.GetSessionName(profile.Id)));
+        }
 
         var remoteCodex = effectiveSshActive && recovery?.RemoteCodexWasActive == true;
         var codexModel = remoteCodex ? recovery?.RemoteCodexModel : recovery?.CodexModel ?? codexLaunch?.Model;

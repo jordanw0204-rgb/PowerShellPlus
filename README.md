@@ -44,6 +44,7 @@ The terminal surface is native WPF backed by Windows ConPTY and Microsoft Termin
 | Five layouts | Grid, columns, rows, focus, and draggable tabs—saved independently per Session. |
 | AI-agent awareness | Distinct idle, working, and waiting-for-response states for Codex and Hermes. |
 | Durable recovery | Restore layouts, transcripts, working folders, SSH recipes, and validated AI-thread metadata after a restart. |
+| Local process continuity | Optionally keep a Windows terminal and everything inside it alive in `tmux` through WSL, then reattach after an app restart. |
 | Productive composer | Multiline input, per-terminal history, queues, attachments, previews, shortcuts, and font zoom. |
 | Remote browser access | View every Session over LAN or securely publish the authenticated web client through Tailscale Funnel. |
 | Native handoff | Import Windows Terminal tabs or reconstruct a PowerShellPlus terminal in Windows Terminal after verification. |
@@ -130,6 +131,12 @@ PowerShellPlus records a validated SSH connection recipe—destination, user, po
 
 New SSH terminals can use a pane-specific remote `tmux` session. Choosing **Keep running** closes only the local SSH client while the remote shell, Codex/Hermes turn, and child processes continue. Selecting the detached terminal reattaches to the same remote process and screen state.
 
+### Local tmux through WSL
+
+Local Windows terminals can opt into **Keep this local terminal alive with tmux (WSL)** in the terminal editor. PowerShellPlus verifies WSL, a registered Linux distribution, and `tmux` before changing the terminal. The configured Windows PowerShell still runs with its normal profile, wrappers, working directory, Codex/Hermes process, and SSH client; WSL provides the persistent PTY owner.
+
+If WSL has no registered distribution yet, run `wsl --install -d Ubuntu`, launch Ubuntu once, then install tmux with `sudo apt-get update && sudo apt-get install -y tmux`. See Microsoft's [WSL installation guide](https://learn.microsoft.com/windows/wsl/install) and the official [tmux getting-started guide](https://github.com/tmux/tmux/wiki/Getting-Started).
+
 ## Remote browser access
 
 Select the globe in the title bar to open Remote Access.
@@ -157,13 +164,14 @@ PowerShellPlus distinguishes live-process continuity from restart recovery:
 
 - **Close to tray:** terminals and every child process stay alive exactly as they are.
 - **Application or Windows restart:** panes are recreated from saved layout and validated recovery metadata; previous output remains available from History.
+- **Local terminal with WSL tmux:** closing or restarting the app detaches its client; reopening PowerShellPlus reattaches to the same live Windows terminal process.
 - **SSH with tmux:** the remote process can remain alive even after the local app fully exits.
 - **Windows Terminal import/handoff:** PowerShellPlus performs a controlled reconstruction because Windows cannot move an existing ConPTY client process between terminal hosts.
 
 For safety, a Windows Terminal import does not close its source until review succeeds. A handoff does not remove its source pane until the destination shell proves it started. Unsupported or incomplete Codex permissions, ambiguous threads, unsafe SSH options, and unverifiable destination state fail closed.
 
 > [!IMPORTANT]
-> PowerShell variables, loaded modules, in-memory jobs, and arbitrary child-process memory cannot be serialized after a genuine process exit. Recovery preserves everything the underlying tools expose durably; hiding to the tray or remote `tmux` is the option for exact live state.
+> PowerShell variables, loaded modules, in-memory jobs, and arbitrary child-process memory cannot be serialized after a genuine process exit. Recovery preserves everything the underlying tools expose durably; hiding to the tray, local WSL tmux, or remote tmux is the option for exact live state.
 
 ## Updates
 
