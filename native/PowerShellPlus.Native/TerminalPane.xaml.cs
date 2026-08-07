@@ -306,6 +306,7 @@ public partial class TerminalPane : UserControl
     private const int MaximumTerminalFontSize = 36;
     private const int MinimumComposerFontSize = 8;
     private const int MaximumComposerFontSize = 28;
+    private static readonly TimeSpan ComposerStateDebounce = TimeSpan.FromMilliseconds(300);
     private static readonly Regex LocalFilePathRegex = new(
         """(?<![A-Za-z0-9_])(?<path>(?:[A-Za-z]:\\|\\\\)[^\r\n"'`<>|?*]+?\.[A-Za-z0-9]{1,32})(?=$|[\s,"'`;:!?)\]}])""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
@@ -347,11 +348,11 @@ public partial class TerminalPane : UserControl
     private int remoteRows = 32;
     private string remoteFontFace = "Cascadia Mono";
     private int remoteFontSize = 12;
-    private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new(System.Windows.Threading.DispatcherPriority.Background)
-        { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly System.Windows.Threading.DispatcherTimer agentStatusTimer = new(System.Windows.Threading.DispatcherPriority.Background);
     private readonly System.Windows.Threading.DispatcherTimer composerStateTimer = new(System.Windows.Threading.DispatcherPriority.Background)
         { Interval = TimeSpan.FromMilliseconds(300) };
     private bool composerStateDirty;
+    private long composerLastEditTimestamp;
     private int composerStateFlushCount;
     private readonly object agentOutputSync = new();
     private readonly StringBuilder recentAgentOutput = new();
@@ -422,6 +423,12 @@ public partial class TerminalPane : UserControl
         Func<IEnumerable<AutomationRule>>? automationProvider = null, Action<AutomationRule>? automationEditRequested = null)
     {
         Profile = profile;
+        // Panes are normally constructed together. Identical DispatcherTimer
+        // intervals made every Codex/Hermes activity probe wake, scan, and resume
+        // on the UI thread in one burst. Give each terminal a stable cadence so
+        // large workspaces distribute that work instead of periodically freezing
+        // keyboard input.
+        agentStatusTimer.Interval = AgentStatusInterval(profile.Id);
         Profile.SetTmuxTerminal(profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
         currentAppearance = appearance;
         terminalWindowSubclassProc = TerminalWindowSubclassProc;
@@ -457,7 +464,7 @@ public partial class TerminalPane : UserControl
         CommandInput.CaretIndex = CommandInput.Text.Length;
         CommandInput.TextChanged += CommandInputTextChanged;
         CommandInput.PlainTextPasted += PromotePastedLocalFiles;
-        composerStateTimer.Tick += (_, _) => FlushComposerState();
+        composerStateTimer.Tick += ComposerStateTimerTick;
         RefreshAttachmentPills();
         detectedAgentKind = recovery?.HermesWasActive == true ? AgentKind.Hermes
             : recovery?.CodexWasActive == true || recovery?.RemoteCodexWasActive == true ? AgentKind.Codex : AgentKind.Terminal;
@@ -541,6 +548,19 @@ public partial class TerminalPane : UserControl
             DetachNativeTerminalScrollBridge();
         };
     }
+
+    internal static TimeSpan AgentStatusInterval(string terminalId)
+    {
+        uint hash = 2166136261;
+        foreach (var character in terminalId ?? string.Empty)
+        {
+            hash ^= character;
+            hash *= 16777619;
+        }
+        return TimeSpan.FromMilliseconds(1100 + hash % 901);
+    }
+
+    internal TimeSpan AgentStatusIntervalForTest => agentStatusTimer.Interval;
 
     public void SetActive(bool active)
     {
@@ -899,15 +919,32 @@ public partial class TerminalPane : UserControl
     {
         if (synchronizingComposerAttachments) return;
         composerStateDirty = true;
-        // True trailing-edge debounce: persistence and attachment reconciliation
-        // run only after typing has gone quiet, never repeatedly inside a burst.
-        composerStateTimer.Stop();
-        composerStateTimer.Start();
+        composerLastEditTimestamp = Stopwatch.GetTimestamp();
+        // Keep one timer alive during a burst instead of removing and adding a
+        // dispatcher timer for every character. The tick below preserves true
+        // trailing-edge debounce by scheduling only the remaining quiet time.
+        if (!composerStateTimer.IsEnabled)
+        {
+            composerStateTimer.Interval = ComposerStateDebounce;
+            composerStateTimer.Start();
+        }
+    }
+
+    private void ComposerStateTimerTick(object? sender, EventArgs e)
+    {
+        var quietFor = Stopwatch.GetElapsedTime(composerLastEditTimestamp);
+        if (quietFor < ComposerStateDebounce)
+        {
+            composerStateTimer.Interval = ComposerStateDebounce - quietFor;
+            return;
+        }
+        FlushComposerState();
     }
 
     private void FlushComposerState()
     {
         composerStateTimer.Stop();
+        composerStateTimer.Interval = ComposerStateDebounce;
         if (!composerStateDirty) return;
         composerStateDirty = false;
         composerStateFlushCount++;
@@ -2060,6 +2097,19 @@ public partial class TerminalPane : UserControl
     public void FlushComposerStateForTest() => FlushComposerState();
     public (TimeSpan Elapsed, int ExtractionsDuringTyping, bool CanonicalTextMatches) SimulateFastComposerTypingForTest(int characterCount)
         => CommandInput.SimulateFastTypingForTest(characterCount);
+    internal Task<ComposerInputLatencyResult> SimulateQueuedComposerTypingForTestAsync(int characterCount, int intervalMilliseconds)
+        => CommandInput.SimulateQueuedTypingForTestAsync(characterCount, intervalMilliseconds);
+    internal Task AgeComposerForTestAsync(int cycles, int payloadLength) => CommandInput.AgeEditorForTestAsync(cycles, payloadLength);
+    internal bool ComposerCanUndoForTest => CommandInput.CanUndoForTest;
+    internal int ComposerUndoLimitForTest => CommandInput.UndoLimitForTest;
+    internal static bool ComposerInputRoutingIsSelectiveForTest()
+        => !RequiresComposerRouting(Key.A, ModifierKeys.None)
+            && !RequiresComposerRouting(Key.C, ModifierKeys.Control)
+            && !RequiresComposerRouting(Key.LeftShift, ModifierKeys.Shift)
+            && RequiresComposerRouting(Key.Enter, ModifierKeys.None)
+            && RequiresComposerRouting(Key.V, ModifierKeys.Control)
+            && RequiresComposerRouting(Key.J, ModifierKeys.Control)
+            && RequiresComposerRouting(Key.Up, ModifierKeys.None);
     public int CommandHistoryCountForTest => Profile.CommandHistory.Count;
     public int CommandHistoryVisibleItemCountForTest => CommandHistoryList.Items.Count;
     public bool CommandHistoryButtonIsFramelessForTest => CommandHistoryButton.Background == Brushes.Transparent && CommandHistoryButton.BorderThickness == new Thickness(0);
@@ -3725,9 +3775,22 @@ public partial class TerminalPane : UserControl
     private void RunCommandRightButtonUp(object sender, MouseButtonEventArgs e) { ShowRunCommandSettingsMenu(); e.Handled = true; }
     private async void CommandInputPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        RefreshSendButtonVisual();
-        e.Handled = await HandleCommandInputKeyAsync(e.Key, e.KeyboardDevice.Modifiers);
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        var modifiers = e.KeyboardDevice.Modifiers;
+        if (!RequiresComposerRouting(key, modifiers))
+        {
+            if (IsModifierKey(key)) RefreshSendButtonVisual();
+            return;
+        }
+        e.Handled = await HandleCommandInputKeyAsync(key, modifiers);
     }
+    private static bool RequiresComposerRouting(Key key, ModifierKeys modifiers)
+        => key == Key.Enter
+            || modifiers == ModifierKeys.None && (key == Key.Up || key == Key.Down)
+            || modifiers.HasFlag(ModifierKeys.Control) && (key == Key.V || key == Key.J || key == Key.U || key == Key.K)
+            || modifiers.HasFlag(ModifierKeys.Alt) && key == Key.V;
+    private static bool IsModifierKey(Key key)
+        => key is Key.LeftShift or Key.RightShift or Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt;
     private async Task<bool> HandleCommandInputKeyAsync(Key key, ModifierKeys modifiers)
     {
         if (key == Key.V && (modifiers.HasFlag(ModifierKeys.Control) || modifiers.HasFlag(ModifierKeys.Alt))
@@ -4265,7 +4328,11 @@ public partial class TerminalPane : UserControl
         AttachmentPreviewGeneric.Visibility = Visibility.Collapsed;
         if (wasOpen) Terminal.Visibility = terminalVisibilityBeforeAttachmentPreview;
     }
-    private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e) => Dispatcher.BeginInvoke(RefreshSendButtonVisual, System.Windows.Threading.DispatcherPriority.Input);
+    private void CommandInputPreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (IsModifierKey(key)) RefreshSendButtonVisual();
+    }
     private void RunCommandMouseEnter(object sender, MouseEventArgs e) => RefreshSendButtonVisual();
     private void PaneHeaderDragStart(object sender, MouseButtonEventArgs e)
     {

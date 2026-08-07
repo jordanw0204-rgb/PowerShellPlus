@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,6 +10,17 @@ using System.Windows.Media;
 namespace PowerShellPlus.Native;
 
 internal sealed record ComposerTokenDescriptor(string Id, string Path, string Label, AttachmentPreviewKind Kind);
+internal sealed record ComposerInputLatencyResult(
+    TimeSpan Total,
+    double P50DispatchMilliseconds,
+    double P95DispatchMilliseconds,
+    double MaximumDispatchMilliseconds,
+    double P95EditMilliseconds,
+    double MaximumEditMilliseconds,
+    int CharacterCount,
+    int LayoutUpdates,
+    bool TextMatches,
+    string SlowOperations);
 
 /// <summary>
 /// Rich command editor that renders attachment paths as interactive tokens while
@@ -16,6 +28,8 @@ internal sealed record ComposerTokenDescriptor(string Id, string Path, string La
 /// </summary>
 internal sealed class ComposerRichTextBox : RichTextBox
 {
+    private static readonly FieldInfo? DispatcherOperationMethodField = typeof(System.Windows.Threading.DispatcherOperation)
+        .GetField("_method", BindingFlags.Instance | BindingFlags.NonPublic);
     private readonly List<ComposerTokenDescriptor> tokens = [];
     private readonly HashSet<string> expandedTokenIds = new(StringComparer.Ordinal);
     private string canonicalText = string.Empty;
@@ -27,11 +41,12 @@ internal sealed class ComposerRichTextBox : RichTextBox
 
     public ComposerRichTextBox()
     {
-        Document = new FlowDocument
-        {
-            PagePadding = new Thickness(0),
-            ColumnWidth = double.PositiveInfinity
-        };
+        // PowerShell-style command composition favors deterministic low-latency
+        // editing over RichTextBox's FlowDocument undo journal. The app already
+        // provides persistent per-terminal History for recalling submissions.
+        IsUndoEnabled = false;
+        UndoLimit = 0;
+        Document = CreateDocument();
         DataObject.AddPastingHandler(this, HandleDataObjectPasting);
         UpdateLineLimit();
     }
@@ -219,6 +234,7 @@ internal sealed class ComposerRichTextBox : RichTextBox
     internal bool BlankSpaceDoesNotToggleAttachmentForTest()
     {
         if (tokens.Count == 0 || ActualWidth <= 0 || ActualHeight <= 0) return false;
+        UpdateLayout();
         var before = RenderedTokenLabelsForTest.ToArray();
         var pointer = GetPositionFromPoint(new Point(Math.Max(0, ActualWidth - 2), Math.Max(1, ActualHeight / 2)), false);
         var parent = pointer?.Parent as DependencyObject;
@@ -282,31 +298,76 @@ internal sealed class ComposerRichTextBox : RichTextBox
         rebuilding = true;
         try
         {
-            var paragraph = new Paragraph { Margin = new Thickness(0), Padding = new Thickness(0) };
-            var cursor = 0;
-            while (cursor < canonicalText.Length)
+            if (!TryRenderPlainCanonicalText(caretOffset))
             {
-                var match = FindNextToken(cursor);
-                if (match.Token is null)
+                var paragraph = new Paragraph { Margin = new Thickness(0), Padding = new Thickness(0) };
+                var cursor = 0;
+                while (cursor < canonicalText.Length)
                 {
-                    AddPlainText(paragraph, canonicalText[cursor..]);
-                    break;
+                    var match = FindNextToken(cursor);
+                    if (match.Token is null)
+                    {
+                        AddPlainText(paragraph, canonicalText[cursor..]);
+                        break;
+                    }
+                    if (match.Index > cursor) AddPlainText(paragraph, canonicalText[cursor..match.Index]);
+                    paragraph.Inlines.Add(CreateTokenInline(match.Token));
+                    cursor = match.Index + match.Token.Path.Length;
                 }
-                if (match.Index > cursor) AddPlainText(paragraph, canonicalText[cursor..match.Index]);
-                paragraph.Inlines.Add(CreateTokenInline(match.Token));
-                cursor = match.Index + match.Token.Path.Length;
+                if (canonicalText.Length == 0) paragraph.Inlines.Add(new Run(string.Empty));
+                Document.Blocks.Clear();
+                Document.Blocks.Add(paragraph);
+                Document.FontFamily = FontFamily;
+                Document.FontSize = FontSize;
+                CaretPosition = PointerForCanonicalOffset(Math.Clamp(caretOffset, 0, canonicalText.Length));
             }
-            if (canonicalText.Length == 0) paragraph.Inlines.Add(new Run(string.Empty));
-            Document.Blocks.Clear();
-            Document.Blocks.Add(paragraph);
-            Document.FontFamily = FontFamily;
-            Document.FontSize = FontSize;
-            CaretPosition = PointerForCanonicalOffset(Math.Clamp(caretOffset, 0, canonicalText.Length));
             canonicalTextDirty = false;
         }
-        finally { rebuilding = false; }
+        finally
+        {
+            rebuilding = false;
+        }
         base.OnTextChanged(new TextChangedEventArgs(TextChangedEvent, UndoAction.None));
     }
+
+    private bool TryRenderPlainCanonicalText(int caretOffset)
+    {
+        if (FindNextToken(0).Token is not null) return false;
+
+        Paragraph paragraph;
+        Run run;
+        if (Document.Blocks.Count == 1
+            && Document.Blocks.FirstBlock is Paragraph existingParagraph
+            && existingParagraph.Inlines.Count == 1
+            && existingParagraph.Inlines.FirstInline is Run existingRun)
+        {
+            paragraph = existingParagraph;
+            run = existingRun;
+        }
+        else
+        {
+            paragraph = new Paragraph { Margin = new Thickness(0), Padding = new Thickness(0) };
+            run = new Run();
+            paragraph.Inlines.Add(run);
+            Document.Blocks.Clear();
+            Document.Blocks.Add(paragraph);
+        }
+
+        run.Text = canonicalText;
+        Document.FontFamily = FontFamily;
+        Document.FontSize = FontSize;
+        CaretPosition = run.ContentStart.GetPositionAtOffset(Math.Clamp(caretOffset, 0, canonicalText.Length), LogicalDirection.Forward)
+            ?? run.ContentEnd;
+        return true;
+    }
+
+    private FlowDocument CreateDocument() => new()
+    {
+        PagePadding = new Thickness(0),
+        ColumnWidth = double.PositiveInfinity,
+        FontFamily = FontFamily,
+        FontSize = FontSize
+    };
 
     private (int Index, ComposerTokenDescriptor? Token) FindNextToken(int start)
     {
@@ -403,6 +464,118 @@ internal sealed class ComposerRichTextBox : RichTextBox
         var extractionsDuringTyping = canonicalExtractionCount - extractionBaseline;
         var matches = Text.Length == characterCount;
         return (timer.Elapsed, extractionsDuringTyping, matches);
+    }
+
+    internal async Task AgeEditorForTestAsync(int cycles, int payloadLength)
+    {
+        var payload = new string('a', payloadLength);
+        for (var index = 0; index < cycles; index++)
+        {
+            SetCanonicalText(payload);
+            UpdateLayout();
+            SetCanonicalText(string.Empty);
+            UpdateLayout();
+            // Measure retained editor state, not queued rendering from an
+            // impossible stream of 32,000 draft characters per second. A real
+            // send/clear cycle gives WPF idle time while the terminal/agent
+            // handles the submission; ContextIdle deterministically drains that
+            // work before the next cycle without hiding retained-state growth.
+            await Dispatcher.InvokeAsync(static () => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+    }
+
+    internal bool CanUndoForTest => CanUndo;
+    internal int UndoLimitForTest => UndoLimit;
+
+    internal async Task<ComposerInputLatencyResult> SimulateQueuedTypingForTestAsync(int characterCount, int intervalMilliseconds)
+    {
+        SetCanonicalText(string.Empty);
+        UpdateLayout();
+        var dispatcherDelays = new List<double>(characterCount);
+        var editDurations = new List<double>(characterCount);
+        var operations = new List<System.Windows.Threading.DispatcherOperation>(characterCount);
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        var layoutUpdates = 0;
+        var operationStarts = new Dictionary<System.Windows.Threading.DispatcherOperation, (double Started, string Name)>();
+        var slowOperations = new List<(double Duration, string Name)>();
+        var operationTotals = new Dictionary<string, (int Count, double Total, double Maximum)>(StringComparer.Ordinal);
+        EventHandler layoutHandler = (_, _) => layoutUpdates++;
+        System.Windows.Threading.DispatcherHookEventHandler operationStarted = (_, args) =>
+        {
+            var callback = DispatcherOperationMethodField?.GetValue(args.Operation) as Delegate;
+            var callbackName = callback?.Method is { } method
+                ? $"{method.DeclaringType?.Name}.{method.Name}"
+                : "dispatcher callback";
+            operationStarts[args.Operation] = (timer.Elapsed.TotalMilliseconds, $"{args.Operation.Priority}:{callbackName}");
+        };
+        System.Windows.Threading.DispatcherHookEventHandler operationCompleted = (_, args) =>
+        {
+            if (!operationStarts.Remove(args.Operation, out var started)) return;
+            var duration = timer.Elapsed.TotalMilliseconds - started.Started;
+            var aggregate = operationTotals.GetValueOrDefault(started.Name);
+            operationTotals[started.Name] = (aggregate.Count + 1, aggregate.Total + duration, Math.Max(aggregate.Maximum, duration));
+            if (duration >= 5) slowOperations.Add((duration, started.Name));
+        };
+        LayoutUpdated += layoutHandler;
+        Dispatcher.Hooks.OperationStarted += operationStarted;
+        Dispatcher.Hooks.OperationCompleted += operationCompleted;
+        Dispatcher.Hooks.OperationAborted += operationCompleted;
+        try
+        {
+            await Task.Run(async () =>
+            {
+                for (var index = 0; index < characterCount; index++)
+                {
+                    var scheduledMilliseconds = timer.Elapsed.TotalMilliseconds;
+                    operations.Add(Dispatcher.InvokeAsync(() =>
+                    {
+                        var startedMilliseconds = timer.Elapsed.TotalMilliseconds;
+                        dispatcherDelays.Add(startedMilliseconds - scheduledMilliseconds);
+                        CaretPosition = Document.ContentEnd.GetInsertionPosition(LogicalDirection.Backward);
+                        CaretPosition.InsertTextInRun("x");
+                        editDurations.Add(timer.Elapsed.TotalMilliseconds - startedMilliseconds);
+                    }, System.Windows.Threading.DispatcherPriority.Input));
+                    if (intervalMilliseconds > 0) await Task.Delay(intervalMilliseconds).ConfigureAwait(false);
+                }
+            });
+            await Task.WhenAll(operations.Select(value => value.Task));
+            await Dispatcher.InvokeAsync(UpdateLayout, System.Windows.Threading.DispatcherPriority.Render);
+            timer.Stop();
+            var orderedDispatch = dispatcherDelays.Order().ToArray();
+            var orderedEdits = editDurations.Order().ToArray();
+            return new ComposerInputLatencyResult(
+                timer.Elapsed,
+                Percentile(orderedDispatch, .50),
+                Percentile(orderedDispatch, .95),
+                orderedDispatch.LastOrDefault(),
+                Percentile(orderedEdits, .95),
+                orderedEdits.LastOrDefault(),
+                characterCount,
+                layoutUpdates,
+                Text.Length == characterCount,
+                string.Join(" | ", operationTotals
+                    .OrderByDescending(value => value.Value.Total)
+                    .Take(8)
+                    .Select(value => $"{value.Key} total={value.Value.Total:F1}ms count={value.Value.Count} max={value.Value.Maximum:F1}ms"))
+                + (slowOperations.Count == 0 ? string.Empty : " || slow: " + string.Join(" | ", slowOperations
+                    .OrderByDescending(value => value.Duration)
+                    .Take(8)
+                    .Select(value => $"{value.Name}={value.Duration:F1}ms"))));
+        }
+        finally
+        {
+            LayoutUpdated -= layoutHandler;
+            Dispatcher.Hooks.OperationStarted -= operationStarted;
+            Dispatcher.Hooks.OperationCompleted -= operationCompleted;
+            Dispatcher.Hooks.OperationAborted -= operationCompleted;
+        }
+    }
+
+    private static double Percentile(IReadOnlyList<double> orderedValues, double percentile)
+    {
+        if (orderedValues.Count == 0) return 0;
+        var index = Math.Clamp((int)Math.Ceiling(orderedValues.Count * percentile) - 1, 0, orderedValues.Count - 1);
+        return orderedValues[index];
     }
 
     private static void AppendInlines(System.Text.StringBuilder builder, InlineCollection inlines)

@@ -68,6 +68,8 @@ public partial class MainWindow : Window
     private TerminalPane? terminalTabHoverOrigin;
     private bool terminalTabHoverPreviewActive;
     private bool automationCheckRunning;
+    private bool workspaceSaveInProgress;
+    private bool workspaceSaveRequestedWhileBusy;
     private WindowsTerminalDragMonitor? windowsTerminalDragMonitor;
     private bool windowsTerminalImportRunning;
     private bool windowsTerminalDropVisible;
@@ -116,12 +118,12 @@ public partial class MainWindow : Window
         PopulateSettingsUi();
         ApplyWorkspaceSidebarState(false);
 
-        saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        saveTimer.Tick += (_, _) => { saveTimer.Stop(); SaveNow(); };
-        automationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        saveTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
+        saveTimer.Tick += SaveTimerTick;
+        automationTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(1) };
         automationTimer.Tick += async (_, _) => { RefreshAutomationCountdowns(); await CheckAutomationsAsync(); };
         automationTimer.Start();
-        recoveryTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+        recoveryTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(12) };
         recoveryTimer.Tick += async (_, _) => await CaptureRecoverySnapshotAsync();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
@@ -2106,6 +2108,31 @@ public partial class MainWindow : Window
     }
 
     private void ScheduleSave() { saveTimer.Stop(); saveTimer.Start(); }
+    private async void SaveTimerTick(object? sender, EventArgs e)
+    {
+        saveTimer.Stop();
+        await SaveNowInBackgroundAsync();
+    }
+    private async Task SaveNowInBackgroundAsync()
+    {
+        if (workspaceSaveInProgress)
+        {
+            workspaceSaveRequestedWhileBusy = true;
+            return;
+        }
+        workspaceSaveInProgress = true;
+        try
+        {
+            do
+            {
+                workspaceSaveRequestedWhileBusy = false;
+                try { await WorkspaceStore.SaveAsync(state); }
+                catch (Exception exception) { UpdateStatus(exception.Message); }
+            }
+            while (workspaceSaveRequestedWhileBusy && !shutdownComplete);
+        }
+        finally { workspaceSaveInProgress = false; }
+    }
     private void SaveNow() { try { WorkspaceStore.Save(state); } catch (Exception exception) { UpdateStatus(exception.Message); } }
     private void UpdateStatus(string text) { StatusText.Text = text; UpdateCounts(); }
     private void UpdateCounts() => CountText.Text = $"{state.TerminalSessions.Count} session{(state.TerminalSessions.Count == 1 ? string.Empty : "s")} · {panes.Count} native terminal{(panes.Count == 1 ? string.Empty : "s")} · {terminalProfile.SchemeName}";
@@ -3493,9 +3520,77 @@ public partial class MainWindow : Window
             var sustainedFlushAfterIdle = activationTarget.ComposerStateFlushCountForTest;
             composerStateDebouncesSustainedTyping &= sustainedFlushAfterIdle == sustainedTypingFlushBaseline + 1;
             var realTyping = activationTarget.SimulateFastComposerTypingForTest(320);
+            var queuedTyping = await activationTarget.SimulateQueuedComposerTypingForTestAsync(320, 3);
+            var humanTyping = await activationTarget.SimulateQueuedComposerTypingForTestAsync(140, 20);
+            var composerInputRoutingIsSelective = TerminalPane.ComposerInputRoutingIsSelectiveForTest();
+            var agentProbeIntervals = panes.Values.Select(value => value.AgentStatusIntervalForTest).ToArray();
+            var agentStatusProbesAreStaggered = agentProbeIntervals.All(value => value >= TimeSpan.FromMilliseconds(1100)
+                    && value <= TimeSpan.FromMilliseconds(2000))
+                && agentProbeIntervals.Distinct().Count() > 1;
+            var saveHistoryBackups = state.Sessions
+                .Select(value => (Profile: value, History: value.CommandHistory, Timestamps: value.CommandHistoryTimestampsUtc))
+                .ToArray();
+            ComposerInputLatencyResult saveConcurrentTyping;
+            var asyncWorkspaceSaveKickoff = Stopwatch.StartNew();
+            try
+            {
+                foreach (var value in state.Sessions)
+                {
+                    value.CommandHistory = Enumerable.Range(0, 80)
+                        .Select(index => $"history-{index:D2}-" + new string('h', 4096))
+                        .ToList();
+                    value.CommandHistoryTimestampsUtc = Enumerable.Range(0, 80)
+                        .Select(index => DateTime.UtcNow.AddMinutes(-index))
+                        .ToList();
+                }
+                var saveTask = WorkspaceStore.SaveAsync(state);
+                asyncWorkspaceSaveKickoff.Stop();
+                saveConcurrentTyping = await activationTarget.SimulateQueuedComposerTypingForTestAsync(120, 20);
+                await saveTask;
+            }
+            finally
+            {
+                foreach (var backup in saveHistoryBackups)
+                {
+                    backup.Profile.CommandHistory = backup.History;
+                    backup.Profile.CommandHistoryTimestampsUtc = backup.Timestamps;
+                }
+            }
+            await activationTarget.AgeComposerForTestAsync(24, 2400);
+            var agedTyping = await activationTarget.SimulateQueuedComposerTypingForTestAsync(140, 20);
+            var workspaceSnapshot = WorkspaceStore.CreateSnapshot(state);
+            var workspaceSnapshotIsolated = !ReferenceEquals(workspaceSnapshot, state)
+                && !ReferenceEquals(workspaceSnapshot.Sessions, state.Sessions)
+                && workspaceSnapshot.Sessions.Count == state.Sessions.Count
+                && workspaceSnapshot.Sessions.Zip(state.Sessions).All(value => !ReferenceEquals(value.First, value.Second));
+            var asyncWorkspaceSaveDoesNotBlockInput = asyncWorkspaceSaveKickoff.Elapsed < TimeSpan.FromMilliseconds(50)
+                && saveConcurrentTyping.TextMatches
+                // A deliberately multi-megabyte checkpoint may share CPU with
+                // the dispatcher, but it must never produce a visible key-repeat
+                // stall. The actual edit remains separately bounded below.
+                && saveConcurrentTyping.P95DispatchMilliseconds < 60
+                && saveConcurrentTyping.MaximumDispatchMilliseconds < 100
+                && saveConcurrentTyping.P95EditMilliseconds < 8;
             var composerTypingLatencyBounded = composerBurstTimer.Elapsed < TimeSpan.FromSeconds(1)
                 && realTyping.Elapsed < TimeSpan.FromSeconds(1)
-                && realTyping.ExtractionsDuringTyping == 0 && realTyping.CanonicalTextMatches;
+                && realTyping.ExtractionsDuringTyping == 0 && realTyping.CanonicalTextMatches
+                && queuedTyping.TextMatches
+                && humanTyping.TextMatches
+                && humanTyping.P95DispatchMilliseconds < 24
+                && humanTyping.MaximumDispatchMilliseconds < 100
+                && humanTyping.P95EditMilliseconds < 8
+                // This deliberately abusive retained-state pass remains a
+                // catastrophic-regression guard. Normal 50-cps typing above has
+                // the strict interactive limit; here the key requirement is that
+                // 24 rapid 2,400-character document cycles never recreate the
+                // seconds-long backlog reported by the user.
+                && agedTyping.P95DispatchMilliseconds < 150
+                && agedTyping.MaximumDispatchMilliseconds < 200
+                && agedTyping.P95EditMilliseconds < 8
+                && composerInputRoutingIsSelective
+                && agentStatusProbesAreStaggered
+                && workspaceSnapshotIsolated
+                && asyncWorkspaceSaveDoesNotBlockInput;
             for (var queueIndex = 1; queueIndex <= 18; queueIndex++)
             {
                 activationTarget.SetCommandInputForTest($"Write-Output 'QUEUE_MENU_{queueIndex}'");
@@ -3989,7 +4084,8 @@ public partial class MainWindow : Window
                 && tmuxEditorStatusIsTruthful && localTmuxLaunchContract && localTmuxChoicePersists
                 && terminalProtocolTextSanitized && interactiveSshWrapperForcesPty && bareSshRecoveryKeepsDirectoryHook
                 && terminalRenamePreservesLiveState
-                && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem;
+                && f2OpensSelectedEditors && editorCardKeepsEditorOpen && backdropDismissesEditor && paneCommandSystem
+                && composerInputRoutingIsSelective && workspaceSnapshotIsolated && asyncWorkspaceSaveDoesNotBlockInput;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nCodexActivityGrowthScanBounded={codexActivityGrowthScanBounded}\nBracketedPasteSubmissionContract={bracketedPasteSubmissionContract}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nRemoteVtStreamTransparent={remoteVtStreamTransparent}\nCodexInteractivePromptsDriveWaiting={codexInteractivePromptsDriveWaiting}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
@@ -3998,7 +4094,10 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
-            File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}");
+            File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}\nQueuedTypingMilliseconds={queuedTyping.Total.TotalMilliseconds:F1}\nQueuedTypingP50DispatchMilliseconds={queuedTyping.P50DispatchMilliseconds:F2}\nQueuedTypingP95DispatchMilliseconds={queuedTyping.P95DispatchMilliseconds:F2}\nQueuedTypingMaxDispatchMilliseconds={queuedTyping.MaximumDispatchMilliseconds:F2}\nQueuedTypingP95EditMilliseconds={queuedTyping.P95EditMilliseconds:F2}\nQueuedTypingMaxEditMilliseconds={queuedTyping.MaximumEditMilliseconds:F2}\nQueuedTypingLayoutUpdates={queuedTyping.LayoutUpdates}\nHumanTypingMilliseconds={humanTyping.Total.TotalMilliseconds:F1}\nHumanTypingP50DispatchMilliseconds={humanTyping.P50DispatchMilliseconds:F2}\nHumanTypingP95DispatchMilliseconds={humanTyping.P95DispatchMilliseconds:F2}\nHumanTypingMaxDispatchMilliseconds={humanTyping.MaximumDispatchMilliseconds:F2}\nHumanTypingP95EditMilliseconds={humanTyping.P95EditMilliseconds:F2}\nHumanTypingMaxEditMilliseconds={humanTyping.MaximumEditMilliseconds:F2}\nHumanTypingLayoutUpdates={humanTyping.LayoutUpdates}");
+            File.AppendAllText(reportPath, $"\nAgedTypingMilliseconds={agedTyping.Total.TotalMilliseconds:F1}\nAgedTypingP50DispatchMilliseconds={agedTyping.P50DispatchMilliseconds:F2}\nAgedTypingP95DispatchMilliseconds={agedTyping.P95DispatchMilliseconds:F2}\nAgedTypingMaxDispatchMilliseconds={agedTyping.MaximumDispatchMilliseconds:F2}\nAgedTypingP95EditMilliseconds={agedTyping.P95EditMilliseconds:F2}\nAgedTypingMaxEditMilliseconds={agedTyping.MaximumEditMilliseconds:F2}\nAgedTypingLayoutUpdates={agedTyping.LayoutUpdates}\nComposerCanUndoAfterAging={activationTarget.ComposerCanUndoForTest}\nComposerUndoLimit={activationTarget.ComposerUndoLimitForTest}");
+            File.AppendAllText(reportPath, $"\nHumanTypingSlowOperations={humanTyping.SlowOperations}\nAgedTypingSlowOperations={agedTyping.SlowOperations}\nSaveConcurrentTypingSlowOperations={saveConcurrentTyping.SlowOperations}");
+            File.AppendAllText(reportPath, $"\nComposerInputRoutingIsSelective={composerInputRoutingIsSelective}\nAgentStatusProbesAreStaggered={agentStatusProbesAreStaggered}\nAgentStatusProbeIntervals={string.Join(',', agentProbeIntervals.Select(value => value.TotalMilliseconds.ToString("F0", CultureInfo.InvariantCulture)))}\nWorkspaceSnapshotIsolated={workspaceSnapshotIsolated}\nAsyncWorkspaceSaveDoesNotBlockInput={asyncWorkspaceSaveDoesNotBlockInput}\nAsyncWorkspaceSaveKickoffMilliseconds={asyncWorkspaceSaveKickoff.Elapsed.TotalMilliseconds:F2}\nSaveConcurrentTypingP95DispatchMilliseconds={saveConcurrentTyping.P95DispatchMilliseconds:F2}\nSaveConcurrentTypingMaxDispatchMilliseconds={saveConcurrentTyping.MaximumDispatchMilliseconds:F2}\nSaveConcurrentTypingP95EditMilliseconds={saveConcurrentTyping.P95EditMilliseconds:F2}");
             File.AppendAllText(reportPath, $"\nManualOnlyScheduleStaysDormant={manualOnlyScheduleStaysDormant}\nExplicitNoScheduleStaysDormant={explicitNoScheduleStaysDormant}\nTerminalStartsWithoutAutomations={terminalStartsWithoutAutomations}\nAutomationButtonReady={automationButtonReady}\nAutomationCanBeAddedPerTerminal={automationCanBeAddedPerTerminal}\nAutomationCanAutoInsert={automationCanAutoInsert}\nAutomationCanBeDisabled={automationCanBeDisabled}\nAutomationMenuContractReady={automationMenuContractReady}\nAutomationClearLineWorks={automationClearLineWorks}\nAutomationEditorSupportsManualTargetAndClearLine={automationEditorSupportsManualTargetAndClearLine}\nTerminalAutomationStatePersists={terminalAutomationStatePersists}");
             File.AppendAllText(reportPath, $"\nLocalDirectoryUpdates={localDirectoryUpdates}\nSshDirectoryUpdates={sshDirectoryUpdates}\nWorkingDirectoryMarkersParse={workingDirectoryMarkersParse}\nLocalDirectoryHookReady={localDirectoryHookReady}\nSshDirectoryHookReady={sshDirectoryHookReady}\nTerminalTmuxChoiceWorks={terminalTmuxChoiceWorks}\nTerminalTmuxChoicePersists={terminalTmuxChoicePersists}\nLocalTmuxChoicePersists={localTmuxChoicePersists}\nTerminalTmuxEditorToggleReflectsProfile={terminalTmuxEditorToggleReflectsProfile}\nLocalTmuxPolicyDoesNotRestart={localTmuxPolicyDoesNotRestart}\nLocalTmuxPolicyRequiresRestart={localTmuxPolicyRequiresRestart}\nActiveSshTmuxPolicyRestarts={activeSshTmuxPolicyRestarts}\nLocalTmuxLaunchContract={localTmuxLaunchContract}\nTmuxEditorStatusIsTruthful={tmuxEditorStatusIsTruthful}\nTerminalProtocolTextSanitized={terminalProtocolTextSanitized}\nInteractiveSshWrapperForcesPty={interactiveSshWrapperForcesPty}\nBareSshRecoveryKeepsDirectoryHook={bareSshRecoveryKeepsDirectoryHook}");
             File.AppendAllText(reportPath, $"\nTerminalRenamePreservesLiveState={terminalRenamePreservesLiveState}\nF2OpensSelectedEditors={f2OpensSelectedEditors}\nEditorCardKeepsEditorOpen={editorCardKeepsEditorOpen}\nBackdropDismissesEditor={backdropDismissesEditor}\nTerminalInputRouterPrecedesConPty={terminalInputRouterPrecedesConPty}\nThreadMessagePasteInterceptsBeforeConPty={threadMessagePasteInterceptsBeforeConPty}\nTerminalTabQueuesInsideConPty={terminalTabQueuesInsideConPty}\nRemoteImagePasteIndicatorReady={remoteImagePasteIndicatorReady}\nRemoteImageShortcutInterceptReady={remoteImageShortcutInterceptReady}\nRemoteImagePasteModesWork={remoteImagePasteModesWork}\nRemoteSshPasteConsumesAllClipboardKinds={remoteSshPasteConsumesAllClipboardKinds}\nRemoteImagePasteIndicatorStatesWork={remoteImagePasteIndicatorStatesWork}\nComposerAttachmentAdded={composerAttachmentAdded}\nComposerImagePreviewOpens={composerImagePreviewOpens}\nComposerSshPathsRewrite={composerSshPathsRewrite}");

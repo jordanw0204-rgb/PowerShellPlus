@@ -4,7 +4,12 @@ namespace PowerShellPlus.Native;
 
 public static class WorkspaceStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    // This is an internal state file, not a user-authored document. Compact JSON
+    // substantially reduces serializer CPU, allocations, and disk traffic while
+    // a large workspace is being checkpointed in the background.
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
+    private static readonly SemaphoreSlim SaveGate = new(1, 1);
+    private static long latestSaveVersion;
     public static string? DirectoryOverride { get; set; }
     public static string DirectoryPath => DirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus");
     public static string FilePath => Path.Combine(DirectoryPath, "native-workspace.json");
@@ -211,11 +216,162 @@ public static class WorkspaceStore
 
     public static void Save(WorkspaceState state)
     {
-        Directory.CreateDirectory(DirectoryPath);
-        var temporary = FilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(state, JsonOptions));
-        if (File.Exists(FilePath)) File.Copy(FilePath, FilePath + ".bak", true);
-        File.Move(temporary, FilePath, true);
+        var version = Interlocked.Increment(ref latestSaveVersion);
+        SaveCore(state, version, DirectoryPath, FilePath);
+    }
+
+    public static Task SaveAsync(WorkspaceState state)
+    {
+        // Capture only plain model data while still on the UI thread. JSON
+        // serialization and disk replacement then happen off-dispatcher without
+        // enumerating live ObservableCollections from a worker thread.
+        var snapshot = CreateSnapshot(state);
+        var version = Interlocked.Increment(ref latestSaveVersion);
+        var directoryPath = DirectoryPath;
+        var filePath = FilePath;
+        return Task.Run(() =>
+        {
+            var thread = Thread.CurrentThread;
+            var originalPriority = thread.Priority;
+            try
+            {
+                thread.Priority = ThreadPriority.Lowest;
+                SaveCore(snapshot, version, directoryPath, filePath);
+            }
+            finally { thread.Priority = originalPriority; }
+        });
+    }
+
+    internal static WorkspaceState CreateSnapshot(WorkspaceState state) => new()
+    {
+        Version = state.Version,
+        Name = state.Name,
+        Layout = state.Layout,
+        WorkspaceSidebarExpanded = state.WorkspaceSidebarExpanded,
+        ActiveSessionId = state.ActiveSessionId,
+        ActiveTerminalSessionId = state.ActiveTerminalSessionId,
+        Sessions = [.. state.Sessions.Select(CloneSession)],
+        TerminalSessions = [.. state.TerminalSessions.Select(CloneTerminalSession)],
+        Snippets = [.. state.Snippets.Select(value => new CommandSnippet
+        {
+            Id = value.Id,
+            Name = value.Name,
+            Category = value.Category,
+            Command = value.Command,
+            ShowInQuickAccess = value.ShowInQuickAccess
+        })],
+        Automations = [.. state.Automations.Select(value => new AutomationRule
+        {
+            Id = value.Id,
+            Name = value.Name,
+            Command = value.Command,
+            TargetSessionId = value.TargetSessionId,
+            ScheduleType = value.ScheduleType,
+            IntervalMinutes = value.IntervalMinutes,
+            DailyTime = value.DailyTime,
+            ScheduledDate = value.ScheduledDate,
+            Enabled = value.Enabled,
+            ClearLine = value.ClearLine,
+            HasRun = value.HasRun,
+            LastRunUtc = value.LastRunUtc
+        })],
+        Settings = new WorkspaceSettings
+        {
+            FontFace = state.Settings.FontFace,
+            FontSize = state.Settings.FontSize,
+            CursorStyle = state.Settings.CursorStyle,
+            CursorBlink = state.Settings.CursorBlink,
+            DefaultCommandLine = state.Settings.DefaultCommandLine,
+            DefaultWorkingDirectory = state.Settings.DefaultWorkingDirectory,
+            AutomaticallySetTerminalColor = state.Settings.AutomaticallySetTerminalColor,
+            ConfirmBeforeRemove = state.Settings.ConfirmBeforeRemove,
+            KeepSessionsRunningInTray = state.Settings.KeepSessionsRunningInTray,
+            RestoreSessionsAfterRestart = state.Settings.RestoreSessionsAfterRestart,
+            SaveTerminalTranscripts = state.Settings.SaveTerminalTranscripts,
+            SendToAllModifierEnabled = state.Settings.SendToAllModifierEnabled,
+            SendToAllModifier = state.Settings.SendToAllModifier,
+            CheckForUpdatesAutomatically = state.Settings.CheckForUpdatesAutomatically
+        },
+        LayoutSizes = state.LayoutSizes.ToDictionary(value => value.Key, value => CloneSizing(value.Value), StringComparer.Ordinal)
+    };
+
+    private static SessionProfile CloneSession(SessionProfile value) => new()
+    {
+        Id = value.Id,
+        Name = value.Name,
+        AccentColor = value.AccentColor,
+        CommandLine = value.CommandLine,
+        WorkingDirectory = value.WorkingDirectory,
+        AutoStart = value.AutoStart,
+        UseRemoteTmux = value.UseRemoteTmux,
+        UseLocalTmux = value.UseLocalTmux,
+        LocalTmuxDistribution = value.LocalTmuxDistribution,
+        CommandBarExpanded = value.CommandBarExpanded,
+        TerminalFontSize = value.TerminalFontSize,
+        CommandFontSize = value.CommandFontSize,
+        PressEnterAfterComposerSend = value.PressEnterAfterComposerSend,
+        CommandDraft = value.CommandDraft,
+        ComposerAttachments = [.. value.ComposerAttachments.Select(attachment => new ComposerAttachmentState
+        {
+            LocalPath = attachment.LocalPath,
+            DisplayName = attachment.DisplayName,
+            IsImage = attachment.IsImage,
+            IsTemporary = attachment.IsTemporary
+        })],
+        PendingCommands = [.. value.PendingCommands],
+        CommandHistory = [.. value.CommandHistory],
+        CommandHistoryTimestampsUtc = [.. value.CommandHistoryTimestampsUtc],
+        AutomationBindings = [.. value.AutomationBindings.Select(binding => new TerminalAutomationBinding
+        {
+            AutomationId = binding.AutomationId,
+            Enabled = binding.Enabled,
+            AutoInsertAtEnd = binding.AutoInsertAtEnd
+        })],
+        LiveWorkingDirectory = value.LiveWorkingDirectory,
+        LiveWorkingDirectoryIsSsh = value.LiveWorkingDirectoryIsSsh
+    };
+
+    private static TerminalSession CloneTerminalSession(TerminalSession value) => new()
+    {
+        Id = value.Id,
+        Name = value.Name,
+        AccentColor = value.AccentColor,
+        Layout = value.Layout,
+        TerminalIds = [.. value.TerminalIds],
+        ActiveTerminalId = value.ActiveTerminalId,
+        LayoutSizes = value.LayoutSizes.ToDictionary(item => item.Key, item => CloneSizing(item.Value), StringComparer.Ordinal)
+    };
+
+    private static PaneLayoutSizing CloneSizing(PaneLayoutSizing value) => new()
+    {
+        Rows = [.. value.Rows],
+        Columns = [.. value.Columns]
+    };
+
+    private static void SaveCore(WorkspaceState state, long version, string directoryPath, string filePath)
+    {
+        SaveGate.Wait();
+        try
+        {
+            // A synchronous shutdown save or a newer debounced snapshot always
+            // wins, even if an older worker was waiting for the file lock.
+            if (version < Volatile.Read(ref latestSaveVersion)) return;
+            Directory.CreateDirectory(directoryPath);
+            var temporary = filePath + $".{version}.tmp";
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.SequentialScan))
+            {
+                JsonSerializer.Serialize(stream, state, JsonOptions);
+                stream.Flush(true);
+            }
+            if (version < Volatile.Read(ref latestSaveVersion))
+            {
+                try { File.Delete(temporary); } catch { }
+                return;
+            }
+            if (File.Exists(filePath)) File.Copy(filePath, filePath + ".bak", true);
+            File.Move(temporary, filePath, true);
+        }
+        finally { SaveGate.Release(); }
     }
 
     private static int? NormalizeFontSize(int? value, int minimum, int maximum)

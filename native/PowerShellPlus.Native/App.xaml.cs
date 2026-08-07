@@ -14,6 +14,12 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        // ConPTY readers, terminal activity probes, remote mirroring, and state
+        // checkpoints all run on worker threads. Keep the single WPF dispatcher
+        // one scheduling tier above those workers so keyboard input cannot lag
+        // behind terminal-output bursts even when the process is otherwise busy.
+        try { Thread.CurrentThread.Priority = ThreadPriority.AboveNormal; }
+        catch (ThreadStateException) { }
         base.OnStartup(e);
         var automationMode = e.Args.Any(IsAutomationArgument);
         if (automationMode)
