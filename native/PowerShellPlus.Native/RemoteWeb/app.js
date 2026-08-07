@@ -20,6 +20,9 @@
   let reconnectTimer;
   let syncTimer;
   let intentionallyClosed = false;
+  let lastLayoutWidth = window.innerWidth;
+  let lastLandscape = window.innerWidth > window.innerHeight;
+  let composerFocused = false;
 
   const terminalTheme = {
     background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#cdd6f4', cursorAccent: '#1e1e2e',
@@ -42,16 +45,18 @@
       value.terminal.options.disableStdin = !allowInput;
       value.commandInput.disabled = !allowInput;
       value.sendButton.disabled = !allowInput;
+      value.uploadButton.disabled = !allowInput || value.uploading;
+      value.automationButton.disabled = !allowInput;
     });
   }
 
-  function activateSession(id, focus = false) {
+  function activateSession(id, focus = false, reveal = false) {
     if (!runtime.has(id)) return;
     const changed = activeSessionId !== id;
     activeSessionId = id;
     runtime.forEach((value, key) => value.card.classList.toggle('active', key === id));
     tabs.querySelectorAll('button').forEach(button => button.classList.toggle('active', button.dataset.id === id));
-    if (focusMode) runtime.get(id).card.scrollIntoView({ block: 'nearest' });
+    if (focusMode && reveal && changed) runtime.get(id).card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     if (focus) runtime.get(id).terminal.focus();
     if (changed && focusMode) scheduleFit(runtime.get(id));
   }
@@ -162,8 +167,15 @@
   }
 
   function growCommandInput(input) {
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(96, Math.max(30, input.scrollHeight))}px`;
+    const style = getComputedStyle(input);
+    const lineHeight = Number.parseFloat(style.lineHeight) || 16;
+    const chrome = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0)
+      + (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+    const maximum = Math.ceil(lineHeight * 8 + chrome);
+    input.style.height = '0px';
+    const height = Math.min(maximum, Math.max(30, input.scrollHeight));
+    input.style.height = `${height}px`;
+    input.style.overflowY = input.scrollHeight > maximum + 1 ? 'auto' : 'hidden';
   }
 
   function setCommandStatus(value, text, failed = false) {
@@ -176,21 +188,23 @@
   function requestCommand(value, type) {
     if (!allowInput) return;
     const command = value.commandInput.value.trim();
-    if (!command) return;
+    const attachmentIds = value.attachments.map(file => file.id);
+    if (!command && !attachmentIds.length) return;
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-    const message = { type, requestId, sessionId: value.id, command };
+    const message = { type, requestId, sessionId: value.id, command, attachmentIds };
     if (type === 'command' && Number.isInteger(value.selectedQueueIndex)) message.queueIndex = value.selectedQueueIndex;
     if (!sendJson(message)) {
       setCommandStatus(value, 'Not connected', true);
       return;
     }
-    pendingRequests.set(requestId, { value, command, type });
+    pendingRequests.set(requestId, { value, command, type, attachmentIds, files: [...value.attachments] });
     value.commandInput.value = '';
     value.selectedQueueIndex = null;
+    value.attachments = [];
+    renderAttachments(value);
     growCommandInput(value.commandInput);
     closePopover(value);
     setCommandStatus(value, type === 'queue-add' ? 'Adding to queue…' : 'Sending…');
-    scheduleFit(value);
   }
 
   function closePopover(value) {
@@ -200,6 +214,140 @@
 
   function closeOtherPopovers(except) {
     runtime.forEach(value => { if (value !== except) closePopover(value); });
+  }
+
+  function formatBytes(size) {
+    const bytes = Math.max(0, Number(size) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function fileGlyph(kind) {
+    if (kind === 'image') return '\u25a3';
+    if (kind === 'video') return '\u25b6';
+    if (kind === 'audio') return '\u266b';
+    if (kind === 'text') return '\u2261';
+    if (kind === 'archive') return '\u25c8';
+    return '\u25a4';
+  }
+
+  function renderAttachments(value) {
+    value.attachmentStrip.replaceChildren();
+    value.attachmentStrip.hidden = value.attachments.length === 0 && !value.uploading;
+    value.attachments.forEach(file => {
+      const pill = document.createElement('span');
+      pill.className = `attachment-pill attachment-${file.kind || 'file'}`;
+      pill.title = `${file.name} \u00b7 ${formatBytes(file.size)}`;
+      const glyph = document.createElement('i');
+      glyph.textContent = fileGlyph(file.kind);
+      const name = document.createElement('span');
+      name.textContent = file.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '\u00d7';
+      remove.setAttribute('aria-label', `Remove ${file.name}`);
+      remove.addEventListener('click', () => {
+        value.attachments = value.attachments.filter(candidate => candidate.id !== file.id);
+        renderAttachments(value);
+        sendJson({ type: 'upload-discard', sessionId: value.id, uploadId: file.id });
+      });
+      pill.append(glyph, name, remove);
+      value.attachmentStrip.append(pill);
+    });
+    if (value.uploading) {
+      const progress = document.createElement('span');
+      progress.className = 'attachment-pill uploading';
+      progress.textContent = 'Uploading\u2026';
+      value.attachmentStrip.append(progress);
+    }
+  }
+
+  async function uploadFiles(value, fileList) {
+    if (!allowInput || value.uploading) return;
+    const remaining = Math.max(0, 10 - value.attachments.length);
+    const files = Array.from(fileList || []).slice(0, remaining);
+    value.fileInput.value = '';
+    if (!files.length) {
+      setCommandStatus(value, remaining ? 'Choose at least one file' : 'Remove a file before adding another', true);
+      return;
+    }
+    const data = new FormData();
+    data.append('sessionId', value.id);
+    files.forEach(file => data.append('files', file, file.name));
+    value.uploading = true;
+    value.uploadButton.disabled = true;
+    renderAttachments(value);
+    setCommandStatus(value, `Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}\u2026`);
+    try {
+      const response = await fetch('/api/upload', { method: 'POST', credentials: 'same-origin', body: data });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Upload failed (${response.status})`);
+      value.attachments.push(...(Array.isArray(body.files) ? body.files : []));
+      setCommandStatus(value, files.length === 1 ? 'File attached' : `${files.length} files attached`);
+    } catch (reason) {
+      setCommandStatus(value, reason.message || 'Upload failed', true);
+    } finally {
+      value.uploading = false;
+      value.uploadButton.disabled = !allowInput;
+      renderAttachments(value);
+    }
+  }
+
+  function requestAutomation(value, automation, action, enabled) {
+    if (!allowInput) return;
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    if (!sendJson({ type: 'automation', requestId, sessionId: value.id, automationId: automation.id, action, enabled })) {
+      setCommandStatus(value, 'Not connected', true);
+      return;
+    }
+    pendingRequests.set(requestId, { value, type: 'automation', action, automation });
+    setCommandStatus(value, action === 'run' ? `Running ${automation.name}\u2026` : 'Updating automation\u2026');
+  }
+
+  function appendAutomationItem(value, automation) {
+    const item = document.createElement('div');
+    item.className = 'automation-item';
+    const copy = document.createElement('span');
+    const name = document.createElement('strong');
+    const detail = document.createElement('small');
+    name.textContent = automation.name;
+    detail.textContent = automation.subtitle || (automation.clearLine ? 'Clears input before running' : 'Manual automation');
+    copy.append(name, detail);
+    const actions = document.createElement('span');
+    actions.className = 'automation-actions';
+    if (automation.isAssigned) {
+      const enabled = document.createElement('button');
+      enabled.type = 'button';
+      enabled.className = automation.enabled ? 'toggle active' : 'toggle';
+      enabled.textContent = automation.enabled ? 'On' : 'Off';
+      enabled.title = 'Enable or disable this automation';
+      enabled.addEventListener('click', () => requestAutomation(value, automation, 'enabled', !automation.enabled));
+      const autoInsert = document.createElement('button');
+      autoInsert.type = 'button';
+      autoInsert.className = automation.autoInsertAtEnd ? 'toggle active' : 'toggle';
+      autoInsert.textContent = 'Append';
+      autoInsert.title = 'Append to messages sent from this terminal';
+      autoInsert.addEventListener('click', () => requestAutomation(value, automation, 'auto-insert', !automation.autoInsertAtEnd));
+      const run = document.createElement('button');
+      run.type = 'button';
+      run.textContent = 'Run';
+      run.addEventListener('click', () => requestAutomation(value, automation, 'run'));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'danger';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => requestAutomation(value, automation, 'remove'));
+      actions.append(enabled, autoInsert, run, remove);
+    } else {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.textContent = 'Add';
+      add.addEventListener('click', () => requestAutomation(value, automation, 'add'));
+      actions.append(add);
+    }
+    item.append(copy, actions);
+    value.popoverList.append(item);
   }
 
   function appendPopoverItem(value, primary, secondary, command, queueIndex) {
@@ -227,7 +375,7 @@
     closeOtherPopovers(value);
     if (sameMode) { closePopover(value); return; }
     value.popoverMode = mode;
-    value.popoverTitle.textContent = mode === 'queue' ? 'Command queue' : 'Quick commands';
+    value.popoverTitle.textContent = mode === 'queue' ? 'Command queue' : mode === 'automation' ? 'Automations' : 'Quick commands';
     value.popoverList.replaceChildren();
     if (mode === 'queue') {
       const current = value.commandInput.value.trim();
@@ -248,6 +396,24 @@
       } else {
         value.pendingCommands.forEach((command, index) =>
           appendPopoverItem(value, `${index + 1}`, command, command, index));
+      }
+    } else if (mode === 'automation') {
+      const assigned = value.automations.filter(automation => automation.isAssigned);
+      const available = value.automations.filter(automation => !automation.isAssigned);
+      if (!assigned.length && !available.length) {
+        const empty = document.createElement('p');
+        empty.className = 'popover-empty';
+        empty.textContent = 'No automations are configured on the computer.';
+        value.popoverList.append(empty);
+      } else {
+        assigned.forEach(automation => appendAutomationItem(value, automation));
+        if (available.length) {
+          const heading = document.createElement('p');
+          heading.className = 'popover-section';
+          heading.textContent = assigned.length ? 'Available to add' : 'Add to this terminal';
+          value.popoverList.append(heading);
+          available.forEach(automation => appendAutomationItem(value, automation));
+        }
       }
     } else if (!quickCommands.length) {
       const empty = document.createElement('p');
@@ -271,6 +437,17 @@
     }
   }
 
+  function updateAutomationDisplay(value) {
+    const count = value.automations.filter(automation => automation.isAssigned).length;
+    value.automationBadge.textContent = count > 99 ? '99+' : String(count);
+    value.automationBadge.hidden = count === 0;
+    value.automationButton.setAttribute('aria-label', count ? `View ${count} terminal automations` : 'View terminal automations');
+    if (value.popoverMode === 'automation' && !value.popover.hidden) {
+      value.popoverMode = null;
+      renderPopover(value, 'automation');
+    }
+  }
+
   function browseQueue(value, direction) {
     if (!value.pendingCommands.length) return false;
     if (!Number.isInteger(value.selectedQueueIndex)) value.selectedQueueIndex = direction < 0 ? value.pendingCommands.length - 1 : 0;
@@ -284,6 +461,9 @@
   function createCommandArea(value) {
     const area = document.createElement('div');
     area.className = 'command-area';
+    const attachmentStrip = document.createElement('div');
+    attachmentStrip.className = 'attachment-strip';
+    attachmentStrip.hidden = true;
     const row = document.createElement('div');
     row.className = 'command-row';
     const quickButton = document.createElement('button');
@@ -291,6 +471,29 @@
     quickButton.className = 'command-icon quick-button';
     quickButton.textContent = 'ϟ';
     quickButton.setAttribute('aria-label', 'Quick commands');
+    const uploadButton = document.createElement('button');
+    uploadButton.type = 'button';
+    uploadButton.className = 'command-icon upload-button';
+    uploadButton.textContent = '\u21e7';
+    uploadButton.setAttribute('aria-label', 'Upload files');
+    uploadButton.title = 'Upload files from this device';
+    uploadButton.disabled = !allowInput;
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    fileInput.className = 'file-input';
+    fileInput.tabIndex = -1;
+    const automationButton = document.createElement('button');
+    automationButton.type = 'button';
+    automationButton.className = 'command-icon automation-button';
+    automationButton.textContent = '\u27f3';
+    automationButton.setAttribute('aria-label', 'View terminal automations');
+    automationButton.title = 'Automations';
+    automationButton.disabled = !allowInput;
+    const automationBadge = document.createElement('span');
+    automationBadge.className = 'automation-badge';
+    automationBadge.hidden = true;
+    automationButton.append(automationBadge);
     const input = document.createElement('textarea');
     input.className = 'command-input';
     input.rows = 1;
@@ -330,16 +533,33 @@
     popoverList.className = 'popover-list';
     popoverHeader.append(popoverTitle, popoverClose);
     popover.append(popoverHeader, popoverList);
-    row.append(quickButton, input, queueButton, sendButton);
-    area.append(row, status, popover);
+    row.append(quickButton, uploadButton, automationButton, input, queueButton, sendButton);
+    area.append(attachmentStrip, row, status, popover, fileInput);
 
-    Object.assign(value, { commandArea: area, commandInput: input, queueButton, queueBadge: badge, sendButton, commandStatus: status, popover, popoverTitle, popoverList });
+    Object.assign(value, {
+      commandArea: area, commandInput: input, queueButton, queueBadge: badge, sendButton, commandStatus: status,
+      popover, popoverTitle, popoverList, uploadButton, fileInput, attachmentStrip, automationButton, automationBadge
+    });
     quickButton.addEventListener('click', () => renderPopover(value, 'quick'));
+    uploadButton.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => uploadFiles(value, fileInput.files));
+    automationButton.addEventListener('click', () => renderPopover(value, 'automation'));
     queueButton.addEventListener('click', () => renderPopover(value, 'queue'));
     sendButton.addEventListener('click', () => requestCommand(value, 'command'));
     popoverClose.addEventListener('click', () => closePopover(value));
-    input.addEventListener('input', () => { value.selectedQueueIndex = null; growCommandInput(input); scheduleFit(value); });
-    input.addEventListener('focus', () => activateSession(value.id));
+    input.addEventListener('input', () => { value.selectedQueueIndex = null; growCommandInput(input); });
+    input.addEventListener('focus', () => {
+      activateSession(value.id);
+      composerFocused = true;
+      document.documentElement.classList.add('composer-focused');
+      positionComposerViewport();
+    });
+    input.addEventListener('blur', () => setTimeout(() => {
+      if (document.activeElement?.classList.contains('command-input')) return;
+      composerFocused = false;
+      document.documentElement.classList.remove('composer-focused', 'keyboard-open');
+      settleViewport(true);
+    }, 0));
     input.addEventListener('keydown', event => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
@@ -350,6 +570,20 @@
       } else if (event.key === 'ArrowUp' && input.selectionStart === 0 && browseQueue(value, -1)) event.preventDefault();
       else if (event.key === 'ArrowDown' && input.selectionStart === input.value.length && browseQueue(value, 1)) event.preventDefault();
       else if (event.key === 'Escape') closePopover(value);
+    });
+    area.addEventListener('dragover', event => {
+      if (!allowInput || !event.dataTransfer?.types.includes('Files')) return;
+      event.preventDefault();
+      area.classList.add('file-dragging');
+    });
+    area.addEventListener('dragleave', event => {
+      if (!area.contains(event.relatedTarget)) area.classList.remove('file-dragging');
+    });
+    area.addEventListener('drop', event => {
+      if (!allowInput || !event.dataTransfer?.files?.length) return;
+      event.preventDefault();
+      area.classList.remove('file-dragging');
+      uploadFiles(value, event.dataTransfer.files);
     });
     growCommandInput(input);
     return area;
@@ -395,22 +629,26 @@
     tab.type = 'button';
     tab.dataset.id = session.id;
     tab.textContent = session.name;
-    tab.addEventListener('click', () => activateSession(session.id, allowInput));
+    tab.addEventListener('click', () => activateSession(session.id, allowInput, true));
     tabs.append(tab);
 
     const value = {
       id: session.id, card, terminal, host, title, directory, tab,
       columns: dimensions.columns, rows: dimensions.rows,
       fontFace: session.fontFace || 'Cascadia Mono', nativeFontSize: Number(session.fontSize) || 12,
-      pendingCommands: session.pendingCommands || [], selectedQueueIndex: null, popoverMode: null, fitFrame: 0, lastFitKey: ''
+      pendingCommands: session.pendingCommands || [], automations: session.automations || [], attachments: [], uploading: false,
+      selectedQueueIndex: null, popoverMode: null, fitFrame: 0, lastFitKey: ''
     };
     card.append(createCommandArea(value));
     runtime.set(session.id, value);
     terminal.onData(data => queueInput(session.id, data));
     card.addEventListener('pointerdown', () => activateSession(session.id));
-    value.resizeObserver = new ResizeObserver(() => scheduleFit(value));
+    value.resizeObserver = new ResizeObserver(() => {
+      if (document.activeElement !== value.commandInput) scheduleFit(value);
+    });
     value.resizeObserver.observe(host);
     updateQueueDisplay(value);
+    updateAutomationDisplay(value);
     scheduleFit(value);
   }
 
@@ -432,6 +670,7 @@
       value.directory.textContent = session.workingDirectory;
       value.tab.textContent = session.name;
       value.pendingCommands = Array.isArray(session.pendingCommands) ? session.pendingCommands : [];
+      value.automations = Array.isArray(session.automations) ? session.automations : [];
       const nextFontFace = session.fontFace || value.fontFace;
       const nextFontSize = Number(session.fontSize) || value.nativeFontSize;
       const appearanceChanged = value.fontFace !== nextFontFace || value.nativeFontSize !== nextFontSize;
@@ -440,6 +679,7 @@
       applyGrid(value, session.columns, session.rows);
       if (appearanceChanged) scheduleFit(value);
       updateQueueDisplay(value);
+      updateAutomationDisplay(value);
     }
     emptyState.hidden = sessions.length !== 0;
     grid.classList.toggle('focus-mode', focusMode);
@@ -452,13 +692,22 @@
     const pending = pendingRequests.get(message.requestId);
     if (!pending) return;
     pendingRequests.delete(message.requestId);
-    if (message.accepted) setCommandStatus(pending.value, pending.type === 'queue-add' ? 'Queued' : 'Sent');
+    if (message.accepted) {
+      if (pending.type === 'automation') {
+        setCommandStatus(pending.value, pending.action === 'run' ? `${pending.automation.name} started` : 'Automation updated');
+      } else setCommandStatus(pending.value, pending.type === 'queue-add' ? 'Queued' : 'Sent');
+    }
     else {
-      if (!pending.value.commandInput.value) {
+      if (pending.type !== 'automation' && !pending.value.commandInput.value) {
         pending.value.commandInput.value = pending.command;
         growCommandInput(pending.value.commandInput);
       }
-      setCommandStatus(pending.value, 'Command was rejected', true);
+      if (pending.type !== 'automation' && pending.attachmentIds?.length) {
+        const known = new Set(pending.value.attachments.map(file => file.id));
+        pending.value.attachments.unshift(...(pending.files || []).filter(file => !known.has(file.id)));
+        renderAttachments(pending.value);
+      }
+      setCommandStatus(pending.value, pending.type === 'automation' ? 'Automation request was rejected' : 'Command was rejected', true);
     }
   }
 
@@ -488,7 +737,7 @@
       sendJson({ type: 'sync', snapshots: true });
     } else if (message.type === 'input-denied') {
       setAccessMode(false);
-    } else if (message.type === 'command-ack' || message.type === 'queue-ack') {
+    } else if (message.type === 'command-ack' || message.type === 'queue-ack' || message.type === 'automation-ack') {
       settleRequest(message);
     }
   }
@@ -579,38 +828,53 @@
   document.getElementById('fontDown').addEventListener('click', () => { fontOffset = Math.max(-6, fontOffset - 1); scheduleAllFits(); });
   document.getElementById('fontUp').addEventListener('click', () => { fontOffset = Math.min(10, fontOffset + 1); scheduleAllFits(); });
   document.getElementById('keyboardButton').addEventListener('click', () => {
-    if (activeSessionId) activateSession(activeSessionId, true);
+    if (activeSessionId) activateSession(activeSessionId, true, true);
   });
   document.addEventListener('pointerdown', event => {
     if (!event.target.closest('.command-area')) runtime.forEach(closePopover);
   });
   let viewportSettleTimers = [];
-  const refitViewport = () => {
+  function positionComposerViewport() {
     const viewport = window.visualViewport;
-    const visualWidth = viewport?.width || window.innerWidth;
+    const left = viewport?.offsetLeft || 0;
+    const width = viewport?.width || window.innerWidth;
+    const bottom = Math.max(0, window.innerHeight - ((viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight)));
+    document.documentElement.style.setProperty('--visual-left', `${left}px`);
+    document.documentElement.style.setProperty('--visual-width', `${width}px`);
+    document.documentElement.style.setProperty('--visual-bottom', `${bottom}px`);
+  }
+  function refitViewport(forceLayout = false) {
+    const viewport = window.visualViewport;
     const visualHeight = viewport?.height || window.innerHeight;
     const angle = Number(screen.orientation?.angle ?? window.orientation ?? 0);
     const landscape = Math.abs(angle) === 90 || window.innerWidth > window.innerHeight;
-    document.documentElement.style.setProperty('--visual-width', `${visualWidth}px`);
+    const layoutChanged = forceLayout || Math.abs(window.innerWidth - lastLayoutWidth) > 2 || landscape !== lastLandscape;
+    const keyboardOpen = composerFocused && visualHeight < window.innerHeight - 80;
+    positionComposerViewport();
+    document.documentElement.classList.toggle('keyboard-open', keyboardOpen);
+    if (composerFocused && !layoutChanged) return;
+    lastLayoutWidth = window.innerWidth;
+    lastLandscape = landscape;
     document.documentElement.style.setProperty('--visual-height', `${visualHeight}px`);
     document.documentElement.classList.toggle('is-landscape', landscape);
     scheduleAllFits();
-  };
-  const settleViewport = () => {
+  }
+  function settleViewport(forceLayout = false) {
     viewportSettleTimers.forEach(clearTimeout);
-    refitViewport();
-    viewportSettleTimers = [80, 240, 600].map(delay => setTimeout(refitViewport, delay));
-  };
-  window.addEventListener('resize', settleViewport);
-  window.addEventListener('orientationchange', settleViewport);
-  window.visualViewport?.addEventListener('resize', settleViewport);
-  screen.orientation?.addEventListener('change', settleViewport);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) settleViewport(); });
+    refitViewport(forceLayout);
+    viewportSettleTimers = [80, 240, 600].map(delay => setTimeout(() => refitViewport(forceLayout), delay));
+  }
+  window.addEventListener('resize', () => settleViewport(false));
+  window.addEventListener('orientationchange', () => settleViewport(true));
+  window.visualViewport?.addEventListener('resize', () => settleViewport(false));
+  window.visualViewport?.addEventListener('scroll', positionComposerViewport);
+  screen.orientation?.addEventListener('change', () => settleViewport(true));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) settleViewport(true); });
   window.addEventListener('beforeunload', () => { intentionallyClosed = true; socket?.close(1000, 'Page closed'); });
 
   document.getElementById('layoutButton').textContent = focusMode ? 'All' : 'Focus';
   document.getElementById('deviceName').value = suggestedDeviceName();
-  settleViewport();
+  settleViewport(true);
   hasSession().then(authenticated => {
     pairingOverlay.hidden = authenticated;
     if (authenticated) connectSocket(); else setConnection('Pairing required', 'offline');

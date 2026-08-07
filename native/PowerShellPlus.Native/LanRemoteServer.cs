@@ -14,6 +14,7 @@ using System.Windows.Threading;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,10 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private const int MaximumPairedDevices = 32;
     private const int MaximumInputMessageBytes = 32_768;
     private const int MaximumSnapshotCharacters = 1_000_000;
+    private const int MaximumUploadFiles = 10;
+    private const int MaximumPendingUploadsPerDevice = 40;
+    private const long MaximumUploadFileBytes = 100L * 1024 * 1024;
+    private const long MaximumUploadRequestBytes = MaximumUploadFileBytes + 256 * 1024;
     private static readonly TimeSpan PairedDeviceLifetime = TimeSpan.FromDays(365);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly ConcurrentDictionary<string, byte[]> AssetCache = new(StringComparer.Ordinal);
@@ -50,6 +55,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private readonly Dictionary<string, DateTimeOffset> persistedLastSeen = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PairingFailures> pairingFailures = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Guid, ActiveRemoteSocket> activeSockets = [];
+    private readonly ConcurrentDictionary<string, RemoteUploadEntry> remoteUploads = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim connectionSlots = new(MaximumConnections, MaximumConnections);
     private readonly CancellationTokenSource lifetimeCancellation = new();
     private WebApplication? application;
@@ -169,6 +175,9 @@ internal sealed class LanRemoteServer : IAsyncDisposable
 
         app.Use(async (context, next) =>
         {
+            if (string.Equals(context.Request.Path.Value, "/api/upload", StringComparison.OrdinalIgnoreCase)
+                && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
+                bodySize.MaxRequestBodySize = MaximumUploadRequestBytes;
             ApplySecurityHeaders(context.Response);
             if (!IsAllowedRequest(context))
             {
@@ -188,6 +197,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         app.MapGet("/vendor/xterm-license", () => AssetResult("xterm.LICENSE", "text/plain; charset=utf-8"));
         app.MapGet("/favicon.ico", () => Results.NoContent());
         app.MapPost("/api/pair", (Delegate)(Func<HttpContext, Task<IResult>>)PairAsync);
+        app.MapPost("/api/upload", (Delegate)(Func<HttpContext, Task<IResult>>)UploadAsync);
         app.MapGet("/api/sessions", (Delegate)(Func<HttpContext, Task<IResult>>)SessionsAsync);
         app.MapGet("/api/health", (Delegate)(Func<HttpContext, Task<IResult>>)HealthAsync);
         app.MapGet("/ws", HandleWebSocketAsync);
@@ -372,6 +382,76 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         }, JsonOptions);
     }
 
+    private async Task<IResult> UploadAsync(HttpContext context)
+    {
+        if (!TryAuthorize(context, out var authorization)) return Results.Unauthorized();
+        if (!HasAllowedOrigin(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (!AllowInput) return Results.StatusCode(StatusCodes.Status403Forbidden);
+        if (!context.Request.HasFormContentType)
+            return Results.Json(new { error = "Files must be sent as multipart form data." }, statusCode: StatusCodes.Status415UnsupportedMediaType);
+        if (remoteUploads.Values.Count(value => value.DeviceId == authorization.DeviceId) >= MaximumPendingUploadsPerDevice)
+            return Results.Json(new { error = "Too many pending uploads. Send or remove the existing files first." }, statusCode: StatusCodes.Status409Conflict);
+
+        IFormCollection form;
+        try
+        {
+            form = await context.Request.ReadFormAsync(new FormOptions
+            {
+                MultipartBodyLengthLimit = MaximumUploadRequestBytes,
+                ValueLengthLimit = 4096,
+                KeyLengthLimit = 128,
+                ValueCountLimit = 64
+            }, context.RequestAborted);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or Microsoft.AspNetCore.Http.BadHttpRequestException or IOException)
+        {
+            return Results.Json(new { error = "The upload was incomplete or exceeded the 100 MB limit." }, statusCode: StatusCodes.Status413PayloadTooLarge);
+        }
+
+        var sessionId = form["sessionId"].ToString();
+        var sessions = await GetSessionsAsync();
+        if (string.IsNullOrWhiteSpace(sessionId) || !sessions.Any(value => value.Id.Equals(sessionId, StringComparison.Ordinal)))
+            return Results.Json(new { error = "The target terminal is no longer available." }, statusCode: StatusCodes.Status404NotFound);
+        if (form.Files.Count is < 1 or > MaximumUploadFiles)
+            return Results.Json(new { error = $"Choose between 1 and {MaximumUploadFiles} files." }, statusCode: StatusCodes.Status400BadRequest);
+        if (form.Files.Any(value => value.Length is < 1 or > MaximumUploadFileBytes)
+            || form.Files.Sum(value => value.Length) > MaximumUploadFileBytes)
+            return Results.Json(new { error = "Each upload must contain data and the total must be 100 MB or less." }, statusCode: StatusCodes.Status413PayloadTooLarge);
+
+        var directory = Path.Combine(WorkspaceStore.DirectoryPath, "remote-uploads", SafePathSegment(authorization.DeviceId), SafePathSegment(sessionId));
+        Directory.CreateDirectory(directory);
+        var created = new List<RemoteUploadEntry>();
+        var createdPaths = new List<string>();
+        try
+        {
+            foreach (var file in form.Files)
+            {
+                var originalName = Limit(Path.GetFileName(file.FileName), 160);
+                if (string.IsNullOrWhiteSpace(originalName)) originalName = "Uploaded file";
+                var extension = Path.GetExtension(originalName);
+                if (extension.Length > 20 || extension.Any(value => !char.IsLetterOrDigit(value) && value != '.')) extension = string.Empty;
+                var id = Guid.NewGuid().ToString("N");
+                var path = Path.Combine(directory, $"web-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{id[..8]}{extension.ToLowerInvariant()}");
+                createdPaths.Add(path);
+                await using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                    await file.CopyToAsync(output, context.RequestAborted);
+                var entry = new RemoteUploadEntry(id, authorization.DeviceId, sessionId, path, originalName,
+                    UploadKind(file.ContentType, extension), file.Length, DateTimeOffset.UtcNow);
+                if (!remoteUploads.TryAdd(id, entry)) throw new IOException("PowerShellPlus could not register the uploaded file.");
+                created.Add(entry);
+            }
+            return Results.Json(new { files = created.Select(value => new RemoteUploadView(value.Id, value.Name, value.Kind, value.Size)) }, JsonOptions);
+        }
+        catch
+        {
+            foreach (var entry in created)
+                remoteUploads.TryRemove(entry.Id, out _);
+            foreach (var path in createdPaths) TryDeleteUpload(path);
+            throw;
+        }
+    }
+
     private async Task<IResult> HealthAsync(HttpContext context)
     {
         if (!IsLoopback(context.Connection.RemoteIpAddress)) return Results.NotFound();
@@ -412,7 +492,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             var remaining = authorization.ExpiresUtc - DateTimeOffset.UtcNow;
             using var expiryCancellation = new CancellationTokenSource(remaining < TimeSpan.FromHours(24) ? remaining : TimeSpan.FromHours(24));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetimeCancellation.Token, expiryCancellation.Token);
-            await RunConnectionAsync(socket, linked.Token);
+            await RunConnectionAsync(socket, authorization.DeviceId, linked.Token);
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException) { }
@@ -444,7 +524,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         }
     }
 
-    private async Task RunConnectionAsync(WebSocket socket, CancellationToken cancellationToken)
+    private async Task RunConnectionAsync(WebSocket socket, string deviceId, CancellationToken cancellationToken)
     {
         var output = Channel.CreateBounded<OutputFrame>(new BoundedChannelOptions(256)
         {
@@ -567,18 +647,56 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                     await RefreshSubscriptionsAsync(snapshots);
                     continue;
                 }
-                if (type is not ("input" or "queue-add" or "command")) continue;
-                if (!AllowInput)
-                {
-                    await SendAsync(new { type = "input-denied" });
-                    continue;
-                }
+                if (type is not ("input" or "queue-add" or "command" or "automation" or "upload-discard")) continue;
                 if (!document.RootElement.TryGetProperty("sessionId", out var idElement)
                     || idElement.ValueKind != JsonValueKind.String) continue;
                 var sessionId = idElement.GetString();
                 var sessions = await GetSessionsAsync();
                 var session = sessions.FirstOrDefault(value => value.Id.Equals(sessionId, StringComparison.Ordinal));
                 if (string.IsNullOrEmpty(sessionId) || session is null) continue;
+
+                var requestId = document.RootElement.TryGetProperty("requestId", out var requestElement)
+                    && requestElement.ValueKind == JsonValueKind.String ? requestElement.GetString() : null;
+
+                if (type == "upload-discard")
+                {
+                    var uploadId = document.RootElement.TryGetProperty("uploadId", out var uploadElement)
+                        && uploadElement.ValueKind == JsonValueKind.String ? uploadElement.GetString() : null;
+                    var discarded = uploadId is not null && DiscardUpload(deviceId, sessionId, uploadId);
+                    await SendAsync(new { type = "upload-discard-ack", sessionId, requestId, accepted = discarded });
+                    continue;
+                }
+
+                if (!AllowInput)
+                {
+                    await SendAsync(new { type = "input-denied" });
+                    continue;
+                }
+
+                if (type == "automation")
+                {
+                    var automationId = document.RootElement.TryGetProperty("automationId", out var automationElement)
+                        && automationElement.ValueKind == JsonValueKind.String ? automationElement.GetString() : null;
+                    var action = document.RootElement.TryGetProperty("action", out var actionElement)
+                        && actionElement.ValueKind == JsonValueKind.String ? actionElement.GetString() : null;
+                    bool? enabled = document.RootElement.TryGetProperty("enabled", out var enabledElement)
+                        && enabledElement.ValueKind is JsonValueKind.True or JsonValueKind.False ? enabledElement.GetBoolean() : null;
+                    var accepted = false;
+                    if (!string.IsNullOrWhiteSpace(automationId) && action == "run")
+                    {
+                        var runTask = await dispatcher.InvokeAsync(
+                            () => session.Pane.RunRemoteAutomationAsync(automationId), DispatcherPriority.Input);
+                        accepted = await runTask;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(automationId) && !string.IsNullOrWhiteSpace(action))
+                    {
+                        accepted = await dispatcher.InvokeAsync(
+                            () => session.Pane.ConfigureRemoteAutomation(automationId, action, enabled), DispatcherPriority.Input);
+                    }
+                    await SendAsync(new { type = "automation-ack", sessionId, requestId, action, accepted });
+                    await RefreshSubscriptionsAsync(false);
+                    continue;
+                }
 
                 if (type == "input")
                 {
@@ -590,15 +708,21 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                     continue;
                 }
 
-                if (!document.RootElement.TryGetProperty("command", out var commandElement) || commandElement.ValueKind != JsonValueKind.String) continue;
-                var command = commandElement.GetString();
-                if (string.IsNullOrWhiteSpace(command) || command.Length > MaximumInputMessageBytes) continue;
-                var requestId = document.RootElement.TryGetProperty("requestId", out var requestElement) && requestElement.ValueKind == JsonValueKind.String
-                    ? requestElement.GetString()
-                    : null;
+                var command = document.RootElement.TryGetProperty("command", out var commandElement)
+                    && commandElement.ValueKind == JsonValueKind.String ? commandElement.GetString() ?? string.Empty : string.Empty;
+                var uploadsValid = TryResolveUploads(document.RootElement, deviceId, sessionId, out var uploads);
+                if (!uploadsValid || command.Length > MaximumInputMessageBytes || string.IsNullOrWhiteSpace(command) && uploads.Count == 0)
+                {
+                    await SendAsync(new { type = type == "queue-add" ? "queue-ack" : "command-ack", sessionId, requestId, accepted = false });
+                    continue;
+                }
+                var attachmentPaths = uploads.Select(value => value.Path).ToArray();
                 if (type == "queue-add")
                 {
-                    var accepted = await dispatcher.InvokeAsync(() => session.Pane.QueueRemoteCommand(command), DispatcherPriority.Input);
+                    var queueTask = await dispatcher.InvokeAsync(
+                        () => session.Pane.QueueRemoteCommandAsync(command, attachmentPaths), DispatcherPriority.Input);
+                    var accepted = await queueTask;
+                    if (accepted) ClaimUploads(uploads);
                     await SendAsync(new { type = "queue-ack", sessionId, requestId, accepted });
                     await RefreshSubscriptionsAsync(false);
                     continue;
@@ -609,8 +733,9 @@ internal sealed class LanRemoteServer : IAsyncDisposable
                     && queueElement.ValueKind == JsonValueKind.Number && queueElement.TryGetInt32(out var parsedIndex))
                     queuedIndex = parsedIndex;
                 var commandTask = await dispatcher.InvokeAsync(
-                    () => session.Pane.RunRemoteCommandAsync(command, queuedIndex), DispatcherPriority.Input);
+                    () => session.Pane.RunRemoteCommandAsync(command, queuedIndex, attachmentPaths), DispatcherPriority.Input);
                 var commandAccepted = await commandTask;
+                if (commandAccepted) ClaimUploads(uploads);
                 await SendAsync(new { type = "command-ack", sessionId, requestId, accepted = commandAccepted });
                 await RefreshSubscriptionsAsync(false);
             }
@@ -645,12 +770,78 @@ internal sealed class LanRemoteServer : IAsyncDisposable
             var appearance = session.Pane.GetRemoteAppearance();
             return new RemoteSessionView(session.Id, session.Name, session.WorkingDirectory,
                 dimensions.Columns, dimensions.Rows, appearance.FontFace, appearance.FontSize,
-                session.Pane.GetRemotePendingCommands());
+                session.Pane.GetRemotePendingCommands(), session.Pane.GetRemoteAutomations());
         }).ToArray();
         var quickCommands = sessions.FirstOrDefault()?.Pane.GetRemoteQuickCommands()
             .Select(value => new RemoteQuickCommand(value.Id, value.Name, value.Category, value.Command))
             .ToArray() ?? [];
         return new RemoteWorkspaceState(sessions, views, quickCommands);
+    }
+
+    private bool TryResolveUploads(JsonElement message, string deviceId, string sessionId, out IReadOnlyList<RemoteUploadEntry> uploads)
+    {
+        uploads = [];
+        if (!message.TryGetProperty("attachmentIds", out var idsElement)) return true;
+        if (idsElement.ValueKind != JsonValueKind.Array) return false;
+        var ids = idsElement.EnumerateArray().ToArray();
+        if (ids.Length > MaximumUploadFiles) return false;
+        var resolved = new List<RemoteUploadEntry>(ids.Length);
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var idElement in ids)
+        {
+            if (idElement.ValueKind != JsonValueKind.String || idElement.GetString() is not { Length: 32 } id
+                || !unique.Add(id) || !remoteUploads.TryGetValue(id, out var upload)
+                || upload.DeviceId != deviceId || upload.SessionId != sessionId) return false;
+            resolved.Add(upload);
+        }
+        uploads = resolved;
+        return true;
+    }
+
+    private void ClaimUploads(IEnumerable<RemoteUploadEntry> uploads)
+    {
+        foreach (var upload in uploads) remoteUploads.TryRemove(upload.Id, out _);
+    }
+
+    private bool DiscardUpload(string deviceId, string sessionId, string uploadId)
+    {
+        if (!remoteUploads.TryGetValue(uploadId, out var upload)
+            || upload.DeviceId != deviceId || upload.SessionId != sessionId
+            || !remoteUploads.TryRemove(uploadId, out upload)) return false;
+        TryDeleteUpload(upload.Path);
+        return true;
+    }
+
+    private void ClearUnclaimedUploads()
+    {
+        foreach (var upload in remoteUploads.Values)
+        {
+            if (!remoteUploads.TryRemove(upload.Id, out var removed)) continue;
+            TryDeleteUpload(removed.Path);
+        }
+    }
+
+    private static string SafePathSegment(string value)
+    {
+        var safe = new string(value.Where(character => char.IsLetterOrDigit(character) || character is '-' or '_').ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "unknown" : safe[..Math.Min(64, safe.Length)];
+    }
+
+    private static string UploadKind(string contentType, string extension)
+    {
+        if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+            || extension.ToLowerInvariant() is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp") return "image";
+        if (contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)) return "video";
+        if (contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)) return "audio";
+        if (contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || extension.ToLowerInvariant() is ".txt" or ".md" or ".json" or ".xml" or ".csv" or ".log") return "text";
+        if (extension.ToLowerInvariant() is ".zip" or ".7z" or ".rar" or ".tar" or ".gz") return "archive";
+        return "file";
+    }
+
+    private static void TryDeleteUpload(string path)
+    {
+        try { File.Delete(path); } catch { }
     }
 
     private bool TryAuthorize(HttpContext context, out DeviceAuthorization authorization)
@@ -853,6 +1044,7 @@ internal sealed class LanRemoteServer : IAsyncDisposable
         disposed = true;
         lifetimeCancellation.Cancel();
         await StopAsync();
+        ClearUnclaimedUploads();
         lifetimeCancellation.Dispose();
         connectionSlots.Dispose();
     }
@@ -864,8 +1056,11 @@ internal sealed class LanRemoteServer : IAsyncDisposable
     private sealed record ActiveRemoteSocket(WebSocket Socket, string DeviceId);
     private sealed record OutputFrame(string SessionId, string Data, int Columns, int Rows);
     private sealed record RemoteSessionView(string Id, string Name, string WorkingDirectory, int Columns, int Rows,
-        string FontFace, int FontSize, IReadOnlyList<string> PendingCommands);
+        string FontFace, int FontSize, IReadOnlyList<string> PendingCommands, IReadOnlyList<RemoteTerminalAutomation> Automations);
     private sealed record RemoteQuickCommand(string Id, string Name, string Category, string Command);
+    private sealed record RemoteUploadEntry(string Id, string DeviceId, string SessionId, string Path,
+        string Name, string Kind, long Size, DateTimeOffset CreatedUtc);
+    private sealed record RemoteUploadView(string Id, string Name, string Kind, long Size);
     private sealed record RemoteWorkspaceState(IReadOnlyList<LanRemoteSession> Sessions,
         IReadOnlyList<RemoteSessionView> Views, IReadOnlyList<RemoteQuickCommand> QuickCommands);
 

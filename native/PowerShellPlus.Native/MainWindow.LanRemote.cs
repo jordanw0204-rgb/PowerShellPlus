@@ -192,6 +192,15 @@ public partial class MainWindow
                 && appScript.Contains("queue-add", StringComparison.Ordinal)
                 && appScript.Contains("command-input", StringComparison.Ordinal)
                 && appScript.Contains("deviceName", StringComparison.Ordinal);
+            var remoteComposerFeaturesEmbedded = appScript.Contains("new FormData()", StringComparison.Ordinal)
+                && appScript.Contains("/api/upload", StringComparison.Ordinal)
+                && appScript.Contains("attachmentIds", StringComparison.Ordinal)
+                && appScript.Contains("type: 'automation'", StringComparison.Ordinal)
+                && appScript.Contains("lineHeight * 8", StringComparison.Ordinal)
+                && appScript.Contains("if (composerFocused && !layoutChanged) return", StringComparison.Ordinal)
+                && styles.Contains(".attachment-pill", StringComparison.Ordinal)
+                && styles.Contains(".automation-actions", StringComparison.Ordinal)
+                && styles.Contains("html.composer-focused", StringComparison.Ordinal);
             var stableTerminalSizingEmbedded = stylesResponse.IsSuccessStatusCode
                 && appScript.Contains("lastFitKey", StringComparison.Ordinal)
                 && appScript.Contains("terminalFits", StringComparison.Ordinal)
@@ -204,6 +213,7 @@ public partial class MainWindow
                 && policies.Any(value => value.Contains("frame-ancestors 'none'", StringComparison.Ordinal));
             details.Add($"AssetsEmbedded={assetsEmbedded}");
             details.Add($"ResponsiveCommandClientEmbedded={responsiveClientEmbedded}");
+            details.Add($"RemoteComposerFeaturesEmbedded={remoteComposerFeaturesEmbedded}");
             details.Add($"StableTerminalSizingEmbedded={stableTerminalSizingEmbedded}");
             details.Add($"RotationManifestEmbedded={rotationManifestEmbedded}");
             details.Add($"SecurityHeadersPresent={securityHeadersPresent}");
@@ -239,6 +249,8 @@ public partial class MainWindow
                 && sessionView.GetProperty("fontSize").GetInt32() >= 6;
             var commandMetadataVisible = sessionView.TryGetProperty("pendingCommands", out var pendingElement)
                 && pendingElement.ValueKind == JsonValueKind.Array
+                && sessionView.TryGetProperty("automations", out var automationsElement)
+                && automationsElement.ValueKind == JsonValueKind.Array
                 && sessionDocument.RootElement.TryGetProperty("quickCommands", out var quickElement)
                 && quickElement.ValueKind == JsonValueKind.Array;
             details.Add($"UnauthenticatedRejected={unauthenticatedRejected}");
@@ -250,6 +262,42 @@ public partial class MainWindow
             details.Add($"SessionInventoryVisible={sessionInventoryVisible}");
             details.Add($"GridMetadataVisible={gridMetadataVisible}");
             details.Add($"CommandMetadataVisible={commandMetadataVisible}");
+
+            string? uploadId = null;
+            using (var uploadRequest = new HttpRequestMessage(HttpMethod.Post, "api/upload"))
+            {
+                uploadRequest.Headers.TryAddWithoutValidation("Origin", baseAddress.GetLeftPart(UriPartial.Authority));
+                var uploadContent = new MultipartFormDataContent();
+                uploadContent.Add(new StringContent(pane.Profile.Id), "sessionId");
+                uploadContent.Add(new ByteArrayContent(Encoding.UTF8.GetBytes("PowerShellPlus remote upload smoke")), "files", "remote-smoke.txt");
+                uploadRequest.Content = uploadContent;
+                var uploadResponse = await client.SendAsync(uploadRequest);
+                if (uploadResponse.IsSuccessStatusCode)
+                {
+                    using var uploadDocument = JsonDocument.Parse(await uploadResponse.Content.ReadAsStringAsync());
+                    uploadId = uploadDocument.RootElement.GetProperty("files")[0].GetProperty("id").GetString();
+                }
+            }
+            var authenticatedUploadAccepted = uploadId is { Length: 32 };
+            using var unauthorizedUploadHandler = new HttpClientHandler { UseCookies = false, UseProxy = false };
+            using var unauthorizedUploadClient = new HttpClient(unauthorizedUploadHandler) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(10) };
+            using var unauthorizedUploadRequest = new HttpRequestMessage(HttpMethod.Post, "api/upload");
+            unauthorizedUploadRequest.Headers.TryAddWithoutValidation("Origin", baseAddress.GetLeftPart(UriPartial.Authority));
+            var unauthorizedUploadContent = new MultipartFormDataContent();
+            unauthorizedUploadContent.Add(new StringContent(pane.Profile.Id), "sessionId");
+            unauthorizedUploadContent.Add(new ByteArrayContent([1]), "files", "unauthorized.txt");
+            unauthorizedUploadRequest.Content = unauthorizedUploadContent;
+            var unauthorizedUploadRejected = (await unauthorizedUploadClient.SendAsync(unauthorizedUploadRequest)).StatusCode == HttpStatusCode.Unauthorized;
+            using var badOriginUploadRequest = new HttpRequestMessage(HttpMethod.Post, "api/upload");
+            badOriginUploadRequest.Headers.TryAddWithoutValidation("Origin", "http://evil.example");
+            var badOriginUploadContent = new MultipartFormDataContent();
+            badOriginUploadContent.Add(new StringContent(pane.Profile.Id), "sessionId");
+            badOriginUploadContent.Add(new ByteArrayContent([1]), "files", "bad-origin.txt");
+            badOriginUploadRequest.Content = badOriginUploadContent;
+            var badOriginUploadRejected = (await client.SendAsync(badOriginUploadRequest)).StatusCode == HttpStatusCode.Forbidden;
+            details.Add($"AuthenticatedUploadAccepted={authenticatedUploadAccepted}");
+            details.Add($"UnauthorizedUploadRejected={unauthorizedUploadRejected}");
+            details.Add($"BadOriginUploadRejected={badOriginUploadRejected}");
 
             var badOriginRejected = false;
             using (var badOriginSocket = new ClientWebSocket())
@@ -300,6 +348,33 @@ public partial class MainWindow
                         && cursorRow.GetInt32() >= 1;
                 }
             }
+
+            var uploadedFileDiscarded = false;
+            if (uploadId is not null)
+            {
+                var discardRequestId = Guid.NewGuid().ToString("N");
+                var discardRequest = JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    type = "upload-discard",
+                    requestId = discardRequestId,
+                    sessionId = pane.Profile.Id,
+                    uploadId
+                });
+                await socket.SendAsync(discardRequest, WebSocketMessageType.Text, true, CancellationToken.None);
+                var discardDeadline = DateTime.UtcNow.AddSeconds(5);
+                while (DateTime.UtcNow < discardDeadline && !uploadedFileDiscarded)
+                {
+                    var message = await ReceiveWebSocketTextAsync(socket, discardDeadline - DateTime.UtcNow);
+                    if (message is null) break;
+                    using var document = JsonDocument.Parse(message);
+                    uploadedFileDiscarded = document.RootElement.TryGetProperty("type", out var typeElement)
+                        && typeElement.GetString() == "upload-discard-ack"
+                        && document.RootElement.TryGetProperty("requestId", out var requestElement)
+                        && requestElement.GetString() == discardRequestId
+                        && document.RootElement.GetProperty("accepted").GetBoolean();
+                }
+            }
+            details.Add($"UploadedFileDiscarded={uploadedFileDiscarded}");
 
             const string marker = "PSPLUS_LAN_REMOTE_OK_370";
             var outputEventsBefore = pane.RemoteOutputEventsForTest;
@@ -734,9 +809,10 @@ public partial class MainWindow
             var themedDialogContract = PowerShellPlusDialog.ValidateThemeContract();
             details.Add($"ThemedDialogContract={themedDialogContract}");
 
-            var success = assetsEmbedded && responsiveClientEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
+            var success = assetsEmbedded && responsiveClientEmbedded && remoteComposerFeaturesEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
                 && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
-                && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && badOriginRejected
+                && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && authenticatedUploadAccepted && unauthorizedUploadRejected
+                && badOriginUploadRejected && uploadedFileDiscarded && badOriginRejected
                 && sessionFrameSeen && snapshotSeen && sessionGridSeen && snapshotGridSeen && snapshotComposedSeen && snapshotCursorSeen
                 && remoteInputAccepted && liveOutputSeen && outputGridSeen && composedSnapshotContainsMarker
                 && queueAccepted && queueVisible && queuedCommandAccepted && queuedCommandOutputSeen && queueRemoved

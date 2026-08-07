@@ -22,6 +22,8 @@ namespace PowerShellPlus.Native;
 internal sealed record RemoteTerminalSnapshotSource(IntPtr WindowHandle, string FallbackText, int Columns, int Rows);
 internal sealed record RemoteTerminalSnapshot(string Text, int Columns, int Rows, int CursorColumn, int CursorRow, bool IsComposed);
 internal sealed record ComposerAttachment(string Id, string LocalPath, string DisplayName, bool IsImage, bool IsTemporary);
+internal sealed record RemoteTerminalAutomation(string Id, string Name, string Subtitle, bool ClearLine,
+    bool IsAssigned, bool Enabled, bool AutoInsertAtEnd);
 internal sealed record HistoryDisplayEntry(string Message, DateTime SentUtc)
 {
     public string RelativeTime => TerminalPane.FormatRelativeHistoryTime(SentUtc, DateTime.UtcNow);
@@ -1761,15 +1763,25 @@ public partial class TerminalPane : UserControl
         return true;
     }
 
-    public async Task<bool> RunRemoteCommandAsync(string command, int? queuedIndex)
+    public async Task<bool> QueueRemoteCommandAsync(string command, IReadOnlyList<string> attachmentPaths)
     {
-        command = command.Trim();
+        var attachments = CreateRemoteAttachments(attachmentPaths);
+        command = AppendRemoteAttachmentPaths(command, attachments);
+        var prepared = await PrepareComposerCommandAsync(command, attachments);
+        return prepared is not null && QueueRemoteCommand(prepared);
+    }
+
+    public async Task<bool> RunRemoteCommandAsync(string command, int? queuedIndex, IReadOnlyList<string>? attachmentPaths = null)
+    {
+        var attachments = CreateRemoteAttachments(attachmentPaths ?? []);
+        command = AppendEnabledAutomationText(AppendRemoteAttachmentPaths(command, attachments)).Trim();
         if (commandExecutionPending || command.Length == 0 || command.Length > MaximumCommandLength) return false;
         commandExecutionPending = true;
         RunCommandButton.IsEnabled = false;
         try
         {
-            if (!await SendCommandAsync(command)) return false;
+            var prepared = await PrepareComposerCommandAsync(command, attachments);
+            if (prepared is null || !await SendCommandAsync(prepared)) return false;
             if (queuedIndex is int index && index >= 0 && index < Profile.PendingCommands.Count
                 && string.Equals(Profile.PendingCommands[index], command, StringComparison.Ordinal))
                 Profile.PendingCommands.RemoveAt(index);
@@ -1783,6 +1795,74 @@ public partial class TerminalPane : UserControl
             commandExecutionPending = false;
             RunCommandButton.IsEnabled = true;
         }
+    }
+
+    private IReadOnlyList<ComposerAttachment> CreateRemoteAttachments(IEnumerable<string> paths)
+    {
+        var attachments = new List<ComposerAttachment>();
+        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase).Take(MaximumComposerAttachments))
+        {
+            if (!TryNormalizeComposerFile(path, out var fullPath)) continue;
+            attachments.Add(new ComposerAttachment(Guid.NewGuid().ToString("N"), fullPath,
+                Path.GetFileName(fullPath), IsImageFile(fullPath), false));
+        }
+        return attachments;
+    }
+
+    private static string AppendRemoteAttachmentPaths(string command, IReadOnlyList<ComposerAttachment> attachments)
+    {
+        if (attachments.Count == 0) return command;
+        var separator = string.IsNullOrWhiteSpace(command) ? string.Empty : "\n";
+        return command.TrimEnd() + separator + string.Join("\n", attachments.Select(value => value.LocalPath));
+    }
+
+    internal IReadOnlyList<RemoteTerminalAutomation> GetRemoteAutomations()
+    {
+        var bindings = Profile.AutomationBindings
+            .GroupBy(value => value.AutomationId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+        return automationProvider()
+            .Where(value => !string.IsNullOrWhiteSpace(value.Command))
+            .Select(value =>
+            {
+                bindings.TryGetValue(value.Id, out var binding);
+                return new RemoteTerminalAutomation(value.Id, value.Name, value.Subtitle, value.ClearLine,
+                    binding is not null, binding?.Enabled ?? false, binding?.AutoInsertAtEnd ?? false);
+            })
+            .ToArray();
+    }
+
+    public bool ConfigureRemoteAutomation(string automationId, string action, bool? enabled = null)
+    {
+        if (!automationProvider().Any(value => value.Id == automationId && !string.IsNullOrWhiteSpace(value.Command))) return false;
+        var binding = Profile.AutomationBindings.FirstOrDefault(value => value.AutomationId == automationId);
+        switch (action)
+        {
+            case "add" when binding is null:
+                Profile.AutomationBindings.Add(new TerminalAutomationBinding { AutomationId = automationId });
+                break;
+            case "remove" when binding is not null:
+                Profile.AutomationBindings.Remove(binding);
+                break;
+            case "enabled" when binding is not null && enabled is not null:
+                binding.Enabled = enabled.Value;
+                break;
+            case "auto-insert" when binding is not null && enabled is not null:
+                binding.AutoInsertAtEnd = enabled.Value;
+                break;
+            default:
+                return false;
+        }
+        commandStateChanged();
+        UpdateAutomationDisplay();
+        return true;
+    }
+
+    public async Task<bool> RunRemoteAutomationAsync(string automationId)
+    {
+        if (!Profile.AutomationBindings.Any(value => value.AutomationId == automationId)) return false;
+        var automation = automationProvider().FirstOrDefault(value => value.Id == automationId && !string.IsNullOrWhiteSpace(value.Command));
+        return automation is not null && await RunAutomationAsync(automation);
     }
 
     public void EnableRemoteOutputCapture() => AttachTerminalOutputFilter();
