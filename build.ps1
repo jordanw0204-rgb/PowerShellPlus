@@ -50,6 +50,7 @@ function Invoke-NativeGate([string]$Executable, [string]$ArgumentName, [string]$
 }
 
 if (-not $SkipTests) {
+    Invoke-NativeGate $buildOutput 'startup-recovery-smoke' 'native-startup-recovery.txt'
     Invoke-NativeGate $buildOutput 'smoke-test' 'native-conpty.txt'
     Invoke-NativeGate $buildOutput 'multi-smoke' 'native-multi-pane.txt'
     if (-not $SkipCodexTests) {
@@ -67,6 +68,7 @@ Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $pu
 
 $publishedExecutable = Join-Path $publish 'PowerShellPlus.exe'
 if (-not $SkipTests) {
+    Invoke-NativeGate $publishedExecutable 'startup-recovery-smoke' 'published-native-startup-recovery.txt'
     Invoke-NativeGate $publishedExecutable 'smoke-test' 'published-native-conpty.txt'
     # The exhaustive multi-pane gate is stateful by design and already ran against
     # this exact Release assembly above. Re-running it after the persistence gates

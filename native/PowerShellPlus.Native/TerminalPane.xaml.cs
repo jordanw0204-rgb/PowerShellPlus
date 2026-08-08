@@ -33,6 +33,7 @@ internal enum AgentActivityState { Starting, Idle, Working, Waiting, Stopped, Er
 internal enum AgentKind { Terminal, Codex, Hermes }
 internal enum RemoteImagePasteMode { Attachment, FilePath }
 internal enum RemoteClipboardPasteContent { Image, Text, Empty }
+internal enum RecoveredSshStartupState { Waiting, Ready, Failed }
 
 internal sealed class BracketedPasteModeTracker
 {
@@ -395,6 +396,15 @@ public partial class TerminalPane : UserControl
     private Visibility terminalVisibilityBeforeAttachmentPreview = Visibility.Visible;
     private bool startupProfileFallbackAttempted;
     private readonly TaskCompletionSource<bool> startupReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly SemaphoreSlim startupGate = new(1, 1);
+    private bool initialStartupFinished;
+    private bool initialStartupSucceeded;
+    private int startupAttemptCount;
+    private Func<int, Task<bool>>? startupAttemptOverrideForTest;
+    private string startupDiagnostic = "Startup has not run.";
+    private DateTime terminalStartupBeganUtc = DateTime.UtcNow;
+    private long lastRemoteDirectoryMarkerTicks;
+    private bool recoveredSshWatchStarted;
     private int attachmentPillRefreshCount;
     private bool commandInputFileDropHandlersInstalled;
     private ScrollBar? nativeScrollbar;
@@ -513,31 +523,24 @@ public partial class TerminalPane : UserControl
             RefreshRemoteDimensions();
             ConfigureNativeScrollbar();
             UpdateHeaderStatus();
+            // EasyTerminalControl starts from its child Loaded callback. Let
+            // that native lifecycle settle before judging the attempt; only
+            // enter PowerShellPlus retry orchestration when it truly failed.
             await Task.Delay(1400);
-            if (Terminal.ConPTYTerm?.TermProcIsStarted != true)
+            var started = TerminalProcessIsRunning();
+            if (started)
             {
-                try
-                {
-                    var term = Terminal.ConPTYTerm;
-                    var commandLine = Terminal.StartupCommandLine;
-                    await Task.Run(() => term!.Start(commandLine, 100, 30, false));
-                }
-                catch (Exception exception)
-                {
-                    SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
-                    Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
-                    File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"), $"[{DateTime.Now:O}] {exception}\n");
-                    startupReady.TrySetResult(false);
-                    return;
-                }
+                startupDiagnostic = $"Native Loaded startup reported ready. {DescribeTerminalProcess()}";
+                CompleteTerminalStartup(true);
             }
+            else started = await EnsureTerminalStartupAsync();
+            if (!started) return;
             RefreshAgentStatus(true);
             AttachTerminalOutputFilter();
             RefreshRemoteDimensions();
             ConfigureRecoveryView();
-            await RecoverFromStalledPowerShellProfileAsync();
             QueueTmuxScrollbarRefresh(true);
-            startupReady.TrySetResult(Terminal.ConPTYTerm?.TermProcIsStarted == true);
+            _ = RecoverFromStalledPowerShellProfileAsync();
         };
         Unloaded += (_, _) =>
         {
@@ -591,6 +594,282 @@ public partial class TerminalPane : UserControl
         && PaneHeaderActions.Cursor == Cursors.Arrow && PaneDropMarker.IsHitTestVisible == false;
 
     internal Task<bool> StartupReady => startupReady.Task;
+    internal bool HasStartupAttemptOverrideForTest => startupAttemptOverrideForTest is not null;
+
+    internal async Task<bool> EnsureTerminalStartupAsync(bool manualRetry = false)
+    {
+        await startupGate.WaitAsync();
+        try
+        {
+            if (Profile.IsRemoteDetached)
+            {
+                initialStartupFinished = true;
+                initialStartupSucceeded = true;
+                startupReady.TrySetResult(true);
+                return true;
+            }
+            if (!manualRetry && initialStartupFinished) return initialStartupSucceeded;
+            if (!manualRetry && TerminalProcessIsRunning())
+            {
+                CompleteTerminalStartup(true);
+                return true;
+            }
+
+            if (manualRetry)
+            {
+                terminalStartupBeganUtc = DateTime.UtcNow;
+                Interlocked.Exchange(ref lastRemoteDirectoryMarkerTicks, 0);
+                recoveredSshWatchStarted = false;
+                SetStartupRetryingState("Retrying terminal recovery…");
+            }
+            else SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
+            Exception? lastException = null;
+            const int maximumAttempts = 3;
+            for (var attempt = 1; attempt <= maximumAttempts; attempt++)
+            {
+                startupAttemptCount++;
+                try
+                {
+                    bool started;
+                    if (startupAttemptOverrideForTest is not null)
+                    {
+                        started = await startupAttemptOverrideForTest(attempt);
+                    }
+                    else
+                    {
+                        if (manualRetry || attempt > 1) await PrepareFreshTerminalForStartupAsync();
+                        started = await StartCurrentTerminalAsync();
+                    }
+                    if (started)
+                    {
+                        startupDiagnostic = $"Attempt {attempt} reported ready. {DescribeTerminalProcess()}";
+                        CompleteTerminalStartup(true);
+                        return true;
+                    }
+                    lastException = new InvalidOperationException("The terminal process did not become ready.");
+                    startupDiagnostic = $"Attempt {attempt} timed out. {DescribeTerminalProcess()}";
+                }
+                catch (Exception exception)
+                {
+                    lastException = exception;
+                    LogTerminalStartupError(exception, attempt);
+                }
+
+                if (attempt < maximumAttempts)
+                    await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt));
+            }
+
+            CompleteTerminalStartup(false);
+            ShowStartupFailure("Terminal recovery failed",
+                lastException?.GetBaseException().Message ?? "The saved terminal did not become ready after three attempts.");
+            return false;
+        }
+        finally
+        {
+            startupGate.Release();
+        }
+    }
+
+    private async Task PrepareFreshTerminalForStartupAsync()
+    {
+        startupDiagnostic = $"Preparing a fresh backend. {DescribeTerminalProcess()}";
+        bracketedPasteMode.Reset();
+        try { Terminal.ConPTYTerm?.StopExternalTermOnly(); } catch { }
+        await Terminal.RestartTerm();
+        Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery);
+        AttachTerminalOutputFilter();
+    }
+
+    private async Task<bool> StartCurrentTerminalAsync()
+    {
+        if (TerminalProcessIsRunning()) return true;
+        startupDiagnostic = $"Waiting for the renderer. Loaded={Terminal.IsLoaded}; {DescribeTerminalProcess()}";
+        var loadDeadline = DateTime.UtcNow.AddSeconds(3);
+        while (!Terminal.IsLoaded && DateTime.UtcNow < loadDeadline)
+            await Task.Delay(30);
+        if (!Terminal.IsLoaded) return false;
+
+        // EasyTerminalControl owns the visible startup path. Its TermReady
+        // callback binds and resizes through the native renderer, so starting
+        // TermPTY before the control is loaded is not safe. MainWindow mounts
+        // inactive panes in a clipped warm-up host before calling this method.
+        var automaticStartDeadline = DateTime.UtcNow.AddSeconds(8);
+        while (DateTime.UtcNow < automaticStartDeadline)
+        {
+            if (TerminalProcessIsRunning())
+            {
+                startupDiagnostic = $"Renderer process is ready. {DescribeTerminalProcess()}";
+                return true;
+            }
+            await Task.Delay(40);
+        }
+        startupDiagnostic = $"Renderer wait expired. {DescribeTerminalProcess()}";
+        return false;
+    }
+
+    private bool TerminalProcessIsRunning()
+    {
+        try
+        {
+            var term = Terminal.ConPTYTerm;
+            return term?.TermProcIsStarted == true && term.Process is not null && !term.Process.HasExited;
+        }
+        catch { return false; }
+    }
+
+    private string DescribeTerminalProcess()
+    {
+        try
+        {
+            var term = Terminal.ConPTYTerm;
+            return $"TermStarted={term?.TermProcIsStarted == true}; ProcessPresent={term?.Process is not null}; ProcessExited={term?.Process?.HasExited}";
+        }
+        catch (Exception exception) { return $"ProcessStateError={exception.GetType().Name}: {exception.Message}"; }
+    }
+
+    private void CompleteTerminalStartup(bool succeeded)
+    {
+        initialStartupFinished = true;
+        initialStartupSucceeded = succeeded;
+        startupReady.TrySetResult(succeeded);
+        if (!succeeded) return;
+        HideStartupFailure();
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
+        AttachTerminalOutputFilter();
+        if (startupRecovery?.SshWasActive == true && !recoveredSshWatchStarted)
+        {
+            recoveredSshWatchStarted = true;
+            _ = WatchRecoveredSshStartupAsync(terminalStartupBeganUtc);
+        }
+        if (IsLoaded)
+        {
+            RefreshRemoteDimensions();
+            ConfigureNativeScrollbar();
+            QueueTmuxScrollbarRefresh(true);
+        }
+    }
+
+    private async Task WatchRecoveredSshStartupAsync(DateTime startedUtc)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(32);
+        while (DateTime.UtcNow < deadline && initialStartupSucceeded)
+        {
+            await Task.Delay(500);
+            var marker = SshLaunchStore.Load(Profile.Id);
+            switch (EvaluateRecoveredSshStartup(
+                        Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc))
+            {
+                case RecoveredSshStartupState.Ready:
+                    return;
+                case RecoveredSshStartupState.Failed:
+                    await Dispatcher.InvokeAsync(() => MarkRecoveredSshStartupFailed(
+                        "SSH recovery could not connect",
+                        "The saved SSH/tmux session is still available. Check the network or credentials, then retry this terminal."));
+                    return;
+            }
+        }
+        if (!initialStartupSucceeded) return;
+        await Dispatcher.InvokeAsync(() => MarkRecoveredSshStartupFailed(
+            "SSH recovery timed out",
+            "PowerShellPlus did not receive a remote shell handshake. The saved tmux session remains available; check the connection, then retry."));
+    }
+
+    private void MarkRecoveredSshStartupFailed(string title, string detail)
+    {
+        initialStartupSucceeded = false;
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
+        ShowStartupFailure(title, detail);
+    }
+
+    private static RecoveredSshStartupState EvaluateRecoveredSshStartup(
+        long remoteDirectoryMarkerTicks, SshLaunchMarker? marker, DateTime startedUtc)
+    {
+        if (remoteDirectoryMarkerTicks >= startedUtc.AddSeconds(-2).Ticks)
+            return RecoveredSshStartupState.Ready;
+        if (marker?.RecoveryAttempt == true && marker.StartedUtc >= startedUtc.AddSeconds(-2) && marker.IsFailedRecovery)
+            return RecoveredSshStartupState.Failed;
+        return RecoveredSshStartupState.Waiting;
+    }
+
+    private void SetStartupRetryingState(string message)
+    {
+        StartupFailureOverlay.Visibility = Visibility.Visible;
+        TerminalSurfaceGrid.Visibility = Visibility.Hidden;
+        StartupFailureTitle.Text = message;
+        StartupFailureDetail.Text = "PowerShellPlus is restoring the saved shell and its persistent session.";
+        StartupRetryButton.IsEnabled = false;
+        StartupRetryButton.Content = "Retrying…";
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
+    }
+
+    private void ShowStartupFailure(string title, string detail)
+    {
+        StartupFailureTitle.Text = title;
+        StartupFailureDetail.Text = detail;
+        StartupRetryButton.Content = "Retry";
+        StartupRetryButton.IsEnabled = true;
+        StartupFailureOverlay.Visibility = Visibility.Visible;
+        TerminalSurfaceGrid.Visibility = Visibility.Hidden;
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Error);
+    }
+
+    private void HideStartupFailure()
+    {
+        StartupFailureOverlay.Visibility = Visibility.Collapsed;
+        if (RecoveryOverlay.Visibility != Visibility.Visible && AttachmentPreviewOverlay.Visibility != Visibility.Visible)
+            TerminalSurfaceGrid.Visibility = Visibility.Visible;
+    }
+
+    private static void LogTerminalStartupError(Exception exception, int attempt)
+    {
+        try
+        {
+            Directory.CreateDirectory(WorkspaceStore.DirectoryPath);
+            File.AppendAllText(Path.Combine(WorkspaceStore.DirectoryPath, "native-errors.log"),
+                $"[{DateTime.Now:O}] Terminal startup attempt {attempt}: {exception}\n");
+        }
+        catch { }
+    }
+
+    private async void RetryTerminalStartupClick(object sender, RoutedEventArgs e)
+    {
+        var succeeded = await EnsureTerminalStartupAsync(true);
+        if (!succeeded) return;
+        if (IsLoaded) await RebindNativeScrollbarAfterRestartAsync();
+        ConfigureRecoveryView();
+        Terminal.Focus();
+    }
+
+    internal int StartupAttemptCountForTest => startupAttemptCount;
+    internal string StartupDiagnosticForTest => startupDiagnostic;
+    internal string StartupCommandLineForTest => Terminal.StartupCommandLine;
+    internal bool StartupFailureVisibleForTest => StartupFailureOverlay.Visibility == Visibility.Visible;
+    internal bool StartupRetryButtonReadyForTest => StartupRetryButton.IsEnabled && Equals(StartupRetryButton.Content, "Retry");
+    internal void SetStartupAttemptOverrideForTest(Func<int, Task<bool>>? value) => startupAttemptOverrideForTest = value;
+    internal Task<bool> RetryTerminalStartupForTestAsync() => EnsureTerminalStartupAsync(true);
+    internal static bool RecoveredSshStartupContractPassesForTest()
+    {
+        var startedUtc = new DateTime(2026, 8, 8, 7, 0, 0, DateTimeKind.Utc);
+        var active = new SshLaunchMarker
+        {
+            PaneId = "active-fixture",
+            StartedUtc = startedUtc.AddMilliseconds(50),
+            ConnectionArguments = ["ubuntu@example.com"],
+            RecoveryAttempt = true
+        };
+        var failed = new SshLaunchMarker
+        {
+            PaneId = "failed-fixture",
+            StartedUtc = startedUtc.AddMilliseconds(50),
+            ConnectionArguments = ["ubuntu@example.com"],
+            RecoveryAttempt = true,
+            EndedUtc = startedUtc.AddSeconds(1),
+            ExitCode = 255
+        };
+        return EvaluateRecoveredSshStartup(0, active, startedUtc) == RecoveredSshStartupState.Waiting
+            && EvaluateRecoveredSshStartup(0, failed, startedUtc) == RecoveredSshStartupState.Failed
+            && EvaluateRecoveredSshStartup(startedUtc.AddSeconds(1).Ticks, active, startedUtc) == RecoveredSshStartupState.Ready;
+    }
 
     private void ApplyAccent()
     {
@@ -2911,6 +3190,7 @@ public partial class TerminalPane : UserControl
         }
         if (path is null) return;
         var isSsh = path.StartsWith("/", StringComparison.Ordinal) || path.StartsWith("~/", StringComparison.Ordinal);
+        if (isSsh) Interlocked.Exchange(ref lastRemoteDirectoryMarkerTicks, DateTime.UtcNow.Ticks);
         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() => ApplyWorkingDirectory(path, isSsh)));
     }
 

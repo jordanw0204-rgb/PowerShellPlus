@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer saveTimer;
     private readonly DispatcherTimer automationTimer;
     private readonly DispatcherTimer recoveryTimer;
+    private readonly SemaphoreSlim terminalStartupThrottle = new(3, 3);
     private readonly DispatcherTimer workspaceSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer terminalTabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer terminalDragSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
@@ -150,7 +151,12 @@ public partial class MainWindow : Window
 
     internal async Task WaitForTerminalStartupAsync(Action<StartupProgress>? report, TimeSpan? timeout = null)
     {
-        var pending = panes.Values.Select(async pane => (Pane: pane, Ready: await pane.StartupReady)).ToList();
+        // Pane construction is intentionally independent from visual selection.
+        // Inactive Sessions and hidden Tabs/Focus terminals are not in WPF's
+        // visual tree, so their Loaded event cannot be their startup trigger.
+        // Start every saved backend here with bounded concurrency; the pane will
+        // attach its already-running ConPTY when it later becomes visible.
+        var pending = panes.Values.Select(StartTerminalForWorkspaceAsync).ToList();
         if (pending.Count == 0)
         {
             report?.Invoke(new StartupProgress("Workspace ready", "No terminals need to be started", 1, 1));
@@ -159,6 +165,8 @@ public partial class MainWindow : Window
 
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(30));
         var completed = 0;
+        var readyCount = 0;
+        var failedCount = 0;
         while (pending.Count > 0 && DateTime.UtcNow < deadline)
         {
             var remaining = deadline - DateTime.UtcNow;
@@ -167,16 +175,56 @@ public partial class MainWindow : Window
             if (ReferenceEquals(completion, timeoutTask)) break;
             var terminalCompletion = (Task<(TerminalPane Pane, bool Ready)>)completion;
             pending.Remove(terminalCompletion);
-            var result = await terminalCompletion;
+            (TerminalPane Pane, bool Ready) result;
+            try { result = await terminalCompletion; }
+            catch (Exception exception)
+            {
+                LogNativeError("Background terminal startup", exception);
+                completed++;
+                failedCount++;
+                report?.Invoke(new StartupProgress("Terminal needs attention", exception.GetBaseException().Message, completed, panes.Count));
+                continue;
+            }
             completed++;
+            if (result.Ready) readyCount++; else failedCount++;
             report?.Invoke(new StartupProgress(result.Ready ? "Terminal ready" : "Terminal needs attention",
                 result.Pane.Profile.Name, completed, panes.Count));
         }
 
         if (pending.Count > 0)
             report?.Invoke(new StartupProgress("Opening workspace", $"{pending.Count} terminals are still starting in the background", completed, panes.Count));
+        else if (failedCount > 0)
+            report?.Invoke(new StartupProgress("Workspace needs attention", $"{readyCount} terminals started · {failedCount} show a Retry action", completed, panes.Count));
         else
-            report?.Invoke(new StartupProgress("Workspace ready", $"Started {completed} terminals", completed, panes.Count));
+            report?.Invoke(new StartupProgress("Workspace ready", $"Started {readyCount} terminals", completed, panes.Count));
+    }
+
+    private async Task<(TerminalPane Pane, bool Ready)> StartTerminalForWorkspaceAsync(TerminalPane pane)
+    {
+        await terminalStartupThrottle.WaitAsync();
+        var mountedForWarmup = false;
+        try
+        {
+            if (!pane.Profile.IsRemoteDetached && !pane.HasStartupAttemptOverrideForTest
+                && !pane.IsLoaded && VisualTreeHelper.GetParent(pane) is null)
+            {
+                pane.Visibility = Visibility.Visible;
+                TerminalWarmupHost.Children.Add(pane);
+                mountedForWarmup = true;
+                await Dispatcher.Yield(DispatcherPriority.Loaded);
+                await Dispatcher.Yield(DispatcherPriority.Render);
+            }
+            var ready = pane.Profile.IsRemoteDetached || pane.HasStartupAttemptOverrideForTest
+                ? await pane.EnsureTerminalStartupAsync()
+                : await pane.StartupReady;
+            return (pane, ready);
+        }
+        finally
+        {
+            if (mountedForWarmup && ReferenceEquals(VisualTreeHelper.GetParent(pane), TerminalWarmupHost))
+                TerminalWarmupHost.Children.Remove(pane);
+            terminalStartupThrottle.Release();
+        }
     }
 
     internal int TerminalCountForStartup => panes.Count;
@@ -1081,7 +1129,11 @@ public partial class MainWindow : Window
         {
             TerminalHost.RowDefinitions.Add(new RowDefinition()); TerminalHost.ColumnDefinitions.Add(new ColumnDefinition());
             foreach (var pane in ordered) if (pane != activePane) pane.Visibility = Visibility.Collapsed;
-            if (activePane is not null) TerminalHost.Children.Add(activePane);
+            if (activePane is not null)
+            {
+                TerminalWarmupHost.Children.Remove(activePane);
+                TerminalHost.Children.Add(activePane);
+            }
         }
         else
         {
@@ -1106,7 +1158,9 @@ public partial class MainWindow : Window
             }
             for (var index = 0; index < ordered.Count; index++)
             {
-                var pane = ordered[index]; Grid.SetColumn(pane, (index % columns) * 2); Grid.SetRow(pane, (index / columns) * 2); TerminalHost.Children.Add(pane);
+                var pane = ordered[index];
+                TerminalWarmupHost.Children.Remove(pane);
+                Grid.SetColumn(pane, (index % columns) * 2); Grid.SetRow(pane, (index / columns) * 2); TerminalHost.Children.Add(pane);
             }
             for (var column = 0; column < columns - 1; column++)
             {
@@ -2377,8 +2431,73 @@ public partial class MainWindow : Window
         while (DateTime.UtcNow < deadline) { await Task.Delay(150); output = pane.GetOutput(); if (output.Contains("PSPLUS_NATIVE=True,True", StringComparison.Ordinal)) break; }
         var success = output.Contains("PSPLUS_NATIVE=True,True", StringComparison.Ordinal);
         Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Microsoft TerminalControl hosts interactive ConPTY input/output.\nProfile={terminalProfile.ProfileName}\nFont={terminalProfile.FontFace}\nScheme={terminalProfile.SchemeName}\n\n{output}");
+        File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Microsoft TerminalControl hosts interactive ConPTY input/output.\nProfile={terminalProfile.ProfileName}\nFont={terminalProfile.FontFace}\nScheme={terminalProfile.SchemeName}\nStartup={pane.StartupDiagnosticForTest}\nCommand={pane.StartupCommandLineForTest}\n\n{output}");
         return success;
+    }
+
+    public async Task<bool> RunStartupRecoverySmokeTestAsync(string reportPath)
+    {
+        var fixtures = new List<SessionProfile>();
+        TerminalPane? retryFixture = null;
+        try
+        {
+            for (var index = 1; index <= 5; index++)
+            {
+                var profile = new SessionProfile
+                {
+                    Name = $"Inactive recovery fixture {index}",
+                    CommandLine = terminalProfile.CommandLine,
+                    WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                };
+                fixtures.Add(profile);
+                CreatePane(profile);
+                panes[profile.Id].SetStartupAttemptOverrideForTest(_ => Task.FromResult(true));
+            }
+
+            var queued = fixtures.Select(profile => StartTerminalForWorkspaceAsync(panes[profile.Id])).ToArray();
+            var results = await Task.WhenAll(queued);
+            var inactiveTerminalsStartEagerly = results.All(value => value.Ready)
+                && fixtures.All(profile => panes[profile.Id].StartupAttemptCountForTest == 1 && !panes[profile.Id].IsLoaded);
+            var warmupHostContract = TerminalWarmupHost.Width >= 800 && TerminalWarmupHost.Height >= 480
+                && VisualTreeHelper.GetParent(TerminalWarmupHost) is Canvas { ClipToBounds: true, IsHitTestVisible: false };
+
+            retryFixture = new TerminalPane(new SessionProfile
+            {
+                Name = "Startup retry fixture",
+                CommandLine = terminalProfile.CommandLine,
+                WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            }, EffectiveAppearance());
+            retryFixture.SetStartupAttemptOverrideForTest(_ => Task.FromResult(false));
+            var initialResult = await retryFixture.EnsureTerminalStartupAsync();
+            var failureOffersRetry = !initialResult && retryFixture.StartupAttemptCountForTest == 3
+                && retryFixture.StartupFailureVisibleForTest && retryFixture.StartupRetryButtonReadyForTest;
+            retryFixture.SetStartupAttemptOverrideForTest(_ => Task.FromResult(true));
+            var manualRetryWorks = await retryFixture.RetryTerminalStartupForTestAsync()
+                && !retryFixture.StartupFailureVisibleForTest;
+            var recoveredSshHandshakeContract = TerminalPane.RecoveredSshStartupContractPassesForTest();
+
+            var success = inactiveTerminalsStartEagerly && warmupHostContract && failureOffersRetry && manualRetryWorks
+                && recoveredSshHandshakeContract;
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+            File.WriteAllText(reportPath,
+                $"{(success ? "PASS" : "FAIL")} Every saved terminal is queued independently of Session selection, and failed recovery exposes a reusable Retry action.\n"
+                + $"InactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nWarmupHostContract={warmupHostContract}\n"
+                + $"FailureOffersRetry={failureOffersRetry}\nManualRetryWorks={manualRetryWorks}\n"
+                + $"RecoveredSshHandshakeContract={recoveredSshHandshakeContract}\n"
+                + $"QueuedTerminals={results.Length}\nAttempts={string.Join(',', fixtures.Select(profile => panes[profile.Id].StartupAttemptCountForTest))}");
+            return success;
+        }
+        finally
+        {
+            retryFixture?.Stop();
+            foreach (var profile in fixtures)
+            {
+                if (!panes.Remove(profile.Id, out var pane)) continue;
+                TerminalWarmupHost.Children.Remove(pane);
+                TerminalHost.Children.Remove(pane);
+                pane.Stop();
+            }
+        }
     }
 
     public async Task<bool> RunWindowsTerminalCaptureSmokeTestAsync(string reportPath)
@@ -3170,6 +3289,32 @@ public partial class MainWindow : Window
                 var profile = new SessionProfile { Name = $"PowerShell {index}", CommandLine = terminalProfile.CommandLine, WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) };
                 added.Add(profile); AddTerminalToActiveSession(profile); CreatePane(profile);
             }
+            // These panes have not been placed in TerminalHost yet. The startup
+            // coordinator must still visit all of them; this is the regression
+            // that previously made inactive Sessions wait for a click.
+            foreach (var profile in added)
+                panes[profile.Id].SetStartupAttemptOverrideForTest(_ => Task.FromResult(true));
+            await WaitForTerminalStartupAsync(null, TimeSpan.FromSeconds(3));
+            var inactiveTerminalsStartEagerly = added.All(profile =>
+                !panes[profile.Id].IsLoaded && panes[profile.Id].StartupAttemptCountForTest == 1);
+            foreach (var profile in added) panes[profile.Id].SetStartupAttemptOverrideForTest(null);
+
+            var retryFixture = new TerminalPane(new SessionProfile
+            {
+                Name = "Startup retry fixture",
+                CommandLine = terminalProfile.CommandLine,
+                WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            }, EffectiveAppearance());
+            retryFixture.SetStartupAttemptOverrideForTest(_ => Task.FromResult(false));
+            var initialRetryFixtureResult = await retryFixture.EnsureTerminalStartupAsync();
+            var startupFailureOffersRetry = !initialRetryFixtureResult
+                && retryFixture.StartupAttemptCountForTest == 3
+                && retryFixture.StartupFailureVisibleForTest
+                && retryFixture.StartupRetryButtonReadyForTest;
+            retryFixture.SetStartupAttemptOverrideForTest(_ => Task.FromResult(true));
+            var startupManualRetryWorks = await retryFixture.RetryTerminalStartupForTestAsync()
+                && !retryFixture.StartupFailureVisibleForTest;
+            retryFixture.Stop();
             quickAccessFixture = new CommandSnippet { Name = "Queue smoke", Category = "Test", Command = "Write-Output 'QUICK_ACCESS_READY'", ShowInQuickAccess = true };
             state.Snippets.Add(quickAccessFixture);
             SetLayout("Grid");
@@ -4054,6 +4199,7 @@ public partial class MainWindow : Window
             var success = inputReady && outputReady && recoveryCapturesOutput && recoverySnapshotsAvoidUiThread
                 && recoveryOutputBuffersBounded && dependencyOutputLoggingDisabled
                 && terminalScrollbarsThemed && terminalScrollbarsInteractive && terminalScrollbarBridgesStable
+                && inactiveTerminalsStartEagerly && startupFailureOffersRetry && startupManualRetryWorks
                 && tmuxScrollbackBridgeContract && persistentTmuxScrollChannelContract && trayLifecycleContract
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
                 && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
@@ -4092,6 +4238,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalTabHoverPreviews={terminalTabHoverPreviews}\nTerminalTabHoverRestores={terminalTabHoverRestores}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
+            File.AppendAllText(reportPath, $"\nInactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nStartupFailureOffersRetry={startupFailureOffersRetry}\nStartupManualRetryWorks={startupManualRetryWorks}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
             File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}\nQueuedTypingMilliseconds={queuedTyping.Total.TotalMilliseconds:F1}\nQueuedTypingP50DispatchMilliseconds={queuedTyping.P50DispatchMilliseconds:F2}\nQueuedTypingP95DispatchMilliseconds={queuedTyping.P95DispatchMilliseconds:F2}\nQueuedTypingMaxDispatchMilliseconds={queuedTyping.MaximumDispatchMilliseconds:F2}\nQueuedTypingP95EditMilliseconds={queuedTyping.P95EditMilliseconds:F2}\nQueuedTypingMaxEditMilliseconds={queuedTyping.MaximumEditMilliseconds:F2}\nQueuedTypingLayoutUpdates={queuedTyping.LayoutUpdates}\nHumanTypingMilliseconds={humanTyping.Total.TotalMilliseconds:F1}\nHumanTypingP50DispatchMilliseconds={humanTyping.P50DispatchMilliseconds:F2}\nHumanTypingP95DispatchMilliseconds={humanTyping.P95DispatchMilliseconds:F2}\nHumanTypingMaxDispatchMilliseconds={humanTyping.MaximumDispatchMilliseconds:F2}\nHumanTypingP95EditMilliseconds={humanTyping.P95EditMilliseconds:F2}\nHumanTypingMaxEditMilliseconds={humanTyping.MaximumEditMilliseconds:F2}\nHumanTypingLayoutUpdates={humanTyping.LayoutUpdates}");

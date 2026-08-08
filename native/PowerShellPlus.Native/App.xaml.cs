@@ -84,17 +84,20 @@ public partial class App : Application
         var handoffSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--handoff-smoke", StringComparison.OrdinalIgnoreCase));
         var tailscaleInstallerSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--tailscale-installer-smoke", StringComparison.OrdinalIgnoreCase));
         var updateSmoke = e.Args.FirstOrDefault(value => value.StartsWith("--update-smoke", StringComparison.OrdinalIgnoreCase));
-        if (smoke is not null || codexSmoke is not null || multiSmoke is not null || persistenceSmoke is not null || windowsTerminalSmoke is not null || lanRemoteSmoke is not null || handoffSmoke is not null || tailscaleInstallerSmoke is not null || updateSmoke is not null)
+        var startupRecoverySmoke = e.Args.FirstOrDefault(value => value.StartsWith("--startup-recovery-smoke", StringComparison.OrdinalIgnoreCase));
+        if (smoke is not null || codexSmoke is not null || multiSmoke is not null || persistenceSmoke is not null || windowsTerminalSmoke is not null || lanRemoteSmoke is not null || handoffSmoke is not null || tailscaleInstallerSmoke is not null || updateSmoke is not null || startupRecoverySmoke is not null)
         {
             ParkAutomationWindow(window);
-            var argument = updateSmoke ?? tailscaleInstallerSmoke ?? handoffSmoke ?? lanRemoteSmoke ?? windowsTerminalSmoke ?? persistenceSmoke ?? multiSmoke ?? codexSmoke ?? smoke!;
-            var defaultName = updateSmoke is not null ? "native-update-smoke.txt" : tailscaleInstallerSmoke is not null ? "native-tailscale-installer-smoke.txt" : handoffSmoke is not null ? "native-handoff-smoke.txt" : lanRemoteSmoke is not null ? "native-lan-remote-smoke.txt" : windowsTerminalSmoke is not null ? "native-windows-terminal-smoke.txt" : persistenceSmoke is not null ? "native-persistence-smoke.txt" : multiSmoke is not null ? "native-multi-smoke.txt" : codexSmoke is not null ? "native-codex-smoke.txt" : "native-smoke.txt";
+            var argument = startupRecoverySmoke ?? updateSmoke ?? tailscaleInstallerSmoke ?? handoffSmoke ?? lanRemoteSmoke ?? windowsTerminalSmoke ?? persistenceSmoke ?? multiSmoke ?? codexSmoke ?? smoke!;
+            var defaultName = startupRecoverySmoke is not null ? "native-startup-recovery-smoke.txt" : updateSmoke is not null ? "native-update-smoke.txt" : tailscaleInstallerSmoke is not null ? "native-tailscale-installer-smoke.txt" : handoffSmoke is not null ? "native-handoff-smoke.txt" : lanRemoteSmoke is not null ? "native-lan-remote-smoke.txt" : windowsTerminalSmoke is not null ? "native-windows-terminal-smoke.txt" : persistenceSmoke is not null ? "native-persistence-smoke.txt" : multiSmoke is not null ? "native-multi-smoke.txt" : codexSmoke is not null ? "native-codex-smoke.txt" : "native-smoke.txt";
             var report = argument.Contains('=') ? argument[(argument.IndexOf('=') + 1)..] : Path.Combine(AppContext.BaseDirectory, defaultName);
             window.Loaded += async (_, _) =>
             {
                 try
                 {
-                    var success = updateSmoke is not null
+                    var success = startupRecoverySmoke is not null
+                        ? await window.RunStartupRecoverySmokeTestAsync(Path.GetFullPath(report))
+                        : updateSmoke is not null
                         ? await ApplicationUpdater.RunContractSmokeAsync(Path.GetFullPath(report))
                         : tailscaleInstallerSmoke is not null
                         ? await TailscaleInstaller.RunDownloadSmokeAsync(Path.GetFullPath(report))
@@ -226,7 +229,8 @@ public partial class App : Application
         || value.StartsWith("--lan-remote-smoke", StringComparison.OrdinalIgnoreCase)
         || value.StartsWith("--handoff-smoke", StringComparison.OrdinalIgnoreCase)
         || value.StartsWith("--tailscale-installer-smoke", StringComparison.OrdinalIgnoreCase)
-        || value.StartsWith("--update-smoke", StringComparison.OrdinalIgnoreCase);
+        || value.StartsWith("--update-smoke", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("--startup-recovery-smoke", StringComparison.OrdinalIgnoreCase);
 
     private static void ParkAutomationWindow(Window window)
     {

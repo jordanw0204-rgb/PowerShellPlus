@@ -237,6 +237,16 @@
           <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" FontSize="11" Background="#0B0B12" BorderBrush="#45475A" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"/>
         </Grid>
       </Border>
+      <Border x:Name="StartupFailureOverlay" Grid.Row="1" Panel.ZIndex="12" Background="#FA11111B" Visibility="Collapsed">
+        <StackPanel Width="390" MaxWidth="520" Margin="22" HorizontalAlignment="Center" VerticalAlignment="Center">
+          <Border Width="42" Height="42" CornerRadius="21" Background="#2A241F" BorderBrush="#F9E2AF" BorderThickness="1" HorizontalAlignment="Center">
+            <TextBlock Text="!" Foreground="#F9E2AF" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <TextBlock x:Name="StartupFailureTitle" Text="Terminal recovery failed" Margin="0,14,0,0" Foreground="#CDD6F4" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+          <TextBlock x:Name="StartupFailureDetail" Text="The saved terminal did not become ready." Margin="0,7,0,0" Foreground="#A6ADC8" FontSize="11" TextAlignment="Center" TextWrapping="Wrap"/>
+          <Button x:Name="StartupRetryButton" Content="Retry" Margin="0,16,0,0" MinWidth="104" Padding="16,7" HorizontalAlignment="Center" Click="RetryTerminalStartupClick"/>
+        </StackPanel>
+      </Border>
     </Grid>
   </Border>
 </UserControl>
