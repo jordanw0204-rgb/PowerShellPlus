@@ -678,10 +678,10 @@ public partial class MainWindow
                 && !TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Parse("192.168.1.2"))
                 && TailscaleFunnelManager.IsPublicInternetAddress(IPAddress.Parse("199.38.181.54"));
             var funnelArgumentsSafe = TailscaleFunnelManager.BuildFunnelArguments(43199)
-                    .SequenceEqual(["funnel", "--yes", "--https=443", "http://127.0.0.1:43199"])
+                    .SequenceEqual(["funnel", "--bg", "--yes", "--https=443", "http://127.0.0.1:43199"])
                 && TailscaleFunnelManager.BuildStopArguments(43199)
-                    .SequenceEqual(["funnel", "--https=443", "http://127.0.0.1:43199", "off"])
-                && !TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
+                    .SequenceEqual(["funnel", "--yes", "--https=443", "off"])
+                && TailscaleFunnelManager.BuildFunnelArguments(43199).Contains("--bg", StringComparer.Ordinal);
             const string tailscaleStoppedFixture = "{\"BackendState\":\"Stopped\"}";
             var ownedConnectionCalls = new List<string>();
             var fakeTailscaleOnline = false;
