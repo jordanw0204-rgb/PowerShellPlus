@@ -14,9 +14,9 @@ $stagedZip = Join-Path $root 'PowerShellPlus-win-x64-staged.zip'
 $output = [IO.Path]::GetFullPath((Join-Path $root 'build\installer'))
 $script = Join-Path $root 'installer\PowerShellPlus.iss'
 $installerSource = Get-Content -LiteralPath $script -Raw
-if ($installerSource -notmatch [regex]::Escape('Name: "{autodesktop}\PowerShellPlus"')
-    -or $installerSource -notmatch [regex]::Escape('Filename: "{app}\PowerShellPlus.exe"')
-    -or $installerSource -notmatch 'ShouldCreateDesktopShortcut') {
+if (($installerSource -notmatch [regex]::Escape('Name: "{autodesktop}\PowerShellPlus"')) -or
+    ($installerSource -notmatch [regex]::Escape('Filename: "{app}\PowerShellPlus.exe"')) -or
+    ($installerSource -notmatch 'ShouldCreateDesktopShortcut')) {
     throw 'The installer must create a stable PowerShellPlus desktop shortcut by default.'
 }
 
