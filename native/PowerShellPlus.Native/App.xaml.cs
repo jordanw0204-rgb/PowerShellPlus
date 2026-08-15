@@ -41,6 +41,12 @@ public partial class App : Application
             startupWindow = new StartupWindow();
             startupWindow.Show();
             startupWindow.Report(new StartupProgress("Starting PowerShellPlus", "Preparing the native terminal workspace", 0, 1));
+            if (await StartupUpdateGate.TryStartAcceptedUpdateAsync(startupWindow))
+            {
+                startupWindow.Close();
+                Shutdown(0);
+                return;
+            }
         }
 
         MainWindow window;

@@ -42,15 +42,12 @@ VersionInfoDescription=PowerShellPlus Installer
 VersionInfoProductName=PowerShellPlus
 VersionInfoProductVersion={#MyAppVersion}
 
-[Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
-
 [Files]
 Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\PowerShellPlus"; Filename: "{app}\PowerShellPlus.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\PowerShellPlus"; Filename: "{app}\PowerShellPlus.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\PowerShellPlus"; Filename: "{app}\PowerShellPlus.exe"; WorkingDir: "{app}"; Check: ShouldCreateDesktopShortcut
 
 [Run]
 Filename: "{app}\PowerShellPlus.exe"; Description: "Launch PowerShellPlus"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
@@ -60,4 +57,11 @@ Filename: "{app}\PowerShellPlus.exe"; WorkingDir: "{app}"; Flags: nowait skipifd
 function IsSilentUpdate: Boolean;
 begin
   Result := WizardSilent and (ExpandConstant('{param:UPDATE|0}') = '1');
+end;
+
+function ShouldCreateDesktopShortcut: Boolean;
+begin
+  { The production installer and every updater refresh this stable shortcut. }
+  { Isolated installer smoke tests opt out so they never touch the real desktop. }
+  Result := ExpandConstant('{param:NODESKTOPSHORTCUT|0}') <> '1';
 end;

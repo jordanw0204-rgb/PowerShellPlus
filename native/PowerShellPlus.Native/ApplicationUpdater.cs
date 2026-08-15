@@ -275,6 +275,7 @@ internal static class ApplicationUpdater
             """;
             var release = ParseLatestRelease(fixture);
             var startInfo = CreateInstallerStartInfo(installerPath);
+            var startupGateDirectory = Path.Combine(directory, "startup-gate");
             var success = release.Version == new Version(99, 2, 3)
                 && release.InstallerSize == bytes.Length
                 && release.InstallerSha256 == digest.ToLowerInvariant()
@@ -284,11 +285,12 @@ internal static class ApplicationUpdater
                 && !TryParseReleaseVersion("v4.10.0-beta", out _)
                 && startInfo.Arguments.Contains("/UPDATE=1", StringComparison.Ordinal)
                 && startInfo.Arguments.Contains("/CLOSEAPPLICATIONS", StringComparison.Ordinal)
-                && startInfo.UseShellExecute;
+                && startInfo.UseShellExecute
+                && StartupUpdateGate.ContractPassesForTest(startupGateDirectory);
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             await File.WriteAllTextAsync(reportPath,
                 $"{(success ? "PASS" : "FAIL")} GitHub release parsing, semantic versioning, installer trust boundaries, SHA-256 verification, and update launch arguments.\n" +
-                $"Release={release.TagName}\nDigestVerified={VerifySha256(installerPath, digest)}\nUnsafePrereleaseRejected={!TryParseReleaseVersion("v4.10.0-beta", out _)}\nInstallerArguments={startInfo.Arguments}");
+                $"Release={release.TagName}\nDigestVerified={VerifySha256(installerPath, digest)}\nUnsafePrereleaseRejected={!TryParseReleaseVersion("v4.10.0-beta", out _)}\nStartupUpdatePreferenceGate={StartupUpdateGate.ContractPassesForTest(startupGateDirectory)}\nInstallerArguments={startInfo.Arguments}");
             return success;
         }
         catch (Exception exception)

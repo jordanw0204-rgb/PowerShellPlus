@@ -31,7 +31,7 @@
         </Grid>
         <StackPanel Grid.Column="1" Margin="16,3,0,0">
           <TextBlock Text="PowerShellPlus" FontSize="22" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-          <TextBlock Text="Restoring your workspace" FontSize="11" Foreground="#89B4FA" Margin="0,4,0,0"/>
+          <TextBlock Text="Safe startup · updates before sessions" FontSize="11" Foreground="#89B4FA" Margin="0,4,0,0"/>
         </StackPanel>
       </Grid>
 

@@ -142,11 +142,6 @@ public partial class MainWindow : Window
         Closing += WindowClosing;
         SourceInitialized += (_, _) => InitializeWindowsTerminalImport();
         if (!automationMode) InitializeTrayIcon();
-        if (!automationMode) Loaded += async (_, _) =>
-        {
-            await Task.Delay(900);
-            await CheckForUpdatesAsync(manual: false);
-        };
     }
 
     internal async Task WaitForTerminalStartupAsync(Action<StartupProgress>? report, TimeSpan? timeout = null)

@@ -13,6 +13,12 @@ $release = Join-Path $root 'release-native'
 $stagedZip = Join-Path $root 'PowerShellPlus-win-x64-staged.zip'
 $output = [IO.Path]::GetFullPath((Join-Path $root 'build\installer'))
 $script = Join-Path $root 'installer\PowerShellPlus.iss'
+$installerSource = Get-Content -LiteralPath $script -Raw
+if ($installerSource -notmatch [regex]::Escape('Name: "{autodesktop}\PowerShellPlus"')
+    -or $installerSource -notmatch [regex]::Escape('Filename: "{app}\PowerShellPlus.exe"')
+    -or $installerSource -notmatch 'ShouldCreateDesktopShortcut') {
+    throw 'The installer must create a stable PowerShellPlus desktop shortcut by default.'
+}
 
 if (-not $SkipAppBuild)
 {
@@ -58,7 +64,7 @@ if ($RunSmokeTest)
     $buildRoot = [IO.Path]::GetFullPath((Join-Path $root 'build'))
     if (-not $smokeDir.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Installer smoke path escaped the build directory.' }
     if (Test-Path -LiteralPath $smokeDir) { Remove-Item -LiteralPath $smokeDir -Recurse -Force }
-    $install = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCLOSEAPPLICATIONS',"/DIR=$smokeDir",'/UPDATE=0') -Wait -PassThru
+    $install = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCLOSEAPPLICATIONS','/NODESKTOPSHORTCUT=1',"/DIR=$smokeDir",'/UPDATE=0') -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "Installer smoke install failed with exit code $($install.ExitCode)." }
     $installedExe = Join-Path $smokeDir 'PowerShellPlus.exe'
     $uninstaller = Join-Path $smokeDir 'unins000.exe'
