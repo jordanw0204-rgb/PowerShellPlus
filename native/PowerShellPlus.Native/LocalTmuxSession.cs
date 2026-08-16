@@ -12,6 +12,7 @@ public readonly record struct LocalTmuxStatus(
     string Message);
 
 internal readonly record struct LocalTmuxPersistenceSmokeResult(bool Available, bool Passed, string Diagnostic);
+internal readonly record struct LocalTmuxCommandResult(bool Started, int ExitCode, string Output, string Message);
 
 /// <summary>
 /// Hosts a configured Windows command inside tmux through WSL interoperability.
@@ -96,6 +97,15 @@ internal static class LocalTmuxSession
         return new LocalTmuxStatus(succeeded, result.Started, succeeded, succeeded, distribution,
             succeeded ? "The local tmux client detached without stopping its session."
                 : string.IsNullOrWhiteSpace(result.Message) ? "The local tmux client could not be detached." : result.Message);
+    }
+
+    internal static async Task<LocalTmuxCommandResult> RunCommandAsync(string? distribution, string command,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return new LocalTmuxCommandResult(false, -1, string.Empty, "A tmux command is required.");
+        var result = await RunWslAsync(distribution, ["--exec", "sh", "-lc", command], cancellationToken);
+        return new LocalTmuxCommandResult(result.Started, result.ExitCode, result.Output, result.Message);
     }
 
     public static async Task<LocalTmuxStatus> EnsureDetachedAsync(SessionProfile profile, string workloadCommandLine,
@@ -220,7 +230,9 @@ internal static class LocalTmuxSession
         Process? client = null;
         try
         {
-            var ensured = await EnsureDetachedAsync(profile, "powershell.exe -NoLogo -NoProfile -NoExit", cancellationToken);
+            var ensured = await EnsureDetachedAsync(profile,
+                "powershell.exe -NoLogo -NoProfile -NoExit -Command \"1..240 | ForEach-Object { Write-Output ('PSP_SCROLL_' + $_) }\"",
+                cancellationToken);
             if (!ensured.CommandSucceeded || !ensured.SessionExists)
                 return new LocalTmuxPersistenceSmokeResult(true, false, ensured.Message);
             var managerPath = Path.Combine(DirectoryPath, SessionRecoveryStore.SafeSessionId(profile.Id) + "-manager.sh");
@@ -259,6 +271,25 @@ internal static class LocalTmuxSession
             while (DateTime.UtcNow < launchDeadline);
             if (!running.SessionExists) return new LocalTmuxPersistenceSmokeResult(true, false, running.Message);
 
+            var scrollbackDeadline = DateTime.UtcNow.AddSeconds(8);
+            RemoteTmuxScrollbackState scrollback = default;
+            do
+            {
+                scrollback = await RemoteTmuxScrollback.ProbeLocalAsync(profile.Id, availability.Distribution, cancellationToken);
+                if (scrollback.Succeeded && scrollback.HistorySize > 0) break;
+                await Task.Delay(150, cancellationToken);
+            }
+            while (DateTime.UtcNow < scrollbackDeadline);
+            if (!scrollback.Succeeded || scrollback.HistorySize <= 0)
+                return new LocalTmuxPersistenceSmokeResult(true, false,
+                    "The local tmux workload survived, but its history did not produce a scrollbar range.");
+            var requestedScroll = Math.Min(12, scrollback.HistorySize);
+            var scrolled = await RemoteTmuxScrollback.ScrollAndProbeLocalAsync(profile.Id,
+                availability.Distribution, requestedScroll, cancellationToken);
+            if (!scrolled.Succeeded || !scrolled.IsCopyMode || scrolled.ScrollPosition != requestedScroll)
+                return new LocalTmuxPersistenceSmokeResult(true, false,
+                    "The local tmux history range was detected, but scrollbar movement did not enter the requested copy-mode position.");
+
             // Exercise the same graceful detach used by app restart/shutdown.
             // Force-terminating wsl.exe can tear down its interop job before
             // tmux observes a client disconnect.
@@ -271,8 +302,14 @@ internal static class LocalTmuxSession
             }
             await Task.Delay(500, cancellationToken);
             var detached = await ProbeAsync(availability.Distribution, profile.Id, cancellationToken);
-            return new LocalTmuxPersistenceSmokeResult(true, detached.SessionExists,
-                detached.SessionExists ? "A Windows PowerShell workload survived its WSL/tmux client disconnect." : detached.Message);
+            var recoveredScrollback = detached.SessionExists
+                ? await RemoteTmuxScrollback.ProbeLocalAsync(profile.Id, availability.Distribution, cancellationToken)
+                : default;
+            var passed = detached.SessionExists && recoveredScrollback.Succeeded && recoveredScrollback.HistorySize > 0;
+            return new LocalTmuxPersistenceSmokeResult(true, passed,
+                passed
+                    ? "A Windows PowerShell workload and its tmux scrollbar history survived the WSL client disconnect."
+                    : detached.SessionExists ? "The tmux session survived, but its scrollbar history could not be recovered." : detached.Message);
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or OperationCanceledException)
         {

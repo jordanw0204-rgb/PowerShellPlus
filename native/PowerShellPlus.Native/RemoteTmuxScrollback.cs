@@ -43,6 +43,23 @@ internal static class RemoteTmuxScrollback
         return result.Started && result.ExitCode == 0;
     }
 
+    public static async Task<RemoteTmuxScrollbackState> ProbeLocalAsync(string paneId, string? distribution,
+        CancellationToken cancellationToken = default)
+    {
+        var sessionName = LocalTmuxSession.GetSessionName(paneId);
+        var result = await LocalTmuxSession.RunCommandAsync(distribution, BuildProbeCommand(sessionName), cancellationToken);
+        return result.Started && result.ExitCode == 0 && TryParse(result.Output, out var state) ? state : default;
+    }
+
+    public static async Task<RemoteTmuxScrollbackState> ScrollAndProbeLocalAsync(string paneId, string? distribution,
+        int scrollPosition, CancellationToken cancellationToken = default)
+    {
+        var sessionName = LocalTmuxSession.GetSessionName(paneId);
+        var result = await LocalTmuxSession.RunCommandAsync(distribution,
+            BuildScrollAndProbeCommand(sessionName, scrollPosition), cancellationToken);
+        return result.Started && result.ExitCode == 0 && TryParse(result.Output, out var state) ? state : default;
+    }
+
     internal static bool TryParse(string? output, out RemoteTmuxScrollbackState state)
     {
         state = default;

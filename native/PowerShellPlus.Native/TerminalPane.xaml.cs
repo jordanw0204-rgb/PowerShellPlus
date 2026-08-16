@@ -2744,7 +2744,7 @@ public partial class TerminalPane : UserControl
         scrollbar.IsHitTestVisible = false;
         scrollbar.Focusable = false;
         AttachTerminalScrollbarBridge();
-        if (!UsesRemoteTmuxScrollback && !nativeTerminalScrollCallbackObserved)
+        if (!UsesTmuxScrollback && !nativeTerminalScrollCallbackObserved)
             UpdateTerminalViewportScrollbar((int)Math.Round(scrollbar.Value), (int)Math.Round(scrollbar.ViewportSize),
                 (int)Math.Round(scrollbar.Maximum + scrollbar.ViewportSize));
     }
@@ -2782,7 +2782,7 @@ public partial class TerminalPane : UserControl
 
     private void NativeTerminalScrolled(object? sender, (int viewTop, int viewHeight, int bufferSize) state)
     {
-        if (UsesRemoteTmuxScrollback) return;
+        if (UsesTmuxScrollback) return;
         nativeTerminalScrollCallbackObserved = true;
         terminalScrollbarState = (state.viewTop, Math.Max(0, state.bufferSize - state.viewHeight), state.viewHeight);
         UpdateTerminalViewportScrollbar(state.viewTop, state.viewHeight, state.bufferSize);
@@ -2840,7 +2840,7 @@ public partial class TerminalPane : UserControl
 
     private void SynchronizeTerminalViewportScrollbar()
     {
-        if (UsesRemoteTmuxScrollback || nativeScrollbar is null || nativeTerminalScrollCallbackObserved) return;
+        if (UsesTmuxScrollback || nativeScrollbar is null || nativeTerminalScrollCallbackObserved) return;
         var state = (nativeScrollbar.Value, nativeScrollbar.Maximum, nativeScrollbar.ViewportSize);
         if (terminalScrollbarState == state) return;
         terminalScrollbarState = state;
@@ -2876,7 +2876,7 @@ public partial class TerminalPane : UserControl
 
     private void TerminalViewportScrollbarScroll(object sender, ScrollEventArgs e)
     {
-        if (terminalScrollbarUpdating || nativeScrollbar is null) return;
+        if (terminalScrollbarUpdating || !UsesTmuxScrollback && nativeScrollbar is null) return;
         ForwardTerminalScroll(e.NewValue, e.ScrollEventType);
         e.Handled = true;
     }
@@ -2907,7 +2907,7 @@ public partial class TerminalPane : UserControl
     private void ForwardTerminalScroll(double target, ScrollEventType eventType)
     {
         var normalized = Math.Clamp(target, TerminalViewportScrollbar.Minimum, TerminalViewportScrollbar.Maximum);
-        if (UsesRemoteTmuxScrollback)
+        if (UsesTmuxScrollback)
         {
             QueueTmuxScroll(normalized);
             return;
@@ -3119,7 +3119,7 @@ public partial class TerminalPane : UserControl
 
     private void QueueScrollbarRefreshFromOutput()
     {
-        if (UsesRemoteTmuxScrollback)
+        if (UsesTmuxScrollback)
         {
             QueueTmuxScrollbarRefresh();
             return;
@@ -3137,15 +3137,39 @@ public partial class TerminalPane : UserControl
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
-    private bool UsesRemoteTmuxScrollback => startupRecovery is
+    private static bool ShouldUseRemoteTmuxScrollback(SessionRecoveryEntry? recovery) => recovery is
     {
         SshWasActive: true,
         RemoteTmuxManaged: true
     };
 
+    private static bool ShouldUseLocalTmuxScrollback(SessionProfile profile, bool verified)
+        => profile.UseLocalTmux && verified;
+
+    private bool UsesRemoteTmuxScrollback => ShouldUseRemoteTmuxScrollback(startupRecovery);
+    private bool UsesLocalTmuxScrollback => ShouldUseLocalTmuxScrollback(Profile, localTmuxVerified);
+    private bool UsesTmuxScrollback => UsesRemoteTmuxScrollback || UsesLocalTmuxScrollback;
+
+    internal static bool TmuxScrollbarRoutingContractPassesForTest()
+    {
+        var local = new SessionProfile { Id = "local-scrollbar-contract", UseLocalTmux = true };
+        var ordinary = new SessionProfile { Id = "ordinary-scrollbar-contract" };
+        var remote = new SessionRecoveryEntry
+        {
+            SessionId = "remote-scrollbar-contract",
+            SshWasActive = true,
+            RemoteTmuxManaged = true
+        };
+        return ShouldUseLocalTmuxScrollback(local, true)
+            && !ShouldUseLocalTmuxScrollback(local, false)
+            && !ShouldUseLocalTmuxScrollback(ordinary, true)
+            && ShouldUseRemoteTmuxScrollback(remote)
+            && !ShouldUseRemoteTmuxScrollback(null);
+    }
+
     private void QueueTmuxScrollbarRefresh(bool immediate = false)
     {
-        if (!UsesRemoteTmuxScrollback || Dispatcher.HasShutdownStarted) return;
+        if (!UsesTmuxScrollback || Dispatcher.HasShutdownStarted) return;
         void Schedule()
         {
             if (!IsLoaded) return;
@@ -3162,7 +3186,7 @@ public partial class TerminalPane : UserControl
 
     private async Task RefreshTmuxScrollbarAsync()
     {
-        if (!UsesRemoteTmuxScrollback || !IsLoaded || startupRecovery is null) return;
+        if (!UsesTmuxScrollback || !IsLoaded) return;
         if (tmuxScrollbarProbeInFlight)
         {
             tmuxScrollbarProbeRequested = true;
@@ -3173,10 +3197,7 @@ public partial class TerminalPane : UserControl
         var generation = Volatile.Read(ref tmuxScrollbarGeneration);
         try
         {
-            var client = GetOrCreateTmuxScrollbackClient();
-            var state = client is null
-                ? await RemoteTmuxScrollback.ProbeAsync(startupRecovery)
-                : await client.ProbeAsync();
+            var state = await ProbeTmuxScrollbackAsync();
             if (generation != Volatile.Read(ref tmuxScrollbarGeneration) || !IsLoaded || !state.Succeeded) return;
             ApplyTmuxScrollbarState(state);
         }
@@ -3189,7 +3210,7 @@ public partial class TerminalPane : UserControl
 
     private void QueueTmuxScroll(double target)
     {
-        if (!UsesRemoteTmuxScrollback || !tmuxScrollbackState.Succeeded)
+        if (!UsesTmuxScrollback || !tmuxScrollbackState.Succeeded)
         {
             QueueTmuxScrollbarRefresh(true);
             return;
@@ -3202,7 +3223,7 @@ public partial class TerminalPane : UserControl
 
     private async Task ApplyPendingTmuxScrollAsync()
     {
-        if (!UsesRemoteTmuxScrollback || startupRecovery is null || pendingTmuxScrollPosition is null) return;
+        if (!UsesTmuxScrollback || pendingTmuxScrollPosition is null) return;
         if (tmuxScrollbarApplyInFlight)
         {
             return;
@@ -3213,10 +3234,7 @@ public partial class TerminalPane : UserControl
         var generation = Volatile.Read(ref tmuxScrollbarGeneration);
         try
         {
-            var client = GetOrCreateTmuxScrollbackClient();
-            var state = client is null
-                ? await ScrollAndProbeTmuxFallbackAsync(startupRecovery, scrollPosition)
-                : await client.ScrollAndProbeAsync(scrollPosition);
+            var state = await ScrollAndProbeTmuxAsync(scrollPosition);
             if (state.Succeeded && generation == Volatile.Read(ref tmuxScrollbarGeneration) && IsLoaded
                 && pendingTmuxScrollPosition is null)
                 ApplyTmuxScrollbarState(state);
@@ -3234,6 +3252,28 @@ public partial class TerminalPane : UserControl
         if (tmuxScrollbackClient is not null) return tmuxScrollbackClient;
         if (RemoteTmuxScrollbackClient.TryCreate(startupRecovery, out var created)) tmuxScrollbackClient = created;
         return tmuxScrollbackClient;
+    }
+
+    private async Task<RemoteTmuxScrollbackState> ProbeTmuxScrollbackAsync()
+    {
+        if (UsesLocalTmuxScrollback)
+            return await RemoteTmuxScrollback.ProbeLocalAsync(Profile.Id, Profile.LocalTmuxDistribution);
+        if (startupRecovery is null) return default;
+        var client = GetOrCreateTmuxScrollbackClient();
+        return client is null
+            ? await RemoteTmuxScrollback.ProbeAsync(startupRecovery)
+            : await client.ProbeAsync();
+    }
+
+    private async Task<RemoteTmuxScrollbackState> ScrollAndProbeTmuxAsync(int scrollPosition)
+    {
+        if (UsesLocalTmuxScrollback)
+            return await RemoteTmuxScrollback.ScrollAndProbeLocalAsync(Profile.Id, Profile.LocalTmuxDistribution, scrollPosition);
+        if (startupRecovery is null) return default;
+        var client = GetOrCreateTmuxScrollbackClient();
+        return client is null
+            ? await ScrollAndProbeTmuxFallbackAsync(startupRecovery, scrollPosition)
+            : await client.ScrollAndProbeAsync(scrollPosition);
     }
 
     private void DisposeTmuxScrollbackClient()
