@@ -65,6 +65,7 @@ public partial class App : Application
             throw;
         }
         MainWindow = window;
+        if (!automationMode) await window.PreparePersistentBackendsAsync(startupWindow is null ? null : startupWindow.Report);
         if (!automationMode) StartActivationListener(window);
 
         var uiSnapshot = e.Args.FirstOrDefault(value => value.StartsWith("--ui-snapshot", StringComparison.OrdinalIgnoreCase));

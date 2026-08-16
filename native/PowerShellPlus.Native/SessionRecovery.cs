@@ -44,6 +44,40 @@ public sealed class SessionRecoveryEntry
     public string? LocalTmuxSessionName { get; set; }
     public string? LocalTmuxDistribution { get; set; }
     public DateTime CapturedUtc { get; set; } = DateTime.UtcNow;
+
+    public SessionRecoveryEntry CopyForTransition() => new()
+    {
+        SessionId = SessionId,
+        WorkingDirectory = WorkingDirectory,
+        TranscriptFile = TranscriptFile,
+        CodexWasActive = CodexWasActive,
+        CodexSessionId = CodexSessionId,
+        CodexModel = CodexModel,
+        CodexSandboxMode = CodexSandboxMode,
+        CodexApprovalPolicy = CodexApprovalPolicy,
+        CodexPermissionProfile = CodexPermissionProfile,
+        CodexApprovalsReviewer = CodexApprovalsReviewer,
+        SshWasActive = SshWasActive,
+        SshConnectionArguments = SshConnectionArguments.ToArray(),
+        HermesWasActive = HermesWasActive,
+        HermesSessionId = HermesSessionId,
+        HermesModel = HermesModel,
+        HermesUseTui = HermesUseTui,
+        RemoteCodexWasActive = RemoteCodexWasActive,
+        RemoteCodexSessionId = RemoteCodexSessionId,
+        RemoteCodexWorkingDirectory = RemoteCodexWorkingDirectory,
+        RemoteCodexModel = RemoteCodexModel,
+        RemoteCodexSandboxMode = RemoteCodexSandboxMode,
+        RemoteCodexApprovalPolicy = RemoteCodexApprovalPolicy,
+        RemoteCodexPermissionProfile = RemoteCodexPermissionProfile,
+        RemoteCodexApprovalsReviewer = RemoteCodexApprovalsReviewer,
+        RemoteTmuxManaged = RemoteTmuxManaged,
+        RemoteTmuxSessionName = RemoteTmuxSessionName,
+        LocalTmuxManaged = LocalTmuxManaged,
+        LocalTmuxSessionName = LocalTmuxSessionName,
+        LocalTmuxDistribution = LocalTmuxDistribution,
+        CapturedUtc = CapturedUtc
+    };
 }
 
 public readonly record struct CodexProcessState(bool IsActive, int? ProcessId, DateTime? StartedUtc);

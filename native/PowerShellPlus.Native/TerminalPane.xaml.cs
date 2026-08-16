@@ -399,6 +399,7 @@ public partial class TerminalPane : UserControl
     private readonly SemaphoreSlim startupGate = new(1, 1);
     private bool initialStartupFinished;
     private bool initialStartupSucceeded;
+    private bool localTmuxVerified;
     private int startupAttemptCount;
     private Func<int, Task<bool>>? startupAttemptOverrideForTest;
     private string startupDiagnostic = "Startup has not run.";
@@ -445,6 +446,7 @@ public partial class TerminalPane : UserControl
         currentAppearance = appearance;
         terminalWindowSubclassProc = TerminalWindowSubclassProc;
         startupRecovery = recovery;
+        localTmuxVerified = recovery?.LocalTmuxManaged == true;
         previousOutput = recoveredOutput ?? string.Empty;
         this.quickAccessProvider = quickAccessProvider ?? (() => []);
         this.automationProvider = automationProvider ?? (() => []);
@@ -523,12 +525,13 @@ public partial class TerminalPane : UserControl
             RefreshRemoteDimensions();
             ConfigureNativeScrollbar();
             UpdateHeaderStatus();
-            // EasyTerminalControl starts from its child Loaded callback. Let
-            // that native lifecycle settle before judging the attempt; only
-            // enter PowerShellPlus retry orchestration when it truly failed.
+            // EasyTerminalControl owns ordinary ConPTY startup. Do not restart a
+            // healthy Loaded shell: RestartTerm disconnects the renderer first and
+            // its retiring TermPTY can otherwise surface "Session Terminated".
+            // Persistent local tmux panes still go through backend verification.
             await Task.Delay(1400);
             var started = TerminalProcessIsRunning();
-            if (started)
+            if (started && !Profile.UseLocalTmux)
             {
                 startupDiagnostic = $"Native Loaded startup reported ready. {DescribeTerminalProcess()}";
                 CompleteTerminalStartup(true);
@@ -608,11 +611,21 @@ public partial class TerminalPane : UserControl
                 startupReady.TrySetResult(true);
                 return true;
             }
+            if (Profile.UseLocalTmux && !await PrepareLocalTmuxBackendAsync())
+            {
+                CompleteTerminalStartup(false);
+                ShowStartupFailure("Local tmux could not start", startupDiagnostic);
+                return false;
+            }
             if (!manualRetry && initialStartupFinished) return initialStartupSucceeded;
             if (!manualRetry && TerminalProcessIsRunning())
             {
-                CompleteTerminalStartup(true);
-                return true;
+                var verified = !Profile.UseLocalTmux || await VerifyStartedBackendAsync();
+                if (verified)
+                {
+                    CompleteTerminalStartup(true);
+                    return true;
+                }
             }
 
             if (manualRetry)
@@ -640,6 +653,8 @@ public partial class TerminalPane : UserControl
                         if (manualRetry || attempt > 1) await PrepareFreshTerminalForStartupAsync();
                         started = await StartCurrentTerminalAsync();
                     }
+                    if (started && startupAttemptOverrideForTest is null && Profile.UseLocalTmux)
+                        started = await VerifyStartedBackendAsync();
                     if (started)
                     {
                         startupDiagnostic = $"Attempt {attempt} reported ready. {DescribeTerminalProcess()}";
@@ -674,10 +689,69 @@ public partial class TerminalPane : UserControl
     {
         startupDiagnostic = $"Preparing a fresh backend. {DescribeTerminalProcess()}";
         bracketedPasteMode.Reset();
-        try { Terminal.ConPTYTerm?.StopExternalTermOnly(); } catch { }
-        await Terminal.RestartTerm();
+        if (Profile.UseLocalTmux && !await PrepareLocalTmuxBackendAsync()) return;
+        if (Profile.UseLocalTmux)
+            _ = await LocalTmuxSession.DetachAsync(Profile.Id, Profile.LocalTmuxDistribution);
         Terminal.StartupCommandLine = BuildCommandLine(Profile, startupRecovery);
+        await Terminal.RestartTerm();
         AttachTerminalOutputFilter();
+    }
+
+    internal async Task<bool> PrepareLocalTmuxBackendAsync()
+    {
+        if (!Profile.UseLocalTmux) return true;
+        var workload = BuildDirectCommandLine(Profile, startupRecovery);
+        var status = await LocalTmuxSession.EnsureDetachedAsync(Profile, workload);
+        localTmuxVerified = status.CommandSucceeded && status.SessionExists;
+        if (!string.IsNullOrWhiteSpace(status.Distribution)) Profile.LocalTmuxDistribution = status.Distribution;
+        if (!localTmuxVerified) startupDiagnostic = status.Message;
+        return localTmuxVerified;
+    }
+
+    private async Task<bool> VerifyStartedBackendAsync()
+    {
+        // RestartTerm returns after replacing the TermPTY object, not after the
+        // replacement process has proved it can stay alive. A short stability
+        // window prevents an immediately-exiting shell/tmux client from being
+        // checkpointed as a successful recovery.
+        var stableSince = DateTime.MinValue;
+        var processDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < processDeadline)
+        {
+            if (TerminalProcessIsRunning())
+            {
+                if (stableSince == DateTime.MinValue) stableSince = DateTime.UtcNow;
+                if (DateTime.UtcNow - stableSince >= TimeSpan.FromMilliseconds(600)) break;
+            }
+            else stableSince = DateTime.MinValue;
+            await Task.Delay(75);
+        }
+        if (stableSince == DateTime.MinValue || !TerminalProcessIsRunning()) return false;
+
+        if (!Profile.UseLocalTmux)
+        {
+            localTmuxVerified = false;
+            return true;
+        }
+
+        var tmuxDeadline = DateTime.UtcNow.AddSeconds(8);
+        LocalTmuxStatus status = default;
+        do
+        {
+            status = await LocalTmuxSession.ProbeAsync(Profile.LocalTmuxDistribution, Profile.Id);
+            if (status.SessionExists)
+            {
+                localTmuxVerified = true;
+                if (!string.IsNullOrWhiteSpace(status.Distribution)) Profile.LocalTmuxDistribution = status.Distribution;
+                return true;
+            }
+            await Task.Delay(150);
+        }
+        while (DateTime.UtcNow < tmuxDeadline && TerminalProcessIsRunning());
+
+        localTmuxVerified = false;
+        startupDiagnostic = status.Message;
+        return false;
     }
 
     private async Task<bool> StartCurrentTerminalAsync()
@@ -907,6 +981,17 @@ public partial class TerminalPane : UserControl
     private async Task<bool> SendCommandAsync(string command, bool pressEnterAfterInsert)
     {
         if (string.IsNullOrWhiteSpace(command)) return false;
+        // Input must not race the pane's Loaded/startup coordinator. In larger
+        // workspaces the renderer may already accept writes before PowerShellPlus
+        // has attached output capture and recovery hooks, which makes commands
+        // appear lost. Let the owner of the current startup attempt finish rather
+        // than starting a competing restart from the input path.
+        if (!initialStartupFinished)
+        {
+            var settled = await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(20)));
+            if (!ReferenceEquals(settled, startupReady.Task) || !await startupReady.Task) return false;
+        }
+        if (initialStartupFinished && !initialStartupSucceeded) return false;
         var restarted = false;
         try
         {
@@ -1778,28 +1863,60 @@ public partial class TerminalPane : UserControl
     }
 
     public async Task RestartAsync(SessionRecoveryEntry? recoveryOverride = null)
+        => _ = await RestartAndVerifyAsync(recoveryOverride);
+
+    internal async Task<bool> RestartAndVerifyAsync(SessionRecoveryEntry? recoveryOverride = null)
     {
-        var recovery = Profile.UseLocalTmux ? recoveryOverride ?? startupRecovery
-            : recoveryOverride?.SshWasActive == true ? recoveryOverride
-            : startupRecovery?.SshWasActive == true ? startupRecovery : null;
-        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
-        startupRecovery = recovery;
-        codexOutputActivity.Reset();
-        Profile.SetTmuxTerminal(Profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
-        DisposeTmuxScrollbackClient();
-        Interlocked.Increment(ref tmuxScrollbarGeneration);
-        tmuxScrollbackState = default;
-        pendingTmuxScrollPosition = null;
-        hermesExitObserved = false;
-        Terminal.StartupCommandLine = BuildCommandLine(Profile, recovery);
-        bracketedPasteMode.Reset();
-        await Terminal.RestartTerm();
-        AttachTerminalOutputFilter();
-        await RebindNativeScrollbarAfterRestartAsync();
-        agentActivityState = AgentActivityState.Starting;
-        RefreshAgentStatus(true);
-        QueueTmuxScrollbarRefresh(true);
-        Terminal.Focus();
+        await startupGate.WaitAsync();
+        try
+        {
+            var recovery = Profile.UseLocalTmux ? recoveryOverride ?? startupRecovery
+                : recoveryOverride?.SshWasActive == true || recoveryOverride?.CodexWasActive == true ? recoveryOverride
+                : startupRecovery is { SshWasActive: true } or { CodexWasActive: true } ? startupRecovery : null;
+            SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
+            startupRecovery = recovery;
+            initialStartupFinished = false;
+            initialStartupSucceeded = false;
+            localTmuxVerified = recovery?.LocalTmuxManaged == true;
+            terminalStartupBeganUtc = DateTime.UtcNow;
+            recoveredSshWatchStarted = false;
+            codexOutputActivity.Reset();
+            Profile.SetTmuxTerminal(Profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
+            DisposeTmuxScrollbackClient();
+            Interlocked.Increment(ref tmuxScrollbarGeneration);
+            tmuxScrollbackState = default;
+            pendingTmuxScrollPosition = null;
+            hermesExitObserved = false;
+            Terminal.StartupCommandLine = BuildCommandLine(Profile, recovery);
+            bracketedPasteMode.Reset();
+            if (Profile.UseLocalTmux && !await PrepareLocalTmuxBackendAsync())
+            {
+                CompleteTerminalStartup(false);
+                ShowStartupFailure("Local tmux could not start", startupDiagnostic);
+                return false;
+            }
+            if (Profile.UseLocalTmux)
+                _ = await LocalTmuxSession.DetachAsync(Profile.Id, Profile.LocalTmuxDistribution);
+            await Terminal.RestartTerm();
+            AttachTerminalOutputFilter();
+            var ready = await StartCurrentTerminalAsync() && await VerifyStartedBackendAsync();
+            CompleteTerminalStartup(ready);
+            if (!ready)
+            {
+                ShowStartupFailure("Terminal restart failed",
+                    string.IsNullOrWhiteSpace(startupDiagnostic)
+                        ? "The replacement terminal exited before it became stable. The previous recovery state was preserved; use Retry after checking the terminal settings."
+                        : startupDiagnostic);
+                return false;
+            }
+            await RebindNativeScrollbarAfterRestartAsync();
+            agentActivityState = AgentActivityState.Starting;
+            RefreshAgentStatus(true);
+            QueueTmuxScrollbarRefresh(true);
+            Terminal.Focus();
+            return true;
+        }
+        finally { startupGate.Release(); }
     }
 
     public void Stop()
@@ -2236,16 +2353,21 @@ public partial class TerminalPane : UserControl
         ScheduleRemoteDimensionRefresh();
     }
 
-    public void ApplyProfile(SessionProfile profile)
+    public void ApplyProfile(SessionProfile profile, SessionRecoveryEntry? recovery = null)
     {
         Profile = profile;
-        startupRecovery = null;
+        startupRecovery = recovery;
+        localTmuxVerified = recovery?.LocalTmuxManaged == true;
         codexOutputActivity.Reset();
-        Profile.SetTmuxTerminal(profile.UseLocalTmux);
+        Profile.SetTmuxTerminal(profile.UseLocalTmux || recovery is { SshWasActive: true, RemoteTmuxManaged: true });
         TitleText.Text = profile.Name;
         ApplyAccent();
-        Terminal.StartupCommandLine = BuildCommandLine(profile, null);
+        Terminal.StartupCommandLine = BuildCommandLine(profile, recovery);
     }
+
+    internal bool RecoveryStartupSettledForSnapshot => initialStartupFinished;
+    internal bool RecoveryStartupSucceededForSnapshot => initialStartupSucceeded;
+    internal bool LocalTmuxVerifiedForSnapshot => Profile.UseLocalTmux && localTmuxVerified;
 
     public void RefreshProfileDisplay(SessionProfile profile)
     {

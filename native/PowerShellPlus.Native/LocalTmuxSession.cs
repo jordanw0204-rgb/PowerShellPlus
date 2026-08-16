@@ -11,6 +11,8 @@ public readonly record struct LocalTmuxStatus(
     string? Distribution,
     string Message);
 
+internal readonly record struct LocalTmuxPersistenceSmokeResult(bool Available, bool Passed, string Diagnostic);
+
 /// <summary>
 /// Hosts a configured Windows command inside tmux through WSL interoperability.
 /// tmux owns the PTY lifetime; the workload remains the user's configured
@@ -23,6 +25,8 @@ internal static class LocalTmuxSession
     private const string AvailableMarker = "PSP_LOCAL_TMUX_AVAILABLE";
     private const string ExistsMarker = "PSP_LOCAL_TMUX_EXISTS";
     private const string StoppedMarker = "PSP_LOCAL_TMUX_STOPPED";
+    private const string DetachedMarker = "PSP_LOCAL_TMUX_DETACHED";
+    private const string ReadyMarker = "PSP_LOCAL_TMUX_READY";
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(8);
 
     internal static string DirectoryPath => Path.Combine(SessionRecoveryStore.DirectoryPath, "local-tmux");
@@ -79,6 +83,49 @@ internal static class LocalTmuxSession
                 : string.IsNullOrWhiteSpace(result.Message) ? "The local tmux session could not be stopped." : result.Message);
     }
 
+    public static async Task<LocalTmuxStatus> DetachAsync(string paneId, string? distribution,
+        CancellationToken cancellationToken = default)
+    {
+        var sessionName = GetSessionName(paneId);
+        var command = "if ! command -v tmux >/dev/null 2>&1; then exit 127; fi; "
+            + $"if tmux has-session -t {QuotePosix(sessionName)} 2>/dev/null; then "
+            + $"tmux detach-client -s {QuotePosix(sessionName)} 2>/dev/null || true; fi; "
+            + $"printf '{DetachedMarker}\\n'";
+        var result = await RunWslAsync(distribution, ["--exec", "sh", "-lc", command], cancellationToken);
+        var succeeded = result.Started && result.ExitCode == 0 && result.Output.Contains(DetachedMarker, StringComparison.Ordinal);
+        return new LocalTmuxStatus(succeeded, result.Started, succeeded, succeeded, distribution,
+            succeeded ? "The local tmux client detached without stopping its session."
+                : string.IsNullOrWhiteSpace(result.Message) ? "The local tmux client could not be detached." : result.Message);
+    }
+
+    public static async Task<LocalTmuxStatus> EnsureDetachedAsync(SessionProfile profile, string workloadCommandLine,
+        CancellationToken cancellationToken = default)
+    {
+        _ = BuildStartupCommandLine(profile, workloadCommandLine);
+        var safeId = SessionRecoveryStore.SafeSessionId(profile.Id);
+        var workloadShellPath = Path.Combine(DirectoryPath, safeId + "-workload.sh");
+        var sessionName = GetSessionName(profile.Id);
+        var command = $"printf '{DistroMarker}%s\\n' \"$WSL_DISTRO_NAME\"; "
+            + "if ! command -v tmux >/dev/null 2>&1; then exit 127; fi; "
+            + $"if ! tmux has-session -t {QuotePosix(sessionName)} 2>/dev/null; then "
+            + $"tmux new-session -d -s {QuotePosix(sessionName)} sh {QuotePosix(ToWslPath(workloadShellPath))} || exit 1; fi; "
+            + $"tmux set-option -t {QuotePosix(sessionName)} status off >/dev/null 2>&1 || true; "
+            + $"tmux set-option -t {QuotePosix(sessionName)} allow-passthrough on >/dev/null 2>&1 || true; "
+            + $"printf '{ReadyMarker}\\n'";
+        var result = await RunWslAsync(profile.LocalTmuxDistribution, ["--exec", "sh", "-lc", command], cancellationToken);
+        var distribution = ReadMarkerValue(result.Output, DistroMarker) ?? profile.LocalTmuxDistribution;
+        var succeeded = result.Started && result.ExitCode == 0 && result.Output.Contains(ReadyMarker, StringComparison.Ordinal);
+        if (succeeded)
+        {
+            var probe = await ProbeAsync(distribution, profile.Id, cancellationToken);
+            succeeded = probe.SessionExists;
+            if (!succeeded) return probe;
+        }
+        return new LocalTmuxStatus(succeeded, result.Started, succeeded, succeeded, distribution,
+            succeeded ? $"Local tmux session {sessionName} is ready in {distribution}."
+                : string.IsNullOrWhiteSpace(result.Message) ? "The detached local tmux workload could not be created." : result.Message);
+    }
+
     public static string BuildStartupCommandLine(SessionProfile profile, string workloadCommandLine)
     {
         if (string.IsNullOrWhiteSpace(workloadCommandLine))
@@ -93,7 +140,11 @@ internal static class LocalTmuxSession
         AtomicWrite(workloadPath, "@echo off\r\n" + workloadCommandLine + "\r\nexit /b %ERRORLEVEL%\r\n", new UTF8Encoding(false));
 
         AtomicWrite(workloadShellPath,
-            "#!/bin/sh\nexec cmd.exe /d /s /c " + QuotePosix("\"" + workloadPath + "\"") + "\n", new UTF8Encoding(false));
+            // WSL interop already serializes one argv value containing spaces
+            // for the Windows process. Embedding another pair of quote
+            // characters makes cmd.exe receive a literal '\"C:\\...\"'
+            // command and tmux immediately renders `[exited]`.
+            "#!/bin/sh\nexec cmd.exe /d /s /c " + QuotePosix(workloadPath) + "\n", new UTF8Encoding(false));
 
         var sessionName = GetSessionName(profile.Id);
         var workloadWsl = ToWslPath(workloadShellPath);
@@ -142,13 +193,101 @@ internal static class LocalTmuxSession
         var commandLine = BuildStartupCommandLine(profile, "powershell.exe -NoExit");
         var manager = File.ReadAllText(Path.Combine(DirectoryPath, "local-tmux-contract-manager.sh"));
         var workload = File.ReadAllText(Path.Combine(DirectoryPath, "local-tmux-contract-workload.cmd"));
+        var workloadShell = File.ReadAllText(Path.Combine(DirectoryPath, "local-tmux-contract-workload.sh"));
         return commandLine.Contains("-bootstrap.ps1", StringComparison.OrdinalIgnoreCase)
             && manager.Contains("tmux new-session", StringComparison.Ordinal)
             && manager.Contains("tmux attach-session -d", StringComparison.Ordinal)
             && manager.Contains("status off", StringComparison.Ordinal)
             && workload.Contains("powershell.exe -NoExit", StringComparison.Ordinal)
+            && workloadShell.Contains("exec cmd.exe /d /s /c 'C:\\", StringComparison.OrdinalIgnoreCase)
+            && !workloadShell.Contains("/c '\"", StringComparison.Ordinal)
             && GetSessionName(profile.Id) == "powershellplus-local-tmux-contract"
             && ToWslPath(@"C:\Users\Example\file.ps1") == "/mnt/c/Users/Example/file.ps1";
+    }
+
+    internal static async Task<LocalTmuxPersistenceSmokeResult> RunPersistenceSmokeAsync(CancellationToken cancellationToken = default)
+    {
+        var availability = await ProbeAsync(cancellationToken: cancellationToken);
+        if (!availability.WslAvailable || !availability.TmuxAvailable || string.IsNullOrWhiteSpace(availability.Distribution))
+            return new LocalTmuxPersistenceSmokeResult(false, true, "Skipped: " + availability.Message);
+
+        var profile = new SessionProfile
+        {
+            Id = "local-tmux-live-" + Guid.NewGuid().ToString("N"),
+            UseLocalTmux = true,
+            LocalTmuxDistribution = availability.Distribution
+        };
+        Process? client = null;
+        try
+        {
+            var ensured = await EnsureDetachedAsync(profile, "powershell.exe -NoLogo -NoProfile -NoExit", cancellationToken);
+            if (!ensured.CommandSucceeded || !ensured.SessionExists)
+                return new LocalTmuxPersistenceSmokeResult(true, false, ensured.Message);
+            var managerPath = Path.Combine(DirectoryPath, SessionRecoveryStore.SafeSessionId(profile.Id) + "-manager.sh");
+            var start = new ProcessStartInfo
+            {
+                FileName = "wsl.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            start.ArgumentList.Add("--distribution");
+            start.ArgumentList.Add(availability.Distribution!);
+            start.ArgumentList.Add("--exec");
+            start.ArgumentList.Add("sh");
+            start.ArgumentList.Add("-lc");
+            start.ArgumentList.Add("exec script -qec " + QuotePosix("sh " + QuotePosix(ToWslPath(managerPath))) + " /dev/null");
+            client = Process.Start(start);
+            if (client is null) return new LocalTmuxPersistenceSmokeResult(true, false, "Could not start the isolated WSL tmux client.");
+
+            var launchDeadline = DateTime.UtcNow.AddSeconds(10);
+            LocalTmuxStatus running = default;
+            do
+            {
+                running = await ProbeAsync(availability.Distribution, profile.Id, cancellationToken);
+                if (running.SessionExists) break;
+                if (client.HasExited) return new LocalTmuxPersistenceSmokeResult(true, false,
+                    "The isolated tmux client exited before its session was created: "
+                    + string.Join(" ", new[]
+                    {
+                        (await client.StandardError.ReadToEndAsync(cancellationToken)).Trim(),
+                        (await client.StandardOutput.ReadToEndAsync(cancellationToken)).Trim()
+                    }.Where(value => value.Length > 0)));
+                await Task.Delay(150, cancellationToken);
+            }
+            while (DateTime.UtcNow < launchDeadline);
+            if (!running.SessionExists) return new LocalTmuxPersistenceSmokeResult(true, false, running.Message);
+
+            // Exercise the same graceful detach used by app restart/shutdown.
+            // Force-terminating wsl.exe can tear down its interop job before
+            // tmux observes a client disconnect.
+            var detach = await DetachAsync(profile.Id, availability.Distribution, cancellationToken);
+            if (!detach.CommandSucceeded) return new LocalTmuxPersistenceSmokeResult(true, false, detach.Message);
+            using (var clientExit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                clientExit.CancelAfter(TimeSpan.FromSeconds(5));
+                try { await client.WaitForExitAsync(clientExit.Token); } catch (OperationCanceledException) { }
+            }
+            await Task.Delay(500, cancellationToken);
+            var detached = await ProbeAsync(availability.Distribution, profile.Id, cancellationToken);
+            return new LocalTmuxPersistenceSmokeResult(true, detached.SessionExists,
+                detached.SessionExists ? "A Windows PowerShell workload survived its WSL/tmux client disconnect." : detached.Message);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or OperationCanceledException)
+        {
+            return new LocalTmuxPersistenceSmokeResult(true, false, exception.GetBaseException().Message);
+        }
+        finally
+        {
+            if (client is { HasExited: false })
+            {
+                try { client.Kill(false); } catch { }
+            }
+            client?.Dispose();
+            _ = await KillAsync(profile.Id, profile.LocalTmuxDistribution, CancellationToken.None);
+            DeleteLaunchArtifacts(profile.Id);
+        }
     }
 
     public static void DeleteLaunchArtifacts(string paneId)

@@ -103,6 +103,7 @@ public partial class MainWindow
         UpdateStatus("Update verified — saving sessions before installation");
         CaptureRecoverySnapshot();
         SaveNow();
+        await DetachManagedLocalTmuxAsync();
         var installer = Process.Start(ApplicationUpdater.CreateInstallerStartInfo(installerPath))
             ?? throw new InvalidOperationException("Windows did not open the verified PowerShellPlus installer.");
         installer.Dispose();

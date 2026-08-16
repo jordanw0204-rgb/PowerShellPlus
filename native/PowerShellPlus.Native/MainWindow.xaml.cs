@@ -24,8 +24,10 @@ public partial class MainWindow : Window
     private const string TrayRestartLabel = "Restart PowerShellPlus";
     private const string TrayFullQuitLabel = "Fully Quit PowerShellPlus && Tmux Terminals";
     private const string TerminalDragDataFormat = "PowerShellPlus.TerminalOrder";
-    private sealed record RecoveryPaneSource(string SessionId, string WorkingDirectory, TerminalPane Pane, int? RootProcessId);
-    private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId);
+    private sealed record RecoveryPaneSource(string SessionId, string WorkingDirectory, TerminalPane Pane, int? RootProcessId,
+        bool StartupSettled, bool StartupSucceeded, bool LocalTmuxVerified);
+    private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId,
+        bool StartupSettled, bool StartupSucceeded, bool LocalTmuxVerified);
     private const double WorkspaceSidebarWidth = 278;
     private readonly WindowsTerminalProfile terminalProfile;
     private readonly WorkspaceState state;
@@ -44,6 +46,7 @@ public partial class MainWindow : Window
     private bool explicitShutdown;
     private bool suppressShutdownRecoveryCapture;
     private bool lifecycleOperationInProgress;
+    private bool localTmuxDetachedForShutdown;
     private bool shutdownComplete;
     private bool trayNoticeShown;
     private EditorMode editorMode;
@@ -78,6 +81,7 @@ public partial class MainWindow : Window
     private readonly object recoveryCaptureSync = new();
     private readonly HashSet<string> remoteDetachOperations = new(StringComparer.Ordinal);
     private int recoveryCaptureInProgress;
+    private bool terminalStartupRecoverySettled;
     private int layoutTransitionVersion;
     private string terminalEditorAccentColor = WorkspaceAccentPalette.DefaultTerminal;
     private string workspaceEditorAccentColor = WorkspaceAccentPalette.DefaultSession;
@@ -126,7 +130,6 @@ public partial class MainWindow : Window
         automationTimer.Start();
         recoveryTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(12) };
         recoveryTimer.Tick += async (_, _) => await CaptureRecoverySnapshotAsync();
-        if (!automationMode && state.Settings.RestoreSessionsAfterRestart) recoveryTimer.Start();
 
         var terminalIndex = 0;
         foreach (var profile in state.Sessions)
@@ -152,8 +155,10 @@ public partial class MainWindow : Window
         // Start every saved backend here with bounded concurrency; the pane will
         // attach its already-running ConPTY when it later becomes visible.
         var pending = panes.Values.Select(StartTerminalForWorkspaceAsync).ToList();
+        var allStartupTasks = pending.ToArray();
         if (pending.Count == 0)
         {
+            MarkTerminalStartupRecoverySettled();
             report?.Invoke(new StartupProgress("Workspace ready", "No terminals need to be started", 1, 1));
             return;
         }
@@ -192,6 +197,23 @@ public partial class MainWindow : Window
             report?.Invoke(new StartupProgress("Workspace needs attention", $"{readyCount} terminals started · {failedCount} show a Retry action", completed, panes.Count));
         else
             report?.Invoke(new StartupProgress("Workspace ready", $"Started {readyCount} terminals", completed, panes.Count));
+
+        if (pending.Count == 0) MarkTerminalStartupRecoverySettled();
+        else _ = MarkTerminalStartupRecoverySettledWhenCompleteAsync(allStartupTasks);
+    }
+
+    private async Task MarkTerminalStartupRecoverySettledWhenCompleteAsync(IEnumerable<Task<(TerminalPane Pane, bool Ready)>> tasks)
+    {
+        try { await Task.WhenAll(tasks); }
+        catch (Exception exception) { LogNativeError("Background terminal startup settlement", exception); }
+        MarkTerminalStartupRecoverySettled();
+    }
+
+    private void MarkTerminalStartupRecoverySettled()
+    {
+        if (terminalStartupRecoverySettled) return;
+        terminalStartupRecoverySettled = true;
+        if (!automationMode && state.Settings.RestoreSessionsAfterRestart && !shutdownComplete) recoveryTimer.Start();
     }
 
     private async Task<(TerminalPane Pane, bool Ready)> StartTerminalForWorkspaceAsync(TerminalPane pane)
@@ -209,9 +231,10 @@ public partial class MainWindow : Window
                 await Dispatcher.Yield(DispatcherPriority.Loaded);
                 await Dispatcher.Yield(DispatcherPriority.Render);
             }
-            var ready = pane.Profile.IsRemoteDetached || pane.HasStartupAttemptOverrideForTest
-                ? await pane.EnsureTerminalStartupAsync()
-                : await pane.StartupReady;
+            // Always invoke the pane coordinator directly. Hidden HwndHost panes
+            // cannot rely on WPF Loaded ordering; startupGate makes the Loaded
+            // callback and this eager path safely idempotent.
+            var ready = await pane.EnsureTerminalStartupAsync();
             return (pane, ready);
         }
         finally
@@ -223,6 +246,17 @@ public partial class MainWindow : Window
     }
 
     internal int TerminalCountForStartup => panes.Count;
+
+    internal async Task PreparePersistentBackendsAsync(Action<StartupProgress>? report)
+    {
+        var managed = panes.Values.Where(pane => pane.Profile.UseLocalTmux).ToArray();
+        for (var index = 0; index < managed.Length; index++)
+        {
+            var pane = managed[index];
+            report?.Invoke(new StartupProgress("Preparing persistent terminals", pane.Profile.Name, index, Math.Max(1, managed.Length)));
+            _ = await pane.PrepareLocalTmuxBackendAsync();
+        }
+    }
 
     public void RestoreFromTray() => RestoreWindow(true);
 
@@ -275,6 +309,18 @@ public partial class MainWindow : Window
         windowsTerminalDragMonitor = null;
         StopLanRemoteForShutdown();
         if (!automationMode && !suppressShutdownRecoveryCapture) CaptureRecoverySnapshot();
+        if (!automationMode && !localTmuxDetachedForShutdown)
+        {
+            var managedLocalTmux = state.Sessions.Where(profile => profile.UseLocalTmux)
+                .Select(profile => (profile.Id, profile.LocalTmuxDistribution)).ToArray();
+            try
+            {
+                var results = Task.Run(() => Task.WhenAll(managedLocalTmux
+                    .Select(profile => LocalTmuxSession.DetachAsync(profile.Id, profile.LocalTmuxDistribution)))).GetAwaiter().GetResult();
+                localTmuxDetachedForShutdown = results.All(result => result.CommandSucceeded);
+            }
+            catch (Exception exception) { LogNativeError("Local tmux shutdown detach", exception); }
+        }
         shutdownComplete = true;
         SaveNow();
         foreach (var pane in panes.Values) pane.Stop();
@@ -335,6 +381,7 @@ public partial class MainWindow : Window
         try
         {
             await CaptureRecoverySnapshotAsync();
+            await DetachManagedLocalTmuxAsync();
             var startInfo = BuildRestartStartInfo(Environment.ProcessId);
             using var replacement = Process.Start(startInfo);
             if (replacement is null)
@@ -350,6 +397,24 @@ public partial class MainWindow : Window
             RestoreWindow(true);
             PowerShellPlusDialog.ShowMessage(this, exception.Message, "PowerShellPlus could not restart", PowerShellPlusDialogKind.Error);
         }
+    }
+
+    internal async Task DetachManagedLocalTmuxAsync()
+    {
+        if (localTmuxDetachedForShutdown) return;
+        var managed = state.Sessions.Where(profile => profile.UseLocalTmux)
+            .Select(profile => (profile.Id, profile.LocalTmuxDistribution)).ToArray();
+        if (managed.Length == 0)
+        {
+            localTmuxDetachedForShutdown = true;
+            return;
+        }
+        var results = await Task.WhenAll(managed.Select(profile =>
+            LocalTmuxSession.DetachAsync(profile.Id, profile.LocalTmuxDistribution)));
+        var failures = results.Where(result => !result.CommandSucceeded).Select(result => result.Message).Distinct().ToArray();
+        if (failures.Length > 0)
+            throw new InvalidOperationException("PowerShellPlus could not safely detach one or more local tmux terminals:\n\n" + string.Join("\n", failures));
+        localTmuxDetachedForShutdown = true;
     }
 
     private async Task FullyQuitPowerShellPlusAsync()
@@ -657,12 +722,14 @@ public partial class MainWindow : Window
     }
 
     private List<RecoveryPaneSource> CollectRecoveryPaneSources() => panes.Values
-        .Select(pane => new RecoveryPaneSource(pane.Profile.Id, pane.Profile.WorkingDirectory, pane, pane.GetRootProcessId()))
+        .Select(pane => new RecoveryPaneSource(pane.Profile.Id, pane.Profile.WorkingDirectory, pane, pane.GetRootProcessId(),
+            pane.RecoveryStartupSettledForSnapshot, pane.RecoveryStartupSucceededForSnapshot, pane.LocalTmuxVerifiedForSnapshot))
         .ToList();
 
     private static List<RecoveryPaneCapture> MaterializeRecoveryPaneCaptures(IEnumerable<RecoveryPaneSource> sources) => sources
         .Select(source => new RecoveryPaneCapture(source.SessionId, source.WorkingDirectory,
-            source.Pane.GetRecoveryOutputForSnapshot(), source.RootProcessId))
+            source.Pane.GetRecoveryOutputForSnapshot(), source.RootProcessId,
+            source.StartupSettled, source.StartupSucceeded, source.LocalTmuxVerified))
         .ToList();
 
     private void RefreshTmuxTerminalIndicators(SessionRecoverySnapshot snapshot)
@@ -685,6 +752,13 @@ public partial class MainWindow : Window
                 {
                     previous.Sessions.TryGetValue(capture.SessionId, out var oldEntry);
                     var profile = state.Sessions.FirstOrDefault(value => value.Id == capture.SessionId);
+                    if (ShouldPreservePreviousRecovery(capture.StartupSettled, capture.StartupSucceeded, oldEntry))
+                    {
+                        var retained = oldEntry!.CopyForTransition();
+                        retained.CapturedUtc = DateTime.UtcNow;
+                        snapshot.Sessions[capture.SessionId] = retained;
+                        continue;
+                    }
                     if (profile?.IsRemoteDetached == true && oldEntry?.RemoteTmuxManaged == true)
                     {
                         oldEntry.CapturedUtc = DateTime.UtcNow;
@@ -829,10 +903,9 @@ public partial class MainWindow : Window
                         RemoteCodexApprovalsReviewer = remoteCodex.ApprovalsReviewer,
                         RemoteTmuxManaged = remoteTmuxManaged,
                         RemoteTmuxSessionName = remoteTmuxManaged ? RemoteTmuxSession.GetSessionName(capture.SessionId) : null,
-                        LocalTmuxManaged = profile?.UseLocalTmux == true
-                            && !capture.Output.Contains(LocalTmuxSession.UnavailableText, StringComparison.OrdinalIgnoreCase),
-                        LocalTmuxSessionName = profile?.UseLocalTmux == true ? LocalTmuxSession.GetSessionName(capture.SessionId) : null,
-                        LocalTmuxDistribution = profile?.UseLocalTmux == true ? profile.LocalTmuxDistribution : null,
+                        LocalTmuxManaged = capture.LocalTmuxVerified,
+                        LocalTmuxSessionName = capture.LocalTmuxVerified ? LocalTmuxSession.GetSessionName(capture.SessionId) : null,
+                        LocalTmuxDistribution = capture.LocalTmuxVerified ? profile?.LocalTmuxDistribution : null,
                         CapturedUtc = DateTime.UtcNow
                     };
                 }
@@ -844,6 +917,9 @@ public partial class MainWindow : Window
             }
         }
     }
+
+    internal static bool ShouldPreservePreviousRecovery(bool startupSettled, bool startupSucceeded, SessionRecoveryEntry? previous)
+        => previous is not null && (!startupSettled || !startupSucceeded);
 
     private void ReconcileCodexRecovery()
     {
@@ -1704,32 +1780,157 @@ public partial class MainWindow : Window
         string? accentColor = null, bool? useRemoteTmux = null, bool? useLocalTmux = null, string? localTmuxDistribution = null)
     {
         var restartRequired = TerminalEditRequiresRestart(profile, commandLine, workingDirectory, useRemoteTmux, useLocalTmux);
+        if (!panes.TryGetValue(profile.Id, out var pane))
+        {
+            profile.Name = name;
+            profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+            profile.CommandLine = commandLine;
+            profile.WorkingDirectory = workingDirectory;
+            profile.AutoStart = autoStart;
+            if (useRemoteTmux is bool detached) profile.UseRemoteTmux = detached;
+            if (useLocalTmux is bool local) profile.UseLocalTmux = local;
+            profile.LocalTmuxDistribution = profile.UseLocalTmux ? localTmuxDistribution ?? profile.LocalTmuxDistribution : null;
+            return restartRequired;
+        }
+
+        // A running ConPTY process cannot be adopted by tmux. Capture its exact
+        // recoverable identity first, then perform a verified restart into tmux.
+        // This preserves Codex/Hermes/SSH identity instead of silently replacing
+        // the terminal with a blank shell.
+        if (restartRequired) CaptureRecoverySnapshot();
+        var recoverySnapshot = SessionRecoveryStore.Load();
+        recoverySnapshot.Sessions.TryGetValue(profile.Id, out var savedRecovery);
+        var originalRecovery = savedRecovery?.CopyForTransition();
+        var transitionRecovery = savedRecovery?.CopyForTransition() ?? new SessionRecoveryEntry
+        {
+            SessionId = profile.Id,
+            WorkingDirectory = profile.WorkingDirectory,
+            CapturedUtc = DateTime.UtcNow
+        };
+        var previous = new TerminalEditRollback(profile);
+        var requestedLocalTmux = useLocalTmux ?? profile.UseLocalTmux;
+        var requestedRemoteTmux = useRemoteTmux ?? profile.UseRemoteTmux;
+        if (restartRequired && requestedRemoteTmux && profile.LiveWorkingDirectoryIsSsh && !transitionRecovery.SshWasActive)
+            throw new InvalidOperationException("PowerShellPlus could not capture a safe SSH recovery command. The terminal was not restarted or moved into tmux.");
+
+        transitionRecovery.LocalTmuxManaged = requestedLocalTmux;
+        transitionRecovery.LocalTmuxSessionName = requestedLocalTmux ? LocalTmuxSession.GetSessionName(profile.Id) : null;
+        transitionRecovery.LocalTmuxDistribution = requestedLocalTmux ? localTmuxDistribution ?? profile.LocalTmuxDistribution : null;
+        if (transitionRecovery.SshWasActive)
+        {
+            transitionRecovery.RemoteTmuxManaged = requestedRemoteTmux;
+            transitionRecovery.RemoteTmuxSessionName = requestedRemoteTmux ? RemoteTmuxSession.GetSessionName(profile.Id) : null;
+        }
+
         var replaceLocalSession = profile.UseLocalTmux
             && (useLocalTmux == false || !string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
                 || !PathsEqual(profile.WorkingDirectory, workingDirectory));
-        if (replaceLocalSession)
+        try
         {
-            var stopped = await LocalTmuxSession.KillAsync(profile.Id, profile.LocalTmuxDistribution);
-            if (!stopped.CommandSucceeded) throw new InvalidOperationException(stopped.Message);
+            if (replaceLocalSession)
+            {
+                var stopped = await LocalTmuxSession.KillAsync(profile.Id, profile.LocalTmuxDistribution);
+                if (!stopped.CommandSucceeded) throw new InvalidOperationException(stopped.Message);
+            }
+            profile.Name = name;
+            profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+            profile.CommandLine = commandLine;
+            profile.WorkingDirectory = workingDirectory;
+            profile.AutoStart = autoStart;
+            profile.UseRemoteTmux = requestedRemoteTmux;
+            profile.UseLocalTmux = requestedLocalTmux;
+            profile.LocalTmuxDistribution = requestedLocalTmux ? localTmuxDistribution ?? profile.LocalTmuxDistribution : null;
+            if (restartRequired)
+            {
+                pane.ApplyProfile(profile, transitionRecovery);
+                if (!await pane.RestartAndVerifyAsync(transitionRecovery))
+                    throw new InvalidOperationException("The replacement terminal exited before its tmux/recovery backend was ready.");
+                if (transitionRecovery is { SshWasActive: true, RemoteTmuxManaged: true }
+                    && !await WaitForRemoteTmuxSessionAsync(transitionRecovery))
+                    throw new InvalidOperationException("The SSH connection restarted, but the remote tmux session could not be verified.");
+                transitionRecovery.CapturedUtc = DateTime.UtcNow;
+                PersistRecoveryEntry(transitionRecovery);
+            }
+            else pane.RefreshProfileDisplay(profile);
         }
-        profile.Name = name;
-        profile.AccentColor = WorkspaceAccentPalette.Normalize(accentColor ?? profile.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
-        profile.CommandLine = commandLine;
-        profile.WorkingDirectory = workingDirectory;
-        profile.AutoStart = autoStart;
-        if (useRemoteTmux is bool tmuxEnabled) profile.UseRemoteTmux = tmuxEnabled;
-        if (useLocalTmux is bool localTmuxEnabled) profile.UseLocalTmux = localTmuxEnabled;
-        profile.LocalTmuxDistribution = profile.UseLocalTmux ? localTmuxDistribution ?? profile.LocalTmuxDistribution : null;
-        if (!panes.TryGetValue(profile.Id, out var pane)) return restartRequired;
-        if (restartRequired)
+        catch (Exception exception)
         {
-            pane.ApplyProfile(profile);
-            await pane.RestartAsync();
+            if (requestedLocalTmux && !previous.UseLocalTmux)
+            {
+                try { _ = await LocalTmuxSession.KillAsync(profile.Id, localTmuxDistribution); } catch { }
+            }
+            if (transitionRecovery is { SshWasActive: true, RemoteTmuxManaged: true } && !previous.UseRemoteTmux)
+            {
+                try { _ = await RemoteTmuxSession.KillAsync(transitionRecovery); } catch { }
+            }
+            previous.Restore(profile);
+            pane.ApplyProfile(profile, originalRecovery);
+            var rollbackReady = await pane.RestartAndVerifyAsync(originalRecovery);
+            if (originalRecovery is not null) PersistRecoveryEntry(originalRecovery);
+            else RemoveRecoveryEntry(profile.Id);
+            throw new InvalidOperationException(rollbackReady
+                ? exception.GetBaseException().Message + " The original terminal configuration was restored."
+                : exception.GetBaseException().Message + " The original recovery state was preserved, but its renderer also needs Retry.", exception);
         }
-        else pane.RefreshProfileDisplay(profile);
         SessionList.Items.Refresh();
         TerminalTabList.Items.Refresh();
         return restartRequired;
+    }
+
+    private async Task<bool> WaitForRemoteTmuxSessionAsync(SessionRecoveryEntry recovery)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        do
+        {
+            var status = await RemoteTmuxSession.ProbeAsync(recovery);
+            if (status.CommandSucceeded && status.SessionExists) return true;
+            await Task.Delay(300);
+        }
+        while (DateTime.UtcNow < deadline);
+        return false;
+    }
+
+    private void PersistRecoveryEntry(SessionRecoveryEntry entry)
+    {
+        lock (recoveryCaptureSync)
+        {
+            var snapshot = SessionRecoveryStore.Load();
+            snapshot.Sessions[entry.SessionId] = entry.CopyForTransition();
+            snapshot.CapturedUtc = DateTime.UtcNow;
+            SessionRecoveryStore.Save(snapshot);
+            loadedRecovery.Sessions[entry.SessionId] = entry.CopyForTransition();
+        }
+    }
+
+    private void RemoveRecoveryEntry(string terminalId)
+    {
+        lock (recoveryCaptureSync)
+        {
+            var snapshot = SessionRecoveryStore.Load();
+            snapshot.Sessions.Remove(terminalId);
+            snapshot.CapturedUtc = DateTime.UtcNow;
+            SessionRecoveryStore.Save(snapshot);
+            loadedRecovery.Sessions.Remove(terminalId);
+        }
+    }
+
+    private sealed record TerminalEditRollback(string Name, string AccentColor, string CommandLine, string WorkingDirectory,
+        bool AutoStart, bool UseRemoteTmux, bool UseLocalTmux, string? LocalTmuxDistribution)
+    {
+        public TerminalEditRollback(SessionProfile profile) : this(profile.Name, profile.AccentColor, profile.CommandLine,
+            profile.WorkingDirectory, profile.AutoStart, profile.UseRemoteTmux, profile.UseLocalTmux, profile.LocalTmuxDistribution) { }
+
+        public void Restore(SessionProfile profile)
+        {
+            profile.Name = Name;
+            profile.AccentColor = AccentColor;
+            profile.CommandLine = CommandLine;
+            profile.WorkingDirectory = WorkingDirectory;
+            profile.AutoStart = AutoStart;
+            profile.UseRemoteTmux = UseRemoteTmux;
+            profile.UseLocalTmux = UseLocalTmux;
+            profile.LocalTmuxDistribution = LocalTmuxDistribution;
+        }
     }
 
     internal static bool TerminalEditRequiresRestart(SessionProfile profile, string commandLine, string workingDirectory, bool? useRemoteTmux,
@@ -1798,7 +1999,12 @@ public partial class MainWindow : Window
                         AutoStart = SessionAutoStartEdit.IsChecked == true, UseRemoteTmux = SessionUseTmuxEdit.IsChecked == true,
                         UseLocalTmux = SessionUseLocalTmuxEdit.IsChecked == true, LocalTmuxDistribution = localTmux.Distribution
                     };
-                    AddTerminalToActiveSession(created); CreatePane(created); SelectPane(created.Id, false); ApplyLayout();
+                    AddTerminalToActiveSession(created);
+                    CreatePane(created);
+                    if (created.UseLocalTmux && !await panes[created.Id].PrepareLocalTmuxBackendAsync())
+                        throw new InvalidOperationException("The local tmux backend could not be created. The terminal remains available with Retry.");
+                    SelectPane(created.Id, false);
+                    ApplyLayout();
                 }
             }
             catch (InvalidOperationException exception)
@@ -2470,15 +2676,59 @@ public partial class MainWindow : Window
             var manualRetryWorks = await retryFixture.RetryTerminalStartupForTestAsync()
                 && !retryFixture.StartupFailureVisibleForTest;
             var recoveredSshHandshakeContract = TerminalPane.RecoveredSshStartupContractPassesForTest();
+            var previousRecovery = new SessionRecoveryEntry
+            {
+                SessionId = "checkpoint-fixture",
+                CodexWasActive = true,
+                CodexSessionId = "01900000-0000-7000-8000-000000000001",
+                SshConnectionArguments = ["ubuntu@example.test"]
+            };
+            var unsettledRecoveryRetained = ShouldPreservePreviousRecovery(false, false, previousRecovery)
+                && ShouldPreservePreviousRecovery(true, false, previousRecovery)
+                && !ShouldPreservePreviousRecovery(true, true, previousRecovery)
+                && !ShouldPreservePreviousRecovery(false, false, null);
+            var transitionCopy = previousRecovery.CopyForTransition();
+            transitionCopy.SshConnectionArguments[0] = "changed@example.test";
+            var transitionRecoveryCopiesArrays = previousRecovery.SshConnectionArguments[0] == "ubuntu@example.test";
+            var localTransitionProfile = new SessionProfile
+            {
+                Id = "local-transition-fixture",
+                CommandLine = "powershell.exe",
+                WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                UseLocalTmux = true
+            };
+            var localTransitionRecovery = new SessionRecoveryEntry
+            {
+                SessionId = localTransitionProfile.Id,
+                WorkingDirectory = localTransitionProfile.WorkingDirectory,
+                CodexWasActive = true,
+                CodexSessionId = "11111111-2222-3333-4444-555555555555",
+                CodexSandboxMode = "danger-full-access",
+                CodexApprovalPolicy = "never",
+                CodexPermissionProfile = ":danger-full-access",
+                CodexApprovalsReviewer = "user"
+            };
+            _ = TerminalPane.BuildCommandLine(localTransitionProfile, localTransitionRecovery);
+            var localTransitionScript = File.ReadAllText(Path.Combine(PowerShellStartupScriptStore.DirectoryPath,
+                SessionRecoveryStore.SafeSessionId(localTransitionProfile.Id) + ".ps1"));
+            var localTmuxTransitionKeepsExactCodex = localTransitionScript.Contains(
+                "codex resume '11111111-2222-3333-4444-555555555555'", StringComparison.Ordinal);
+            LocalTmuxSession.DeleteLaunchArtifacts(localTransitionProfile.Id);
+            PowerShellStartupScriptStore.Delete(localTransitionProfile.Id);
+            var localTmuxPersistence = await LocalTmuxSession.RunPersistenceSmokeAsync();
 
             var success = inactiveTerminalsStartEagerly && warmupHostContract && failureOffersRetry && manualRetryWorks
-                && recoveredSshHandshakeContract;
+                && recoveredSshHandshakeContract && unsettledRecoveryRetained && transitionRecoveryCopiesArrays
+                && localTmuxTransitionKeepsExactCodex && localTmuxPersistence.Passed;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath,
                 $"{(success ? "PASS" : "FAIL")} Every saved terminal is queued independently of Session selection, and failed recovery exposes a reusable Retry action.\n"
                 + $"InactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nWarmupHostContract={warmupHostContract}\n"
                 + $"FailureOffersRetry={failureOffersRetry}\nManualRetryWorks={manualRetryWorks}\n"
                 + $"RecoveredSshHandshakeContract={recoveredSshHandshakeContract}\n"
+                + $"UnsettledRecoveryRetained={unsettledRecoveryRetained}\nTransitionRecoveryCopiesArrays={transitionRecoveryCopiesArrays}\n"
+                + $"LocalTmuxTransitionKeepsExactCodex={localTmuxTransitionKeepsExactCodex}\n"
+                + $"LocalTmuxAvailable={localTmuxPersistence.Available}\nLocalTmuxPersistence={localTmuxPersistence.Passed}\nLocalTmuxDiagnostic={localTmuxPersistence.Diagnostic}\n"
                 + $"QueuedTerminals={results.Length}\nAttempts={string.Join(',', fixtures.Select(profile => panes[profile.Id].StartupAttemptCountForTest))}");
             return success;
         }
@@ -5144,7 +5394,7 @@ public partial class MainWindow : Window
         state.Settings.KeepSessionsRunningInTray = SettingsKeepSessionsInTray.IsChecked == true;
         state.Settings.RestoreSessionsAfterRestart = SettingsRestoreAfterRestart.IsChecked == true;
         state.Settings.SaveTerminalTranscripts = SettingsSaveTranscripts.IsChecked == true;
-        if (state.Settings.RestoreSessionsAfterRestart && !automationMode) recoveryTimer.Start(); else recoveryTimer.Stop();
+        if (state.Settings.RestoreSessionsAfterRestart && !automationMode && terminalStartupRecoverySettled) recoveryTimer.Start(); else recoveryTimer.Stop();
         if (!state.Settings.SaveTerminalTranscripts) SessionRecoveryStore.DeleteAllTranscripts();
         ScheduleSave();
         UpdateStatus(state.Settings.KeepSessionsRunningInTray ? "Live session preservation enabled" : "The close button will quit PowerShellPlus");
