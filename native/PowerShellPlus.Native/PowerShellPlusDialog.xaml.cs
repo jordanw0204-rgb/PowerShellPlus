@@ -21,6 +21,7 @@ internal enum PowerShellPlusDialogResult
 }
 
 internal sealed record UpdatePromptChoice(bool Accepted, bool DontShowAgain);
+internal sealed record ConfirmOptionChoice(bool Accepted, bool DontShowAgain);
 
 public partial class PowerShellPlusDialog : Window
 {
@@ -81,6 +82,20 @@ public partial class PowerShellPlusDialog : Window
         bool defaultToPrimary = true, bool primaryIsDangerous = false) =>
         ShowActions(owner, message, title, kind, primaryText, null, cancelText,
             defaultToPrimary, primaryIsDangerous) == PowerShellPlusDialogResult.Primary;
+
+    internal static ConfirmOptionChoice ConfirmWithDontShowAgain(Window? owner, string message, string title,
+        string primaryText = "Continue", string cancelText = "Cancel", bool primaryIsDangerous = false)
+    {
+        var dialog = new PowerShellPlusDialog(title, message, PowerShellPlusDialogKind.Warning,
+            primaryText, null, cancelText, defaultToPrimary: false, primaryIsDangerous);
+        dialog.OptionCheckBox.Content = "Don't show this warning again";
+        dialog.OptionCheckBox.Visibility = Visibility.Visible;
+        if (owner?.IsVisible == true) dialog.Owner = owner;
+        else dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        _ = dialog.ShowDialog();
+        return new ConfirmOptionChoice(dialog.result == PowerShellPlusDialogResult.Primary,
+            dialog.OptionCheckBox.IsChecked == true);
+    }
 
     internal static PowerShellPlusDialogResult ShowActions(Window? owner, string message, string title,
         PowerShellPlusDialogKind kind, string primaryText, string? secondaryText, string? cancelText,

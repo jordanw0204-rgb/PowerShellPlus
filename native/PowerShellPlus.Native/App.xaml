@@ -275,6 +275,33 @@
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="ThemedCheckBox" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{StaticResource Text}"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Grid Background="Transparent">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Border x:Name="Box" Width="16" Height="16" HorizontalAlignment="Left" VerticalAlignment="Center"
+                      Background="#181825" BorderBrush="#585B70" BorderThickness="1" CornerRadius="4">
+                <Path x:Name="Check" Data="M 3 8 L 6.5 11.5 L 13 4.5" Stroke="#11111B" StrokeThickness="2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/>
+              </Border>
+              <ContentPresenter Grid.Column="1" Margin="4,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="#89B4FA"/><Setter TargetName="Box" Property="Background" Value="#242438"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="#B4BEFE"/></Trigger>
+              <Trigger Property="IsChecked" Value="True"><Setter TargetName="Box" Property="Background" Value="#89B4FA"/><Setter TargetName="Box" Property="BorderBrush" Value="#89B4FA"/><Setter TargetName="Check" Property="Visibility" Value="Visible"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="TextBox">
       <Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="Background" Value="#11111B"/><Setter Property="BorderBrush" Value="{StaticResource Border}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="10,7"/><Setter Property="CaretBrush" Value="{StaticResource Text}"/>
     </Style>

@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     private readonly bool automationMode;
     private readonly SessionRecoverySnapshot loadedRecovery;
     private System.Windows.Forms.NotifyIcon? trayIcon;
+    private MediaPlayer? notificationSoundPlayer;
+    private string? lastNotificationProfileId;
     private bool explicitShutdown;
     private bool suppressShutdownRecoveryCapture;
     private bool lifecycleOperationInProgress;
@@ -330,6 +332,8 @@ public partial class MainWindow : Window
             trayIcon.Dispose();
             trayIcon = null;
         }
+        notificationSoundPlayer?.Close();
+        notificationSoundPlayer = null;
     }
 
     private void InitializeTrayIcon()
@@ -364,6 +368,60 @@ public partial class MainWindow : Window
             Visible = true
         };
         trayIcon.DoubleClick += (_, _) => Dispatcher.BeginInvoke(RestoreFromTray);
+        trayIcon.BalloonTipClicked += (_, _) => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RestoreFromTray();
+            if (!string.IsNullOrWhiteSpace(lastNotificationProfileId)) SelectPane(lastNotificationProfileId, true);
+        }));
+    }
+
+    private void PaneAgentActivityChanged(TerminalPane pane, AgentKind kind, AgentActivityState previous, AgentActivityState current)
+    {
+        if (!state.Settings.AgentNotificationsEnabled || !ShouldNotifyAgentTransition(kind, previous, current)) return;
+        ShowAgentNotification(pane.Profile, kind, current);
+    }
+
+    internal static bool ShouldNotifyAgentTransition(AgentKind kind, AgentActivityState previous, AgentActivityState current)
+        => kind != AgentKind.Terminal
+            && (current == AgentActivityState.Waiting && previous != AgentActivityState.Waiting
+                || current == AgentActivityState.Idle && previous == AgentActivityState.Working);
+
+    private void ShowAgentNotification(SessionProfile profile, AgentKind kind, AgentActivityState stateValue, bool test = false)
+    {
+        if (trayIcon is null) return;
+        var agent = kind switch { AgentKind.Hermes => "Hermes", AgentKind.Codex => "Codex", _ => "Agent" };
+        var waiting = stateValue == AgentActivityState.Waiting;
+        var title = test ? "PowerShellPlus notification test"
+            : waiting ? $"{agent} needs your response" : $"{agent} finished";
+        var message = test ? $"Notifications are ready for {profile.Name}."
+            : waiting ? $"{profile.Name} is waiting for your response."
+            : $"{agent} finished working in {profile.Name}.";
+        lastNotificationProfileId = profile.Id;
+        trayIcon.ShowBalloonTip(6000, title, message,
+            waiting ? System.Windows.Forms.ToolTipIcon.Warning : System.Windows.Forms.ToolTipIcon.Info);
+        PlayConfiguredNotificationSound();
+    }
+
+    private void PlayConfiguredNotificationSound()
+    {
+        if (state.Settings.NotificationSound.Equals("Silent", StringComparison.OrdinalIgnoreCase)) return;
+        if (!state.Settings.NotificationSound.Equals("Custom", StringComparison.OrdinalIgnoreCase))
+        {
+            try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+            return;
+        }
+        var path = state.Settings.CustomNotificationSoundPath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        try
+        {
+            notificationSoundPlayer?.Close();
+            notificationSoundPlayer = new MediaPlayer { Volume = 1 };
+            notificationSoundPlayer.MediaEnded += (_, _) => notificationSoundPlayer?.Close();
+            notificationSoundPlayer.MediaFailed += (_, _) => notificationSoundPlayer?.Close();
+            notificationSoundPlayer.Open(new Uri(Path.GetFullPath(path), UriKind.Absolute));
+            notificationSoundPlayer.Play();
+        }
+        catch { notificationSoundPlayer?.Close(); }
     }
 
     private void QuitPowerShellPlusToSessionHost()
@@ -1039,7 +1097,8 @@ public partial class MainWindow : Window
         CommandLine = DefaultSessionCommandLine,
         WorkingDirectory = DefaultSessionDirectory,
         AutoStart = true,
-        UseRemoteTmux = true
+        UseRemoteTmux = true,
+        UseLocalTmux = true
     };
 
     private void CreateDefaultTerminal()
@@ -1087,6 +1146,7 @@ public partial class MainWindow : Window
         pane.EditRequested += (_, _) => OpenSessionEditor(profile);
         pane.DetachRequested += (_, _) => DetachSessionToWindowsTerminal(profile, pane);
         pane.DragRequested += (_, _) => BeginTerminalDrag(profile.Id);
+        pane.AgentActivityChanged += PaneAgentActivityChanged;
         pane.AllowDrop = true;
         pane.DragOver += TerminalLayoutDragOver;
         pane.DragLeave += TerminalLayoutDragLeave;
@@ -1501,7 +1561,7 @@ public partial class MainWindow : Window
         SessionCommandEdit.Text = profile?.CommandLine ?? DefaultSessionCommandLine;
         SessionDirectoryEdit.Text = profile?.WorkingDirectory ?? DefaultSessionDirectory;
         SessionAutoStartEdit.IsChecked = profile?.AutoStart ?? true;
-        SessionUseLocalTmuxEdit.IsChecked = profile?.UseLocalTmux ?? false;
+        SessionUseLocalTmuxEdit.IsChecked = profile?.UseLocalTmux ?? true;
         SessionUseTmuxEdit.IsChecked = profile?.UseRemoteTmux ?? true;
         UpdateTerminalTmuxEditorStatus(profile);
         ShowEditor(SessionEditor);
@@ -1938,9 +1998,11 @@ public partial class MainWindow : Window
     {
         if (!string.Equals(profile.CommandLine, commandLine, StringComparison.Ordinal)
             || !PathsEqual(profile.WorkingDirectory, workingDirectory)) return true;
-        if (useLocalTmux is bool requestedLocalTmux && profile.UseLocalTmux != requestedLocalTmux) return true;
-        return useRemoteTmux is bool requestedTmux && profile.UseRemoteTmux != requestedTmux
-            && (profile.LiveWorkingDirectoryIsSsh || profile.IsTmuxTerminal && !profile.UseLocalTmux);
+        if (useLocalTmux is bool requestedLocalTmux
+            && (profile.UseLocalTmux != requestedLocalTmux || requestedLocalTmux && !profile.IsTmuxTerminal)) return true;
+        return useRemoteTmux is bool requestedTmux
+            && (profile.LiveWorkingDirectoryIsSsh || profile.IsTmuxTerminal && !profile.UseLocalTmux)
+            && (profile.UseRemoteTmux != requestedTmux || profile.IsTmuxTerminal != requestedTmux);
     }
 
     private static bool PathsEqual(string left, string right)
@@ -2061,7 +2123,6 @@ public partial class MainWindow : Window
     private async Task CloseTerminalAsync(SessionProfile profile)
     {
         if (!panes.ContainsKey(profile.Id) || remoteDetachOperations.Contains(profile.Id)) return;
-        CaptureRecoverySnapshot();
         if (profile.UseLocalTmux)
         {
             if (state.Settings.ConfirmBeforeRemove && !PowerShellPlusDialog.Confirm(this,
@@ -2071,10 +2132,12 @@ public partial class MainWindow : Window
             await StopLocalAndRemoveAsync(profile);
             return;
         }
+        if (panes.TryGetValue(profile.Id, out var livePane) && (profile.LiveWorkingDirectoryIsSsh || livePane.HasActiveSshConnection))
+            await CaptureRecoverySnapshotAsync();
         var snapshot = SessionRecoveryStore.Load();
         if (!snapshot.Sessions.TryGetValue(profile.Id, out var recovery) || recovery.SshWasActive != true)
         {
-            RemoveSession(profile);
+            await RemoveSessionResponsiveAsync(profile);
             return;
         }
 
@@ -2099,7 +2162,7 @@ public partial class MainWindow : Window
                     "Local tmux session could not be stopped", PowerShellPlusDialogKind.Error);
                 return false;
             }
-            return RemoveSession(profile, alreadyConfirmed: true);
+            return await RemoveSessionResponsiveAsync(profile, alreadyConfirmed: true);
         }
         finally { remoteDetachOperations.Remove(profile.Id); }
     }
@@ -2263,12 +2326,30 @@ public partial class MainWindow : Window
                     return false;
                 }
             }
-            return RemoveSession(profile, alreadyConfirmed: true);
+            return await RemoveSessionResponsiveAsync(profile, alreadyConfirmed: true);
         }
         finally { remoteDetachOperations.Remove(profile.Id); }
     }
 
-    private bool RemoveSession(SessionProfile profile, bool alreadyConfirmed = false, bool stopPane = true)
+    private async Task<bool> RemoveSessionResponsiveAsync(SessionProfile profile, bool alreadyConfirmed = false)
+    {
+        if (!panes.TryGetValue(profile.Id, out var pane)) return false;
+        if (!alreadyConfirmed && state.Settings.ConfirmBeforeRemove && !PowerShellPlusDialog.Confirm(this,
+                $"Remove {profile.Name}?\n\nThe live terminal process will be closed and this terminal will be removed from its session.",
+                "Remove terminal?", PowerShellPlusDialogKind.Question,
+                "Remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: true)) return false;
+        if (!RemoveSession(profile, alreadyConfirmed: true, stopPane: false, releaseAuxiliary: false, deleteArtifacts: false)) return false;
+        await Dispatcher.Yield(DispatcherPriority.Render);
+        await Task.WhenAll(pane.StopBackendAsync(), Task.Run(() =>
+        {
+            try { SessionRecoveryStore.DeleteSession(profile.Id); } catch { }
+            try { LocalTmuxSession.DeleteLaunchArtifacts(profile.Id); } catch { }
+        }));
+        return true;
+    }
+
+    private bool RemoveSession(SessionProfile profile, bool alreadyConfirmed = false, bool stopPane = true,
+        bool releaseAuxiliary = true, bool deleteArtifacts = true)
     {
         if (!panes.TryGetValue(profile.Id, out var pane)) return false;
         if (!alreadyConfirmed && state.Settings.ConfirmBeforeRemove && !PowerShellPlusDialog.Confirm(this,
@@ -2276,9 +2357,13 @@ public partial class MainWindow : Window
                 "Remove terminal?", PowerShellPlusDialogKind.Question,
                 "Remove", "Cancel", defaultToPrimary: true, primaryIsDangerous: true)) return false;
         if (stopPane) pane.Stop();
-        else pane.ReleaseAuxiliaryResources();
-        TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile); SessionRecoveryStore.DeleteSession(profile.Id);
-        LocalTmuxSession.DeleteLaunchArtifacts(profile.Id);
+        else if (releaseAuxiliary) pane.ReleaseAuxiliaryResources();
+        TerminalHost.Children.Remove(pane); panes.Remove(profile.Id); state.Sessions.Remove(profile);
+        if (deleteArtifacts)
+        {
+            SessionRecoveryStore.DeleteSession(profile.Id);
+            LocalTmuxSession.DeleteLaunchArtifacts(profile.Id);
+        }
         foreach (var session in state.TerminalSessions)
         {
             session.TerminalIds.Remove(profile.Id);
@@ -3658,6 +3743,8 @@ public partial class MainWindow : Window
             var remoteSshPasteConsumesAllClipboardKinds = TerminalPane.RemoteSshPasteRoutingConsumesAllClipboardKindsForTest();
             var threadMessagePasteInterceptsBeforeConPty = activationTarget.ExerciseThreadMessagePasteInterceptionForTest();
             var terminalTabQueuesInsideConPty = activationTarget.ExerciseThreadMessageTabInterceptionForTest();
+            var tmuxControlKeysReachConPty = TerminalPane.TmuxControlCharactersClassifiedForTest();
+            var tmuxOwnsCursorSequences = TerminalPane.TmuxCursorOwnershipContractPassesForTest();
             var remoteImagePasteIndicatorStatesWork = activationTarget.ExerciseRemoteImagePasteIndicatorForTest();
             var attachmentFixture = Path.Combine(Path.GetDirectoryName(reportPath)!, "composer-preview-fixture.png");
             File.WriteAllBytes(attachmentFixture, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
@@ -3761,6 +3848,32 @@ public partial class MainWindow : Window
             var codexInteractivePromptsDriveWaiting = CodexOutputActivityTracker.StateTransitionsPassForTest();
             var hermesActivityTransitionsExact = HermesOutputActivityTracker.StateTransitionsPassForTest();
             var remoteCodexActivityProbeBounded = RemoteCodexActivityProbe.CommandIsReadOnlyAndBoundedForTest();
+            var agentNotificationsUseExactTransitions = ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Working, AgentActivityState.Idle)
+                && ShouldNotifyAgentTransition(AgentKind.Hermes, AgentActivityState.Working, AgentActivityState.Waiting)
+                && !ShouldNotifyAgentTransition(AgentKind.Terminal, AgentActivityState.Working, AgentActivityState.Idle)
+                && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Idle, AgentActivityState.Idle)
+                && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Waiting, AgentActivityState.Idle);
+            var newTerminalPersistenceDefaults = randomColorProfile.AutoStart && randomColorProfile.UseLocalTmux && randomColorProfile.UseRemoteTmux
+                && SessionAutoStartEdit.Style == FindResource("ThemedCheckBox") as Style
+                && SessionUseLocalTmuxEdit.Style == FindResource("ThemedCheckBox") as Style
+                && SessionUseTmuxEdit.Style == FindResource("ThemedCheckBox") as Style;
+            var originalNotificationEnabled = state.Settings.AgentNotificationsEnabled;
+            var originalNotificationSound = state.Settings.NotificationSound;
+            var originalNotificationPath = state.Settings.CustomNotificationSoundPath;
+            var originalTmuxWarning = state.Settings.ShowTmuxToggleWarning;
+            state.Settings.AgentNotificationsEnabled = false;
+            state.Settings.NotificationSound = "Custom";
+            state.Settings.CustomNotificationSoundPath = @"D:\Sounds\done.wav";
+            state.Settings.ShowTmuxToggleWarning = false;
+            var notificationSnapshot = WorkspaceStore.CreateSnapshot(state).Settings;
+            var notificationSettingsPersist = !notificationSnapshot.AgentNotificationsEnabled
+                && notificationSnapshot.NotificationSound == "Custom"
+                && notificationSnapshot.CustomNotificationSoundPath == @"D:\Sounds\done.wav"
+                && !notificationSnapshot.ShowTmuxToggleWarning;
+            state.Settings.AgentNotificationsEnabled = originalNotificationEnabled;
+            state.Settings.NotificationSound = originalNotificationSound;
+            state.Settings.CustomNotificationSoundPath = originalNotificationPath;
+            state.Settings.ShowTmuxToggleWarning = originalTmuxWarning;
             var cursorTransformConfigured = activationTarget.ForceCursorStyleForTest("\u001b[3 q") == "\u001b[5 q";
             var rendererVtStreamTransparent = activationTarget.RendererFilterPreservesVtStreamForTest();
             var remoteVtStreamTransparent = activationTarget.RemoteOutputRelayPreservesVtStreamForTest();
@@ -4454,6 +4567,7 @@ public partial class MainWindow : Window
                 && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && terminalTabQueuesInsideConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
+                && tmuxControlKeysReachConPty && tmuxOwnsCursorSequences
                 && composerAttachmentAdded && secondComposerAttachmentAdded && composerImagePreviewOpens && composerDraftTracksAttachments
                 && composerTypingAvoidsPillRebuild
                 && composerTokensMatchCanonicalPaths && composerBlankSpacePreservesTokens && attachmentPillReorderUpdatesCommand && composerScrollbarThemed && perTerminalFontZoomPersists
@@ -4466,6 +4580,7 @@ public partial class MainWindow : Window
                 && accentColorsApply && hoverPreviewSwitchesAfterDelay && hoverPreviewRestoresOnLeave && terminalTabHoverPreviews && terminalTabHoverRestores
                 && sessionSwitchShowsOwnedTerminals && layoutsStayPerSession && sessionContainersPersist && legacySessionsMigrateWithoutLosingTerminals
                 && agentWorkingStateVisible && agentWaitingStateVisible && agentIdleStateVisible && plainPowerShellHeaderVisible && terminalTabAgentStateMirrorsPane
+                && agentNotificationsUseExactTransitions && notificationSettingsPersist && newTerminalPersistenceDefaults
                 && inputEchoDoesNotActivateAgent && codexTurnEventsDriveAgent && codexActivityGrowthScanBounded && bracketedPasteSubmissionContract
                 && codexInteractivePromptsDriveWaiting && agentActivityClassificationExact
                 && hermesActivityTransitionsExact && remoteCodexActivityProbeBounded
@@ -4484,6 +4599,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Native panes accepted responsive input, hover-previewed Session containers, per-Session layouts, agent state animation, compact multiline composition, and scheduler behavior.\nInputReady={inputReady}\nOutputReady={outputReady}\nRecoveryCapturesOutput={recoveryCapturesOutput}\nRecoverySnapshotsAvoidUiThread={recoverySnapshotsAvoidUiThread}\nRecoveryOutputBuffersBounded={recoveryOutputBuffersBounded}\nDependencyOutputLoggingDisabled={dependencyOutputLoggingDisabled}\nTerminalScrollbarsThemed={terminalScrollbarsThemed}\nTerminalScrollbarsInteractive={terminalScrollbarsInteractive}\nLayoutControlsInSidebar={layoutControlsInSidebar}\nLayoutHoverPreviewsReady={layoutHoverPreviewsReady}\nLayoutPreviewGeometryWorks={layoutPreviewGeometryWorks}\nLayoutTransitionContractReady={layoutTransitionContractReady}\nSidebarCollapses={sidebarCollapses}\nSidebarExpands={sidebarExpands}\nSidebarStatePersists={sidebarStatePersists}\nPaneCommandInputTakesFocus={paneCommandInputTakesFocus}\nTerminalSurfaceHooked={terminalSurfaceHooked}\nTerminalSurfaceActivatesPane={terminalSurfaceActivatesPane}\nTerminalSurfaceTakesKeyboardFocus={terminalSurfaceTakesKeyboardFocus}\nCommandInputAutoGrows={commandInputAutoGrows}\nComposerChromeStaysCompact={composerChromeStaysCompact}\nAgentWorkingStateVisible={agentWorkingStateVisible}\nAgentWaitingStateVisible={agentWaitingStateVisible}\nHoverPreviewSwitchesAfterDelay={hoverPreviewSwitchesAfterDelay}\nHoverPreviewRestoresOnLeave={hoverPreviewRestoresOnLeave}\nSessionSwitchShowsOwnedTerminals={sessionSwitchShowsOwnedTerminals}\nLayoutsStayPerSession={layoutsStayPerSession}\nSessionContainersPersist={sessionContainersPersist}\nLegacySessionsMigrateWithoutLosingTerminals={legacySessionsMigrateWithoutLosingTerminals}\nTextPasteWorks={textPasteWorks}\nCursorTransformConfigured={cursorTransformConfigured}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nCursorSequenceAccepted={cursorSequenceAccepted}\nCursorCommandCompleted={cursorCommandCompleted}\nLastBarCursor={lastBarCursor}\nLastUnderlineCursor={lastUnderlineCursor}\nCursorBarEnforced={cursorBarEnforced}\nCommandBarCollapses={commandBarCollapses}\nCommandBarStatePersists={commandBarStatePersists}\nCommandBarExpands={commandBarExpands}\nQueueAddsCommands={queueAddsCommands}\nQueueMenuListsCommands={queueMenuListsCommands}\nQueueStatePersists={queueStatePersists}\nCtrlEnterQueues={ctrlEnterQueues}\nQueueButtonOpensQueue={queueButtonOpensQueue}\nCurrentCommandRuns={currentCommandRuns}\nNextQueuedCommandPromoted={nextQueuedCommandPromoted}\nUpArrowBrowsesQueue={upArrowBrowsesQueue}\nQueueAdvances={queueAdvances}\nQueueDrains={queueDrains}\nQuickAccessFiltersCommands={quickAccessFiltersCommands}\nQuickAccessTogglePersists={quickAccessTogglePersists}\nQuickAccessPopulatesInput={quickAccessPopulatesInput}\nQueueCommandsExecuted={queueCommandsExecuted}\nShiftModifierRoutesAll={shiftModifierRoutesAll}\nSendAllVisualFeedback={sendAllVisualFeedback}\nModifierCanBeDisabled={modifierCanBeDisabled}\nModifierCanBeRemapped={modifierCanBeRemapped}\nSendAllSettingsPersist={sendAllSettingsPersist}\nCommandReachedAllPanes={commandReachedAllPanes}\nWindowIconLoaded={windowIconLoaded}\nExecutableIconEmbedded={executableIconEmbedded}\nGrid={grid}\nRows={rows}\nColumns={columns}\nFocus={focus}\nExactSchedules={scheduleLogic}\nCountdownFormatting={countdownLogic}\nAutomationHoverContainerStable={automationHoverContainerStable}");
             File.AppendAllText(reportPath, $"\nInputEchoDoesNotActivateAgent={inputEchoDoesNotActivateAgent}\nCodexTurnEventsDriveAgent={codexTurnEventsDriveAgent}\nCodexActivityGrowthScanBounded={codexActivityGrowthScanBounded}\nBracketedPasteSubmissionContract={bracketedPasteSubmissionContract}\nRendererVtStreamTransparent={rendererVtStreamTransparent}\nRemoteVtStreamTransparent={remoteVtStreamTransparent}\nCodexInteractivePromptsDriveWaiting={codexInteractivePromptsDriveWaiting}\nHermesActivityTransitionsExact={hermesActivityTransitionsExact}\nRemoteCodexActivityProbeBounded={remoteCodexActivityProbeBounded}");
+            File.AppendAllText(reportPath, $"\nAgentNotificationsUseExactTransitions={agentNotificationsUseExactTransitions}\nNotificationSettingsPersist={notificationSettingsPersist}\nNewTerminalPersistenceDefaults={newTerminalPersistenceDefaults}\nTmuxControlKeysReachConPty={tmuxControlKeysReachConPty}\nTmuxOwnsCursorSequences={tmuxOwnsCursorSequences}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalTabHoverPreviews={terminalTabHoverPreviews}\nTerminalTabHoverRestores={terminalTabHoverRestores}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
@@ -5146,6 +5262,79 @@ public partial class MainWindow : Window
     private void SessionItemEditClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; OpenSessionEditor(value); } }
     private async void SessionItemRestartClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value && panes.TryGetValue(value.Id, out var pane)) { SessionList.SelectedItem = value; if (value.IsRemoteDetached) await ReattachRemoteTerminalAsync(pane, true); else await pane.RestartAsync(); } }
     private async void SessionItemDetachRemoteClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; await DetachRemoteTerminalAsync(value); } }
+    private async void SessionItemToggleTmuxClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) await ToggleTmuxPersistenceAsync(value); }
+    private async void TmuxBadgeMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: SessionProfile profile }) await ToggleTmuxPersistenceAsync(profile);
+        e.Handled = true;
+    }
+    private async Task ToggleTmuxPersistenceAsync(SessionProfile profile)
+    {
+        if (!panes.TryGetValue(profile.Id, out var pane) || remoteDetachOperations.Contains(profile.Id)) return;
+        var ssh = profile.LiveWorkingDirectoryIsSsh || pane.HasActiveSshConnection
+            || loadedRecovery.Sessions.TryGetValue(profile.Id, out var recovery) && recovery.SshWasActive;
+        var currentlyManaged = profile.IsTmuxTerminal;
+        var enable = !currentlyManaged;
+        if (state.Settings.ShowTmuxToggleWarning)
+        {
+            var location = ssh ? "the SSH host" : "WSL on this computer";
+            var action = enable ? "move this terminal into" : "remove this terminal from";
+            var choice = PowerShellPlusDialog.ConfirmWithDontShowAgain(this,
+                $"PowerShellPlus will {action} tmux on {location}. The terminal must restart to change its live backend. A foreground command that is not already protected by tmux may be interrupted.\n\nThe terminal's verified SSH and agent recovery information will be preserved.",
+                enable ? "Enable tmux persistence?" : "Disable tmux persistence?",
+                enable ? "Enable tmux" : "Disable tmux", primaryIsDangerous: !enable);
+            if (choice.DontShowAgain)
+            {
+                state.Settings.ShowTmuxToggleWarning = false;
+                SettingsTmuxToggleWarning.IsChecked = false;
+                ScheduleSave();
+            }
+            if (!choice.Accepted) return;
+        }
+        try
+        {
+            string? distribution = profile.LocalTmuxDistribution;
+            if (!ssh && enable)
+            {
+                var status = await LocalTmuxSession.ProbeAsync(distribution, profile.Id);
+                if (!status.CommandSucceeded || !status.WslAvailable || !status.TmuxAvailable)
+                    throw new InvalidOperationException(status.Message);
+                distribution = status.Distribution;
+            }
+            await ApplyTerminalEditAsync(profile, profile.Name, profile.CommandLine, profile.WorkingDirectory, profile.AutoStart,
+                profile.AccentColor, ssh ? enable : null, ssh ? null : enable, distribution);
+            ScheduleSave();
+            RefreshActiveTerminalList();
+            UpdateStatus($"{(enable ? "Enabled" : "Disabled")} tmux persistence for {profile.Name}");
+        }
+        catch (Exception exception)
+        {
+            LogNativeError("Toggle tmux persistence", exception);
+            PowerShellPlusDialog.ShowMessage(this, exception.Message + "\n\nThe terminal was restored to its previous backend.",
+                "Tmux persistence was not changed", PowerShellPlusDialogKind.Error);
+        }
+    }
+    private void SessionItemOpenLocationClick(object sender, RoutedEventArgs e)
+    {
+        if (ItemFromSender<SessionProfile>(sender) is not { } profile || !panes.TryGetValue(profile.Id, out var pane)) return;
+        if (profile.LiveWorkingDirectoryIsSsh || pane.HasActiveSshConnection)
+        {
+            UpdateStatus("Open file location is available for local terminals only");
+            return;
+        }
+        var directory = Directory.Exists(profile.LiveWorkingDirectory) ? profile.LiveWorkingDirectory : profile.WorkingDirectory;
+        try
+        {
+            var startInfo = new ProcessStartInfo { FileName = "explorer.exe", UseShellExecute = true };
+            startInfo.ArgumentList.Add(directory);
+            Process.Start(startInfo);
+            UpdateStatus($"Opened {directory}");
+        }
+        catch (Exception exception)
+        {
+            PowerShellPlusDialog.ShowMessage(this, exception.Message, "File location could not be opened", PowerShellPlusDialogKind.Error);
+        }
+    }
     private void SessionItemUpClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) MoveSession(value, -1); }
     private void SessionItemDownClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) MoveSession(value, 1); }
     private async void SessionItemRemoveClick(object sender, RoutedEventArgs e) { if (ItemFromSender<SessionProfile>(sender) is { } value) { SessionList.SelectedItem = value; await CloseTerminalAsync(value); } }
@@ -5313,6 +5502,11 @@ public partial class MainWindow : Window
         SettingsSendAllModifier.SelectedIndex = settings.SendToAllModifier == "Alt" ? 1 : 0;
         SettingsSendAllModifier.IsEnabled = settings.SendToAllModifierEnabled;
         SettingsAutomaticUpdates.IsChecked = settings.CheckForUpdatesAutomatically;
+        SettingsAgentNotifications.IsChecked = settings.AgentNotificationsEnabled;
+        SettingsNotificationSound.SelectedIndex = settings.NotificationSound switch { "Custom" => 1, "Silent" => 2, _ => 0 };
+        SettingsCustomSoundPath.Text = settings.CustomNotificationSoundPath ?? string.Empty;
+        SettingsTmuxToggleWarning.IsChecked = settings.ShowTmuxToggleWarning;
+        UpdateNotificationSettingsVisibility();
         SettingsInstalledVersion.Text = $"PowerShellPlus {ApplicationUpdater.CurrentVersionText}";
         SettingsUpdateStatus.Text = settings.CheckForUpdatesAutomatically
             ? "Automatic update notifications are enabled."
@@ -5412,6 +5606,50 @@ public partial class MainWindow : Window
         UpdateStatus(state.Settings.SendToAllModifierEnabled
             ? $"Hold {state.Settings.SendToAllModifier} to send commands to all terminals"
             : "Send-to-all modifier disabled");
+    }
+
+    private void SettingsNotificationsChanged(object sender, RoutedEventArgs e)
+    {
+        if (!settingsUiReady) return;
+        state.Settings.AgentNotificationsEnabled = SettingsAgentNotifications.IsChecked == true;
+        state.Settings.NotificationSound = SettingsNotificationSound.SelectedIndex switch { 1 => "Custom", 2 => "Silent", _ => "System" };
+        state.Settings.ShowTmuxToggleWarning = SettingsTmuxToggleWarning.IsChecked == true;
+        UpdateNotificationSettingsVisibility();
+        ScheduleSave();
+        UpdateStatus(state.Settings.AgentNotificationsEnabled ? "Agent notifications enabled" : "Agent notifications disabled");
+    }
+
+    private void UpdateNotificationSettingsVisibility()
+    {
+        if (SettingsCustomSoundPanel is null) return;
+        SettingsCustomSoundPanel.Visibility = SettingsNotificationSound.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        SettingsTestNotificationButton.IsEnabled = SettingsAgentNotifications.IsChecked == true;
+    }
+
+    private void SettingsBrowseNotificationSoundClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Choose a notification sound",
+            Filter = "Audio files|*.wav;*.mp3;*.wma;*.m4a|All files|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        state.Settings.CustomNotificationSoundPath = dialog.FileName;
+        state.Settings.NotificationSound = "Custom";
+        SettingsCustomSoundPath.Text = dialog.FileName;
+        SettingsNotificationSound.SelectedIndex = 1;
+        UpdateNotificationSettingsVisibility();
+        ScheduleSave();
+        PlayConfiguredNotificationSound();
+    }
+
+    private void SettingsTestNotificationClick(object sender, RoutedEventArgs e)
+    {
+        var profile = activePane?.Profile ?? state.Sessions.FirstOrDefault();
+        if (profile is null) return;
+        ShowAgentNotification(profile, AgentKind.Codex, AgentActivityState.Waiting, test: true);
     }
 
     private void QuitApplicationClick(object sender, RoutedEventArgs e)

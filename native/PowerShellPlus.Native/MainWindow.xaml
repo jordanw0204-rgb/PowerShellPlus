@@ -32,6 +32,8 @@
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="&#x270E;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="&#x21BB;" FontSize="15"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Detach and keep running remotely" Click="SessionItemDetachRemoteClick"><MenuItem.Icon><TextBlock Text="&#x21F1;" FontSize="14" Foreground="#94E2D5"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Toggle tmux persistence" Click="SessionItemToggleTmuxClick"><MenuItem.Icon><TextBlock Text="TM" FontSize="9" FontWeight="Bold" Foreground="#89DCEB"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Open file location" Click="SessionItemOpenLocationClick"><MenuItem.Icon><TextBlock Text="&#x1F4C2;" FontSize="13"/></MenuItem.Icon></MenuItem>
       <Separator/>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="&#x2191;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="&#x2193;" FontSize="14"/></MenuItem.Icon></MenuItem>
@@ -160,7 +162,8 @@
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
                     <StackPanel VerticalAlignment="Center" Margin="11,0,96,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"><Run Text="{Binding DirectoryPrefix, Mode=OneWay}" Foreground="#89B4FA" FontWeight="SemiBold"/><Run Text="{Binding Subtitle, Mode=OneWay}"/></TextBlock></StackPanel>
                     <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center" Orientation="Horizontal">
-                      <Border Margin="0,0,6,0" MinWidth="34" Height="16" Padding="5,0" CornerRadius="3" Background="#356A78" BorderThickness="0">
+                      <Border Margin="0,0,6,0" MinWidth="34" Height="16" Padding="5,0" CornerRadius="3" Background="#356A78" BorderThickness="0"
+                              Cursor="Hand" ToolTip="Toggle tmux persistence" MouseLeftButtonUp="TmuxBadgeMouseLeftButtonUp">
                         <Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding IsTmuxTerminal, Mode=OneWay}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></Border.Style>
                         <TextBlock Text="TMUX" Foreground="#F1FCFF" FontSize="8" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                       </Border>
@@ -247,7 +250,7 @@
                       <ComboBoxItem Content="Bar"/><ComboBoxItem Content="Block"/><ComboBoxItem Content="Underline"/>
                     </ComboBox>
                   </StackPanel>
-                  <CheckBox x:Name="SettingsCursorBlink" Grid.Column="2" Content="Blink" Foreground="{StaticResource Text}" VerticalAlignment="Bottom" Margin="0,0,0,8" Click="SettingsCursorChanged"/>
+                <CheckBox x:Name="SettingsCursorBlink" Grid.Column="2" Content="Blink" Style="{StaticResource ThemedCheckBox}" VerticalAlignment="Bottom" Margin="0,0,0,8" Click="SettingsCursorChanged"/>
                 </Grid>
 
                 <TextBlock Text="NEW SESSION DEFAULTS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
@@ -270,6 +273,23 @@
                   <ComboBoxItem Content="Shift"/><ComboBoxItem Content="Alt"/>
                 </ComboBox>
                 <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. Ctrl+Enter always adds the command to the queue." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
+
+                <TextBlock Text="AGENT NOTIFICATIONS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <CheckBox x:Name="SettingsAgentNotifications" Style="{StaticResource ToggleSwitch}" Click="SettingsNotificationsChanged"><TextBlock Text="Notify me when an agent finishes or needs a response" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Notifications identify the terminal and open it when clicked." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
+                <TextBlock Text="Notification sound" Foreground="{StaticResource Muted}" Margin="49,0,0,5"/>
+                <ComboBox x:Name="SettingsNotificationSound" Margin="49,0,0,0" SelectionChanged="SettingsNotificationsChanged">
+                  <ComboBoxItem Content="System default"/><ComboBoxItem Content="Custom sound"/><ComboBoxItem Content="Silent"/>
+                </ComboBox>
+                <Grid x:Name="SettingsCustomSoundPanel" Margin="49,8,0,0">
+                  <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBox x:Name="SettingsCustomSoundPath" IsReadOnly="True" ToolTip="Custom WAV, MP3, WMA, or M4A notification sound"/>
+                  <Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="SettingsBrowseNotificationSoundClick"/>
+                </Grid>
+                <Button x:Name="SettingsTestNotificationButton" Content="Test notification" Margin="49,7,0,0" HorizontalAlignment="Stretch" Click="SettingsTestNotificationClick"/>
+
+                <CheckBox x:Name="SettingsTmuxToggleWarning" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0" Click="SettingsNotificationsChanged"><TextBlock Text="Warn before changing tmux persistence" TextWrapping="Wrap" Width="178"/></CheckBox>
+                <TextBlock Text="Re-enable this if you previously chose Don't show this warning again." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
                 <TextBlock Text="SESSION RECOVERY" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsKeepSessionsInTray" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Keep live sessions running when the window closes" TextWrapping="Wrap" Width="178"/></CheckBox>
@@ -454,10 +474,10 @@
               </Grid>
               <TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
               <TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
-              <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Foreground="{StaticResource Text}" Margin="0,16,0,0"/>
-              <CheckBox x:Name="SessionUseLocalTmuxEdit" Content="Keep this local terminal alive with tmux (WSL)" Foreground="{StaticResource Text}" Margin="0,10,0,0" Click="SessionUseLocalTmuxEditClick" ToolTip="Runs the configured Windows terminal inside tmux through WSL interoperability, so it can survive a PowerShellPlus restart."/>
+              <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Style="{StaticResource ThemedCheckBox}" Margin="0,16,0,0"/>
+              <CheckBox x:Name="SessionUseLocalTmuxEdit" Content="Keep this local terminal alive with tmux (WSL)" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseLocalTmuxEditClick" ToolTip="Runs the configured Windows terminal inside tmux through WSL interoperability, so it can survive a PowerShellPlus restart."/>
               <TextBlock x:Name="SessionLocalTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
-              <CheckBox x:Name="SessionUseTmuxEdit" Content="Keep SSH connections alive with remote tmux" Foreground="{StaticResource Text}" Margin="0,10,0,0" Click="SessionUseTmuxEditClick" ToolTip="Creates tmux on the SSH host so the remote shell and agent can survive a disconnect."/>
+              <CheckBox x:Name="SessionUseTmuxEdit" Content="Keep SSH connections alive with remote tmux" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseTmuxEditClick" ToolTip="Creates tmux on the SSH host so the remote shell and agent can survive a disconnect."/>
               <TextBlock x:Name="SessionTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
             </StackPanel>
             <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed">

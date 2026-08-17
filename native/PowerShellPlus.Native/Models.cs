@@ -130,6 +130,10 @@ public sealed class WorkspaceSettings
     public bool SendToAllModifierEnabled { get; set; } = true;
     public string SendToAllModifier { get; set; } = "Shift";
     public bool CheckForUpdatesAutomatically { get; set; } = true;
+    public bool AgentNotificationsEnabled { get; set; } = true;
+    public string NotificationSound { get; set; } = "System";
+    public string? CustomNotificationSoundPath { get; set; }
+    public bool ShowTmuxToggleWarning { get; set; } = true;
 }
 
 public sealed class SessionProfile : INotifyPropertyChanged

@@ -45,7 +45,7 @@
                        TextWrapping="Wrap"/>
           </ScrollViewer>
           <CheckBox x:Name="OptionCheckBox" Visibility="Collapsed" Margin="0,16,0,0"
-                    Foreground="{StaticResource Text}" VerticalAlignment="Center"/>
+                    Style="{StaticResource ThemedCheckBox}" VerticalAlignment="Center"/>
         </StackPanel>
       </Grid>
 

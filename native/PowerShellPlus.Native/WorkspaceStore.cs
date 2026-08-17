@@ -26,6 +26,10 @@ public static class WorkspaceStore
                 var upgradedFromLegacy = loaded.Version <= 6;
                 loaded.Version = 8;
                 loaded.Settings ??= new WorkspaceSettings();
+                if (loaded.Settings.NotificationSound is not ("System" or "Custom" or "Silent"))
+                    loaded.Settings.NotificationSound = "System";
+                if (string.IsNullOrWhiteSpace(loaded.Settings.CustomNotificationSoundPath))
+                    loaded.Settings.CustomNotificationSoundPath = null;
                     if (string.Equals(loaded.Settings.SendToAllModifier, "Ctrl", StringComparison.OrdinalIgnoreCase)) loaded.Settings.SendToAllModifier = "Shift";
                 loaded.LayoutSizes ??= [];
                 loaded.Automations ??= [];
@@ -92,7 +96,7 @@ public static class WorkspaceStore
         catch { }
 
         var state = new WorkspaceState();
-        state.Sessions.Add(new SessionProfile { Name = terminalProfile.ProfileName, CommandLine = terminalProfile.CommandLine });
+        state.Sessions.Add(new SessionProfile { Name = terminalProfile.ProfileName, CommandLine = terminalProfile.CommandLine, UseLocalTmux = true, UseRemoteTmux = true, AutoStart = true });
         state.Snippets.Add(new CommandSnippet { Name = "Git status", Category = "Development", Command = "git status --short --branch", ShowInQuickAccess = true });
         state.Snippets.Add(new CommandSnippet { Name = "Top processes", Category = "System", Command = "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15" });
         state.ActiveSessionId = state.Sessions[0].Id;
@@ -290,7 +294,11 @@ public static class WorkspaceStore
             SaveTerminalTranscripts = state.Settings.SaveTerminalTranscripts,
             SendToAllModifierEnabled = state.Settings.SendToAllModifierEnabled,
             SendToAllModifier = state.Settings.SendToAllModifier,
-            CheckForUpdatesAutomatically = state.Settings.CheckForUpdatesAutomatically
+            CheckForUpdatesAutomatically = state.Settings.CheckForUpdatesAutomatically,
+            AgentNotificationsEnabled = state.Settings.AgentNotificationsEnabled,
+            NotificationSound = state.Settings.NotificationSound,
+            CustomNotificationSoundPath = state.Settings.CustomNotificationSoundPath,
+            ShowTmuxToggleWarning = state.Settings.ShowTmuxToggleWarning
         },
         LayoutSizes = state.LayoutSizes.ToDictionary(value => value.Key, value => CloneSizing(value.Value), StringComparer.Ordinal)
     };

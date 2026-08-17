@@ -323,6 +323,7 @@ public partial class TerminalPane : UserControl
     public event EventHandler? DetachRequested;
     public event EventHandler? DragRequested;
     public event Action<TerminalPane, string>? RawOutputReceived;
+    internal event Action<TerminalPane, AgentKind, AgentActivityState, AgentActivityState>? AgentActivityChanged;
     private SessionRecoveryEntry? startupRecovery;
     private Point? paneHeaderDragStart;
     private bool paneIsActive;
@@ -378,6 +379,7 @@ public partial class TerminalPane : UserControl
     private CodexTurnActivity remoteCodexActivity;
     private bool remoteImagePastePending;
     private bool suppressRemoteImagePasteVSequence;
+    private int suppressedTmuxControlVirtualKey;
     private Func<RemoteImagePasteMode, bool>? remoteClipboardPasteTestOverride;
     private (bool Control, bool Alt, bool Shift)? terminalShortcutTestModifiers;
     private long terminalThreadMessageInterceptCount;
@@ -1926,6 +1928,19 @@ public partial class TerminalPane : UserControl
         SetAgentStatus(detectedAgentKind, AgentActivityState.Stopped);
     }
 
+    internal async Task StopBackendAsync()
+    {
+        var terminal = Terminal.ConPTYTerm;
+        var scrollback = tmuxScrollbackClient;
+        tmuxScrollbackClient = null;
+        await Task.Run(() =>
+        {
+            try { scrollback?.Dispose(); } catch { }
+            try { terminal?.StopExternalTermOnly(); } catch { }
+        });
+        if (!Dispatcher.HasShutdownStarted) SetAgentStatus(detectedAgentKind, AgentActivityState.Stopped);
+    }
+
     internal void ReleaseAuxiliaryResources() => DisposeTmuxScrollbackClient();
 
     public void SetHandoffPending(bool pending)
@@ -3014,6 +3029,23 @@ public partial class TerminalPane : UserControl
             }
             return;
         }
+        if (keyboardMessage && Profile.IsTmuxTerminal
+            && TryGetTmuxControlCharacter(nativeMessage, virtualKey, controlDown, altDown, shiftDown, out var controlCharacter)
+            && TryForwardTmuxControlCharacter(controlCharacter))
+        {
+            suppressedTmuxControlVirtualKey = virtualKey;
+            terminalActivity.RecordInput(DateTime.UtcNow);
+            Interlocked.Increment(ref terminalThreadMessageInterceptCount);
+            handled = true;
+            return;
+        }
+        if (suppressedTmuxControlVirtualKey != 0
+            && IsSuppressedTmuxControlMessage(nativeMessage, virtualKey, suppressedTmuxControlVirtualKey))
+        {
+            if (nativeMessage is WmKeyUp or WmSysKeyUp) suppressedTmuxControlVirtualKey = 0;
+            handled = true;
+            return;
+        }
         if (suppressRemoteImagePasteVSequence && IsRemoteImagePasteCharacter(nativeMessage, virtualKey))
         {
             handled = true;
@@ -3104,6 +3136,23 @@ public partial class TerminalPane : UserControl
         => (message == WmChar || message == WmSysChar) && char.ToUpperInvariant(unchecked((char)value)) == 'V';
     private static bool IsRemoteImagePasteKeyUp(uint message, int virtualKey)
         => (message == WmKeyUp || message == WmSysKeyUp) && virtualKey == VkV;
+    private static bool TryGetTmuxControlCharacter(uint message, int virtualKey, bool controlDown, bool altDown, bool shiftDown, out char character)
+    {
+        character = default;
+        if (message != WmKeyDown || !controlDown || altDown || shiftDown || virtualKey is < 0x41 or > 0x5A || virtualKey == VkV)
+            return false;
+        character = unchecked((char)(virtualKey - 0x40));
+        return true;
+    }
+    private bool TryForwardTmuxControlCharacter(char character)
+    {
+        if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
+        Terminal.ConPTYTerm.WriteToTerm(character.ToString());
+        return true;
+    }
+    private static bool IsSuppressedTmuxControlMessage(uint message, int value, int virtualKey)
+        => message is WmKeyUp or WmSysKeyUp && value == virtualKey
+            || message is WmChar or WmSysChar && value == virtualKey - 0x40;
 
     private void AttachTerminalOutputFilter()
     {
@@ -3500,6 +3549,7 @@ public partial class TerminalPane : UserControl
     private void SetAgentStatus(AgentKind kind, AgentActivityState state)
     {
         if (agentActivityState == state && displayedAgentKind == kind) return;
+        var previousState = agentActivityState;
         detectedAgentKind = kind;
         displayedAgentKind = kind;
         agentActivityState = state;
@@ -3576,6 +3626,7 @@ public partial class TerminalPane : UserControl
         AgentStatusIcon.ToolTip = accessibleStatus;
         AutomationProperties.SetName(AgentStatusIcon, accessibleStatus);
         UpdateHeaderStatus();
+        AgentActivityChanged?.Invoke(this, kind, previousState, state);
     }
 
     private void UpdateHeaderStatus()
@@ -3653,6 +3704,10 @@ public partial class TerminalPane : UserControl
 
     private void EnforceCursorStyle(ref Span<char> output)
     {
+        // tmux and the full-screen application inside it jointly own DECSCUSR.
+        // Rewriting those sequences after tmux has composed a frame can make
+        // the visible cursor oscillate or land in the wrong style.
+        if (!ShouldNormalizeCursorStyle(Profile)) return;
         // Keep backend output byte-for-byte transparent. Full-screen TUIs track
         // cursor position and SGR state across chunks, so deleting a protocol
         // fragment here can leave attributes (such as dotted underline) latched
@@ -3677,6 +3732,15 @@ public partial class TerminalPane : UserControl
         CursorStyle.SteadyBar => '6',
         _ => '1'
     };
+
+    private static bool ShouldNormalizeCursorStyle(SessionProfile profile) => !profile.IsTmuxTerminal;
+    internal static bool TmuxCursorOwnershipContractPassesForTest()
+    {
+        var profile = new SessionProfile();
+        if (!ShouldNormalizeCursorStyle(profile)) return false;
+        profile.SetTmuxTerminal(true);
+        return !ShouldNormalizeCursorStyle(profile);
+    }
 
     private IntPtr TerminalMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -3879,6 +3943,7 @@ public partial class TerminalPane : UserControl
 
     internal string TitleTextForTest => TitleText.Text;
     internal AgentKind DetectedAgentKind => detectedAgentKind;
+    internal bool HasActiveSshConnection => TryGetActiveSshConnection(out _);
     internal bool TriggerEditShortcutForTest() => TryHandleEditShortcut(VkF2);
     internal bool HasRemoteImagePasteIndicatorForTest => RemoteImagePasteIndicator is not null;
     internal bool TerminalInputRouterPrecedesConPtyForTest()
@@ -3897,6 +3962,16 @@ public partial class TerminalPane : UserControl
             && IsRemoteImagePasteKeyUp(WmKeyUp, VkV) && IsRemoteImagePasteKeyUp(WmSysKeyUp, VkV)
             && !IsRemoteImageShortcutMessage(WmKeyDown, VkV, false, false)
             && !IsRemoteImageShortcutMessage(WmKeyDown, VkF2, true, false);
+    internal static bool TmuxControlCharactersClassifiedForTest()
+    {
+        return TryGetTmuxControlCharacter(WmKeyDown, 0x4A, true, false, false, out var ctrlJ) && ctrlJ == '\n'
+            && TryGetTmuxControlCharacter(WmKeyDown, 0x4B, true, false, false, out var ctrlK) && ctrlK == '\v'
+            && TryGetTmuxControlCharacter(WmKeyDown, 0x55, true, false, false, out var ctrlU) && ctrlU == '\u0015'
+            && !TryGetTmuxControlCharacter(WmKeyDown, VkV, true, false, false, out _)
+            && !TryGetTmuxControlCharacter(WmKeyDown, 0x4A, true, false, true, out _)
+            && IsSuppressedTmuxControlMessage(WmChar, '\n', 0x4A)
+            && IsSuppressedTmuxControlMessage(WmKeyUp, 0x4A, 0x4A);
+    }
     internal static bool RemoteImagePasteModesFormatForTest()
     {
         const string path = "/home/ubuntu/.cache/powershellplus/images/clipboard-test.png";
