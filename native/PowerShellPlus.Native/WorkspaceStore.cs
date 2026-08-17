@@ -96,7 +96,11 @@ public static class WorkspaceStore
         catch { }
 
         var state = new WorkspaceState();
-        state.Sessions.Add(new SessionProfile { Name = terminalProfile.ProfileName, CommandLine = terminalProfile.CommandLine, UseLocalTmux = true, UseRemoteTmux = true, AutoStart = true });
+        // Keep the first-run bootstrap terminal independent of optional WSL/tmux.
+        // User-created terminals still default all persistence choices on in the
+        // editor, but a clean Windows install must always reach an interactive
+        // shell before those optional dependencies have been configured.
+        state.Sessions.Add(new SessionProfile { Name = terminalProfile.ProfileName, CommandLine = terminalProfile.CommandLine, UseRemoteTmux = true, AutoStart = true });
         state.Snippets.Add(new CommandSnippet { Name = "Git status", Category = "Development", Command = "git status --short --branch", ShowInQuickAccess = true });
         state.Snippets.Add(new CommandSnippet { Name = "Top processes", Category = "System", Command = "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15" });
         state.ActiveSessionId = state.Sessions[0].Id;
