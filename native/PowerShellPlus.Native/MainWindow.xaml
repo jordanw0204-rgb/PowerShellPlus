@@ -34,6 +34,7 @@
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Detach and keep running remotely" Click="SessionItemDetachRemoteClick"><MenuItem.Icon><TextBlock Text="&#x21F1;" FontSize="14" Foreground="#94E2D5"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Toggle tmux persistence" Click="SessionItemToggleTmuxClick"><MenuItem.Icon><TextBlock Text="TM" FontSize="9" FontWeight="Bold" Foreground="#89DCEB"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Open file location" Click="SessionItemOpenLocationClick"><MenuItem.Icon><TextBlock Text="&#x1F4C2;" FontSize="13"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Agent notifications" IsCheckable="True" IsChecked="{Binding AgentNotificationsEnabled, Mode=OneWay}" Click="SessionItemNotificationsClick"><MenuItem.Icon><TextBlock Text="&#x25CE;" FontSize="13" Foreground="#89B4FA"/></MenuItem.Icon></MenuItem>
       <Separator/>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="&#x2191;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="&#x2193;" FontSize="14"/></MenuItem.Icon></MenuItem>
@@ -475,6 +476,7 @@
               <TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
               <TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
               <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Style="{StaticResource ThemedCheckBox}" Margin="0,16,0,0"/>
+              <CheckBox x:Name="SessionAgentNotificationsEdit" Content="Notify me when this terminal finishes or needs a response" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0"/>
               <CheckBox x:Name="SessionUseLocalTmuxEdit" Content="Keep this local terminal alive with tmux (WSL)" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseLocalTmuxEditClick" ToolTip="Runs the configured Windows terminal inside tmux through WSL interoperability, so it can survive a PowerShellPlus restart."/>
               <TextBlock x:Name="SessionLocalTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
               <CheckBox x:Name="SessionUseTmuxEdit" Content="Keep SSH connections alive with remote tmux" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseTmuxEditClick" ToolTip="Creates tmux on the SSH host so the remote shell and agent can survive a disconnect."/>

@@ -315,6 +315,7 @@ public static class WorkspaceStore
         CommandLine = value.CommandLine,
         WorkingDirectory = value.WorkingDirectory,
         AutoStart = value.AutoStart,
+        AgentNotificationsEnabled = value.AgentNotificationsEnabled,
         UseRemoteTmux = value.UseRemoteTmux,
         UseLocalTmux = value.UseLocalTmux,
         LocalTmuxDistribution = value.LocalTmuxDistribution,

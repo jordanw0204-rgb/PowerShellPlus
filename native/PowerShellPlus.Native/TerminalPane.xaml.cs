@@ -385,6 +385,7 @@ public partial class TerminalPane : UserControl
     private long terminalThreadMessageInterceptCount;
     private long terminalTabInterceptCount;
     private Func<bool>? terminalTabForwardTestOverride;
+    private Func<char, bool>? tmuxControlForwardTestOverride;
     private long terminalInternalMessageForwardCount;
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
@@ -3029,11 +3030,8 @@ public partial class TerminalPane : UserControl
             }
             return;
         }
-        if (keyboardMessage && Profile.IsTmuxTerminal
-            && TryGetTmuxControlCharacter(nativeMessage, virtualKey, controlDown, altDown, shiftDown, out var controlCharacter)
-            && TryForwardTmuxControlCharacter(controlCharacter))
+        if (keyboardMessage && TryRouteTmuxControlKey(nativeMessage, virtualKey, controlDown, altDown, shiftDown))
         {
-            suppressedTmuxControlVirtualKey = virtualKey;
             terminalActivity.RecordInput(DateTime.UtcNow);
             Interlocked.Increment(ref terminalThreadMessageInterceptCount);
             handled = true;
@@ -3099,6 +3097,19 @@ public partial class TerminalPane : UserControl
             var virtualKey = unchecked((int)wParam.ToInt64());
             var controlDown = keyboardMessage && IsKeyDown(VkControl);
             var altDown = keyboardMessage && IsKeyDown(VkMenu);
+            var shiftDown = keyboardMessage && IsKeyDown(VkShift);
+            if (!terminalMessageRouterInstalled && keyboardMessage
+                && TryRouteTmuxControlKey(message, virtualKey, controlDown, altDown, shiftDown))
+            {
+                terminalActivity.RecordInput(DateTime.UtcNow);
+                return IntPtr.Zero;
+            }
+            if (!terminalMessageRouterInstalled && suppressedTmuxControlVirtualKey != 0
+                && IsSuppressedTmuxControlMessage(message, virtualKey, suppressedTmuxControlVirtualKey))
+            {
+                if (message is WmKeyUp or WmSysKeyUp) suppressedTmuxControlVirtualKey = 0;
+                return IntPtr.Zero;
+            }
             if (keyboardMessage && IsRemoteImageShortcutMessage(message, virtualKey, controlDown, altDown)
                 && TryHandleRemoteClipboardPaste(altDown ? RemoteImagePasteMode.FilePath : RemoteImagePasteMode.Attachment))
             {
@@ -3146,8 +3157,17 @@ public partial class TerminalPane : UserControl
     }
     private bool TryForwardTmuxControlCharacter(char character)
     {
+        if (tmuxControlForwardTestOverride is not null) return tmuxControlForwardTestOverride(character);
         if (Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
         Terminal.ConPTYTerm.WriteToTerm(character.ToString());
+        return true;
+    }
+    private bool TryRouteTmuxControlKey(uint message, int virtualKey, bool controlDown, bool altDown, bool shiftDown)
+    {
+        if (!Profile.IsTmuxTerminal
+            || !TryGetTmuxControlCharacter(message, virtualKey, controlDown, altDown, shiftDown, out var character)
+            || !TryForwardTmuxControlCharacter(character)) return false;
+        suppressedTmuxControlVirtualKey = virtualKey;
         return true;
     }
     private static bool IsSuppressedTmuxControlMessage(uint message, int value, int virtualKey)
@@ -3744,6 +3764,15 @@ public partial class TerminalPane : UserControl
 
     private IntPtr TerminalMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        var nativeMessage = unchecked((uint)message);
+        var messageValue = unchecked((int)wParam.ToInt64());
+        if (suppressedTmuxControlVirtualKey != 0
+            && IsSuppressedTmuxControlMessage(nativeMessage, messageValue, suppressedTmuxControlVirtualKey))
+        {
+            if (nativeMessage is WmKeyUp or WmSysKeyUp) suppressedTmuxControlVirtualKey = 0;
+            handled = true;
+            return IntPtr.Zero;
+        }
         if (message == WmLeftButtonDown)
         {
             Activated?.Invoke(this, EventArgs.Empty);
@@ -3760,10 +3789,16 @@ public partial class TerminalPane : UserControl
             var virtualKey = wParam.ToInt32();
             var now = DateTime.UtcNow;
             terminalActivity.RecordInput(now);
-            var controlDown = IsKeyDown(VkControl);
-            var altDown = IsKeyDown(VkMenu);
-            var shiftDown = IsKeyDown(VkShift);
-            if (IsPlainTerminalTabMessage(WmKeyDown, virtualKey, controlDown, altDown, shiftDown) && TryForwardTerminalTab())
+            var modifiers = terminalShortcutTestModifiers;
+            var controlDown = modifiers?.Control ?? IsKeyDown(VkControl);
+            var altDown = modifiers?.Alt ?? IsKeyDown(VkMenu);
+            var shiftDown = modifiers?.Shift ?? IsKeyDown(VkShift);
+            if (TryRouteTmuxControlKey(WmKeyDown, virtualKey, controlDown, altDown, shiftDown))
+            {
+                Interlocked.Increment(ref terminalThreadMessageInterceptCount);
+                handled = true;
+            }
+            else if (IsPlainTerminalTabMessage(WmKeyDown, virtualKey, controlDown, altDown, shiftDown) && TryForwardTerminalTab())
             {
                 Interlocked.Increment(ref terminalTabInterceptCount);
                 handled = true;
@@ -4176,6 +4211,32 @@ public partial class TerminalPane : UserControl
         {
             terminalShortcutTestModifiers = null;
             terminalTabForwardTestOverride = null;
+        }
+    }
+    internal bool ExerciseTerminalHookTmuxControlInterceptionForTest()
+    {
+        var originalTmuxState = Profile.IsTmuxTerminal;
+        var forwarded = new List<char>();
+        terminalShortcutTestModifiers = (true, false, false);
+        tmuxControlForwardTestOverride = character => { forwarded.Add(character); return true; };
+        Profile.SetTmuxTerminal(true);
+        try
+        {
+            var keyHandled = false;
+            _ = TerminalMessageHook(IntPtr.Zero, WmKeyDown, new IntPtr('J'), IntPtr.Zero, ref keyHandled);
+            var characterHandled = false;
+            _ = TerminalMessageHook(IntPtr.Zero, WmChar, new IntPtr('\n'), IntPtr.Zero, ref characterHandled);
+            var keyUpHandled = false;
+            _ = TerminalMessageHook(IntPtr.Zero, WmKeyUp, new IntPtr('J'), IntPtr.Zero, ref keyUpHandled);
+            return keyHandled && characterHandled && keyUpHandled && suppressedTmuxControlVirtualKey == 0
+                && forwarded.SequenceEqual(['\n']);
+        }
+        finally
+        {
+            terminalShortcutTestModifiers = null;
+            tmuxControlForwardTestOverride = null;
+            suppressedTmuxControlVirtualKey = 0;
+            Profile.SetTmuxTerminal(originalTmuxState);
         }
     }
     internal bool ExerciseRemoteImagePasteIndicatorForTest()

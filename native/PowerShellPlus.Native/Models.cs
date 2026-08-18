@@ -145,6 +145,7 @@ public sealed class SessionProfile : INotifyPropertyChanged
     public string CommandLine { get; set; } = "powershell.exe";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public bool AutoStart { get; set; } = true;
+    public bool AgentNotificationsEnabled { get; set; } = true;
     public bool UseRemoteTmux { get; set; } = true;
     public bool UseLocalTmux { get; set; }
     public string? LocalTmuxDistribution { get; set; }
