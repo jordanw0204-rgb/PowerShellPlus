@@ -11,7 +11,7 @@
     <SelfContained>true</SelfContained>
     <AssemblyName>PowerShellPlus</AssemblyName>
     <RootNamespace>PowerShellPlus.Native</RootNamespace>
-    <Version>4.10.23</Version>
+    <Version>4.10.24</Version>
     <ApplicationIcon>Assets\PowerShellPlus.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -19,6 +19,7 @@
   <ItemGroup>
     <PackageReference Include="EasyWindowsTerminalControl" Version="1.0.36" />
     <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>

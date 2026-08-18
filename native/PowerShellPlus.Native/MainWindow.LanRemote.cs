@@ -19,20 +19,13 @@ public partial class MainWindow
         .Select(profile => new LanRemoteSession(profile.Id, profile.Name, profile.Subtitle, panes[profile.Id]))
         .ToArray();
 
-    private async void OpenLanRemoteClick(object sender, RoutedEventArgs e)
+    private void OpenLanRemoteClick(object sender, RoutedEventArgs e)
     {
         if (automationMode) return;
         TitleBarLanRemoteButton.IsEnabled = false;
         try
         {
             lanRemoteServer ??= new LanRemoteServer(Dispatcher, GetLanRemoteSessions);
-            if (!lanRemoteServer.IsRunning)
-            {
-                UpdateStatus("Starting LAN Remote…");
-                await lanRemoteServer.StartAsync();
-                UpdateLanRemoteTitleBarState();
-                UpdateStatus($"LAN Remote ready at {lanRemoteServer.Urls.FirstOrDefault()}");
-            }
             var dialog = new LanRemoteDialog(lanRemoteServer, SwitchRemoteAccessModeAsync, StopRemoteAccessAsync,
                 executable => globalRemoteTunnel?.MarkTailscaleConnectionOwned(executable)) { Owner = this };
             dialog.ShowDialog();
@@ -45,9 +38,9 @@ public partial class MainWindow
         {
             LogNativeError("Remote Access", exception);
             PowerShellPlusDialog.ShowMessage(this,
-                $"PowerShellPlus could not start LAN Remote.\n\n{exception.Message}\n\nMake sure this PC is connected to a private Wi-Fi or Ethernet network. If Windows Firewall prompts, allow Private networks only.",
+                $"PowerShellPlus could not open Remote Access.\n\n{exception.Message}",
                 "Remote Access unavailable", PowerShellPlusDialogKind.Warning);
-            UpdateStatus("Remote Access could not start");
+            UpdateStatus("Remote Access could not open");
         }
         finally
         {
@@ -166,6 +159,16 @@ public partial class MainWindow
             if (pane is null) throw new InvalidOperationException("No terminal pane was available for LAN Remote testing.");
 
             server = new LanRemoteServer(Dispatcher, GetLanRemoteSessions) { AllowInput = true };
+            var unopenedDialog = new LanRemoteDialog(server, _ => Task.CompletedTask, () => Task.CompletedTask);
+            var explicitStartRequired = unopenedDialog.ExplicitStartContractPassesForTest();
+            unopenedDialog.Close();
+            var discordWebhookBoundary = DiscordRemoteWebhookClient.ContractPassesForTest();
+            var discordWebhookDelivery = await DiscordRemoteWebhookClient.DeliveryContractPassesForTestAsync();
+            var discordWebhookEncrypted = DiscordRemoteWebhookStore.EncryptionContractPassesForTest(Path.GetDirectoryName(reportPath)!);
+            details.Add($"RemoteDialogRequiresExplicitStart={explicitStartRequired}");
+            details.Add($"DiscordWebhookUrlBoundary={discordWebhookBoundary}");
+            details.Add($"DiscordWebhookDeliveryContract={discordWebhookDelivery}");
+            details.Add($"DiscordWebhookEncryptedAtRest={discordWebhookEncrypted}");
             await server.StartAsync(loopbackOnly: true);
             var baseAddress = new Uri(server.Urls.Single() + "/");
             var cookies = new CookieContainer();
@@ -809,7 +812,8 @@ public partial class MainWindow
             var themedDialogContract = PowerShellPlusDialog.ValidateThemeContract();
             details.Add($"ThemedDialogContract={themedDialogContract}");
 
-            var success = assetsEmbedded && responsiveClientEmbedded && remoteComposerFeaturesEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
+            var success = explicitStartRequired && discordWebhookBoundary && discordWebhookDelivery && discordWebhookEncrypted
+                && assetsEmbedded && responsiveClientEmbedded && remoteComposerFeaturesEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
                 && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && authenticatedUploadAccepted && unauthorizedUploadRejected
                 && badOriginUploadRejected && uploadedFileDiscarded && badOriginRejected
@@ -823,7 +827,7 @@ public partial class MainWindow
                 && cleanupRaceHandled && ownedConnectionDisconnected && loginConnectionDisconnected && existingConnectionUnchanged && disconnectVerification && connectionLifecycleArgumentsSafe
                 && loginRequiredDetected && loginBoundary
                 && installerUrlBoundary && installerLaunchBoundary && installerRetryBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access preserves LAN behavior and adds a loopback-only, HTTPS-origin-bound, throttled browser-only Global boundary with scoped Funnel lifecycle commands.\n{string.Join(Environment.NewLine, details)}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access requires explicit sharing, preserves LAN/Global security boundaries, and supports encrypted Discord webhook notifications.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
         catch (Exception exception)

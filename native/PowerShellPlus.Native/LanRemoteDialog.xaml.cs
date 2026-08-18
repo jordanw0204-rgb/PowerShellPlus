@@ -12,9 +12,13 @@ public partial class LanRemoteDialog : Window
     private readonly Func<RemoteAccessMode, Task> switchMode;
     private readonly Func<Task> stopSharing;
     private readonly Action<string>? tailscaleConnectionEstablished;
+    private readonly DiscordRemoteWebhookClient discordWebhookClient = new();
     private readonly DispatcherTimer refreshTimer;
+    private DiscordRemoteWebhookSettings discordSettings;
     private string pairedDevicesSignature = string.Empty;
     private RemoteAccessMode displayedMode;
+    private bool displayedRunning;
+    private RemoteAccessMode selectedMode;
 
     internal LanRemoteDialog(LanRemoteServer server, Func<RemoteAccessMode, Task> switchMode, Func<Task> stopSharing,
         Action<string>? tailscaleConnectionEstablished = null)
@@ -24,9 +28,13 @@ public partial class LanRemoteDialog : Window
         this.stopSharing = stopSharing;
         this.tailscaleConnectionEstablished = tailscaleConnectionEstablished;
         InitializeComponent();
-        displayedMode = server.Mode;
+        selectedMode = server.IsRunning ? server.Mode : RemoteAccessMode.Lan;
+        displayedMode = selectedMode;
+        discordSettings = DiscordRemoteWebhookStore.Load();
+        DiscordWebhookUrlBox.Password = discordSettings.WebhookUrl;
+        DiscordNotifyOnStartToggle.IsChecked = discordSettings.NotifyWhenSharingStarts;
+        DiscordIncludePairingCodeToggle.IsChecked = discordSettings.IncludePairingCode;
         BindAddresses();
-        PairingCodeText.Text = server.PairingCode;
         AllowInputToggle.IsChecked = server.AllowInput;
         refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         refreshTimer.Tick += (_, _) => RefreshConnectionCount();
@@ -39,21 +47,28 @@ public partial class LanRemoteDialog : Window
     private void BindAddresses()
     {
         AddressList.ItemsSource = null;
-        AddressList.ItemsSource = server.Addresses;
-        AddressList.SelectedIndex = server.Addresses.Count > 0 ? 0 : -1;
+        AddressList.ItemsSource = server.IsRunning ? server.Addresses : [];
+        AddressList.SelectedIndex = server.IsRunning && server.Addresses.Count > 0 ? 0 : -1;
     }
 
     private void ApplyModePresentation()
     {
-        displayedMode = server.Mode;
+        displayedMode = server.IsRunning ? server.Mode : selectedMode;
+        displayedRunning = server.IsRunning;
         var global = displayedMode == RemoteAccessMode.Global;
         Title = global ? "Remote Access — Global" : "Remote Access — LAN";
         ModeEyebrowText.Text = global ? "GLOBAL REMOTE" : "LAN REMOTE";
-        ModeTitleText.Text = global ? "Your terminals, from any browser" : "Your terminals, on this network";
-        ModeDescriptionText.Text = global
-            ? "Open the HTTPS address in Safari, Chrome, or any modern browser. Nothing is installed on the phone; the connector runs only on this PC."
-            : "Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process.";
-        AddressLabelText.Text = global ? "GLOBAL HTTPS ADDRESS" : "LAN ADDRESS";
+        ModeTitleText.Text = server.IsRunning
+            ? global ? "Your terminals, from any browser" : "Your terminals, on this network"
+            : global ? "Global sharing is ready to start" : "LAN sharing is ready to start";
+        ModeDescriptionText.Text = server.IsRunning
+            ? global
+                ? "Open the HTTPS address in Safari, Chrome, or any modern browser. Nothing is installed on the phone; the connector runs only on this PC."
+                : "Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process."
+            : "Opening this window does not publish anything. Choose a mode, review access and Discord settings, then click Start Sharing.";
+        AddressLabelText.Text = server.IsRunning
+            ? global ? "GLOBAL HTTPS ADDRESS" : "LAN ADDRESS"
+            : "ADDRESS APPEARS AFTER START";
         AddressHelpText.Text = global
             ? "This stable ts.net address works over cellular or any Wi-Fi. PowerShellPlus verifies public DNS, TLS, and the Funnel relay before listing it as ready. If a phone cached an earlier not-found response, toggle Airplane Mode once or fully reopen the browser."
             : "Wi-Fi or Ethernet with an internet gateway is listed first. Virtual adapters work only for devices attached to those networks.";
@@ -70,22 +85,33 @@ public partial class LanRemoteDialog : Window
         GlobalModeButton.FontWeight = global ? FontWeights.Bold : FontWeights.Normal;
         LanModeButton.Opacity = global ? 0.65 : 1;
         GlobalModeButton.Opacity = global ? 1 : 0.65;
+        ModeControls.IsEnabled = !server.IsRunning;
+        StartSharingButton.Visibility = server.IsRunning ? Visibility.Collapsed : Visibility.Visible;
+        StopSharingButton.Visibility = server.IsRunning ? Visibility.Visible : Visibility.Collapsed;
+        CopyAddressButton.IsEnabled = server.IsRunning;
+        OpenBrowserButton.IsEnabled = server.IsRunning;
+        SendDiscordNowButton.IsEnabled = server.IsRunning && !string.IsNullOrWhiteSpace(discordSettings.WebhookUrl);
     }
 
     private void RefreshConnectionCount()
     {
-        if (displayedMode != server.Mode)
+        var effectiveMode = server.IsRunning ? server.Mode : selectedMode;
+        if (displayedMode != effectiveMode || displayedRunning != server.IsRunning)
         {
             BindAddresses();
             ApplyModePresentation();
         }
         var count = server.ConnectedClients;
         var devices = server.PairedDevices;
-        var endpointLabel = server.Mode == RemoteAccessMode.Global
+        var endpointLabel = server.IsRunning && server.Mode == RemoteAccessMode.Global
             ? $"{server.Addresses.Count} global endpoint{(server.Addresses.Count == 1 ? string.Empty : "s")}"
-            : $"{server.Addresses.Count} adapter address{(server.Addresses.Count == 1 ? string.Empty : "es")}";
-        ConnectionCountText.Text = $"{count} device{(count == 1 ? string.Empty : "s")} connected · {devices.Count} saved · {endpointLabel}";
-        PairingCodeText.Text = server.PairingCode;
+            : server.IsRunning
+                ? $"{server.Addresses.Count} adapter address{(server.Addresses.Count == 1 ? string.Empty : "es")}"
+                : "sharing is off";
+        ConnectionCountText.Text = server.IsRunning
+            ? $"{count} device{(count == 1 ? string.Empty : "s")} connected · {devices.Count} saved · {endpointLabel}"
+            : $"Not sharing · {devices.Count} saved device{(devices.Count == 1 ? string.Empty : "s")}";
+        PairingCodeText.Text = server.IsRunning ? server.PairingCode : "—";
         AllowInputToggle.IsChecked = server.AllowInput;
         var signature = string.Join('|', devices.Select(value =>
             $"{value.Id}:{value.IsConnected}:{(value.IsConnected ? 0 : value.LastSeenUtc.UtcTicks / TimeSpan.TicksPerMinute)}"));
@@ -96,6 +122,7 @@ public partial class LanRemoteDialog : Window
             PairedDeviceList.Visibility = devices.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             PairedDevicesEmptyText.Visibility = devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
+        ApplyModePresentation();
     }
 
     private void AllowInputChanged(object sender, RoutedEventArgs e) => server.AllowInput = AllowInputToggle.IsChecked == true;
@@ -112,25 +139,36 @@ public partial class LanRemoteDialog : Window
         if (!string.IsNullOrWhiteSpace(address)) Process.Start(new ProcessStartInfo(address) { UseShellExecute = true });
     }
 
-    private async void LanModeClick(object sender, RoutedEventArgs e) => await ChangeModeAsync(RemoteAccessMode.Lan);
-    private async void GlobalModeClick(object sender, RoutedEventArgs e) => await ChangeModeAsync(RemoteAccessMode.Global);
+    private void LanModeClick(object sender, RoutedEventArgs e) => SelectMode(RemoteAccessMode.Lan);
+    private void GlobalModeClick(object sender, RoutedEventArgs e) => SelectMode(RemoteAccessMode.Global);
 
-    private async Task ChangeModeAsync(RemoteAccessMode mode)
+    private void SelectMode(RemoteAccessMode mode)
     {
-        if (server.IsRunning && server.Mode == mode) return;
+        if (server.IsRunning) return;
+        selectedMode = mode;
+        ApplyModePresentation();
+    }
+
+    private async void StartSharingClick(object sender, RoutedEventArgs e) => await StartSharingAsync(selectedMode);
+
+    private async Task StartSharingAsync(RemoteAccessMode mode)
+    {
+        if (server.IsRunning) return;
         if (mode == RemoteAccessMode.Global && !PowerShellPlusDialog.Confirm(this,
                 "Global mode creates an HTTPS address reachable from the internet. Terminal data still requires the one-time PowerShellPlus pairing code, and remote typing starts disabled.\n\nPowerShellPlus will connect Tailscale if needed. When sharing stops, it disconnects Tailscale only if it made that connection.\n\nStart browser-only Global access?",
                 "Start Global Remote", PowerShellPlusDialogKind.Warning,
                 "Start Global", "Not now", defaultToPrimary: false))
             return;
-        ModeControls.IsEnabled = false;
+        SetSharingBusy(true, mode == RemoteAccessMode.Global ? "Starting Global sharing…" : "Starting LAN sharing…");
         try
         {
             await switchMode(mode);
+            selectedMode = server.Mode;
             pairedDevicesSignature = string.Empty;
             BindAddresses();
             ApplyModePresentation();
             RefreshConnectionCount();
+            await NotifyDiscordSharingStartedAsync(showSuccess: false);
         }
         catch (TailscaleNotInstalledException exception)
         {
@@ -162,7 +200,7 @@ public partial class LanRemoteDialog : Window
             BindAddresses();
             ApplyModePresentation();
         }
-        finally { ModeControls.IsEnabled = true; }
+        finally { SetSharingBusy(false, "Start Sharing"); }
     }
 
     private async Task SignInAndRetryGlobalAsync(string executablePath)
@@ -175,10 +213,12 @@ public partial class LanRemoteDialog : Window
             tailscaleConnectionEstablished?.Invoke(executablePath);
             TailscaleSetupButton.Content = "Starting secure Global access…";
             await switchMode(RemoteAccessMode.Global);
+            selectedMode = RemoteAccessMode.Global;
             pairedDevicesSignature = string.Empty;
             BindAddresses();
             ApplyModePresentation();
             RefreshConnectionCount();
+            await NotifyDiscordSharingStartedAsync(showSuccess: false);
         }
         catch (Exception exception)
         {
@@ -215,15 +255,118 @@ public partial class LanRemoteDialog : Window
 
     private async void StopSharingClick(object sender, RoutedEventArgs e)
     {
-        IsEnabled = false;
+        SetSharingBusy(true, "Stopping…");
         try { await stopSharing(); }
         catch (Exception exception)
         {
             PowerShellPlusDialog.ShowMessage(this, $"Remote Access stopped locally, but tunnel cleanup reported a problem.\n\n{exception.Message}",
                 "Remote Access cleanup", PowerShellPlusDialogKind.Warning);
         }
-        finally { Close(); }
+        finally
+        {
+            selectedMode = RemoteAccessMode.Lan;
+            BindAddresses();
+            RefreshConnectionCount();
+            SetSharingBusy(false, "Start Sharing");
+        }
     }
+
+    private void SetSharingBusy(bool busy, string label)
+    {
+        ModeControls.IsEnabled = !busy && !server.IsRunning;
+        StartSharingButton.IsEnabled = !busy;
+        StartSharingButton.Content = label;
+        StopSharingButton.IsEnabled = !busy;
+    }
+
+    private bool TryReadDiscordSettings(bool requireWebhook, out Uri? webhookUri)
+    {
+        webhookUri = null;
+        var value = DiscordWebhookUrlBox.Password.Trim();
+        Uri? parsed = null;
+        if (value.Length > 0)
+        {
+            if (!DiscordRemoteWebhookClient.TryValidateWebhookUrl(value, out var validated, out var error))
+            {
+                DiscordStatusText.Text = error;
+                DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+                return false;
+            }
+            parsed = validated;
+        }
+        if (requireWebhook && value.Length == 0)
+        {
+            DiscordStatusText.Text = "Paste a Discord webhook URL first.";
+            DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+            return false;
+        }
+        discordSettings = new DiscordRemoteWebhookSettings
+        {
+            WebhookUrl = value,
+            NotifyWhenSharingStarts = DiscordNotifyOnStartToggle.IsChecked == true,
+            IncludePairingCode = DiscordIncludePairingCodeToggle.IsChecked == true
+        };
+        DiscordRemoteWebhookStore.Save(discordSettings);
+        if (value.Length > 0) webhookUri = parsed;
+        SendDiscordNowButton.IsEnabled = server.IsRunning && webhookUri is not null;
+        return true;
+    }
+
+    private void SaveDiscordClick(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadDiscordSettings(requireWebhook: false, out _)) return;
+        DiscordStatusText.Text = string.IsNullOrWhiteSpace(discordSettings.WebhookUrl)
+            ? "Discord webhook removed."
+            : "Discord webhook saved securely for this Windows user.";
+        DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 227, 161));
+    }
+
+    private async void TestDiscordClick(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadDiscordSettings(requireWebhook: true, out var webhookUri) || webhookUri is null) return;
+        await RunDiscordActionAsync(() => discordWebhookClient.SendTestAsync(webhookUri), "Test message sent to Discord.");
+    }
+
+    private async void SendDiscordNowClick(object sender, RoutedEventArgs e)
+    {
+        if (!server.IsRunning) return;
+        if (!TryReadDiscordSettings(requireWebhook: true, out _)) return;
+        await NotifyDiscordSharingStartedAsync(showSuccess: true);
+    }
+
+    private async Task NotifyDiscordSharingStartedAsync(bool showSuccess)
+    {
+        if (!TryReadDiscordSettings(requireWebhook: false, out var webhookUri) || webhookUri is null) return;
+        if (!showSuccess && !discordSettings.NotifyWhenSharingStarts) return;
+        var address = (AddressList.SelectedItem as LanRemoteAddress)?.Url ?? server.Urls.FirstOrDefault() ?? string.Empty;
+        if (!server.IsRunning || string.IsNullOrWhiteSpace(address)) return;
+        await RunDiscordActionAsync(() => discordWebhookClient.SendSharingStartedAsync(webhookUri, server.Mode, address,
+            server.PairingCode, discordSettings.IncludePairingCode), showSuccess ? "Sharing details sent to Discord." : "Remote Access started and Discord was notified.");
+    }
+
+    private async Task RunDiscordActionAsync(Func<Task> action, string successMessage)
+    {
+        DiscordButtonsPanel.IsEnabled = false;
+        DiscordStatusText.Text = "Contacting Discord…";
+        DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 173, 200));
+        try
+        {
+            await action();
+            DiscordStatusText.Text = successMessage;
+            DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 227, 161));
+        }
+        catch (Exception exception)
+        {
+            DiscordStatusText.Text = exception.Message;
+            DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+        }
+        finally { DiscordButtonsPanel.IsEnabled = true; }
+    }
+
+    internal bool ExplicitStartContractPassesForTest()
+        => !server.IsRunning && StartSharingButton.Visibility == Visibility.Visible
+            && StopSharingButton.Visibility == Visibility.Collapsed
+            && !CopyAddressButton.IsEnabled && !OpenBrowserButton.IsEnabled;
 
     private async void TailscaleSetupClick(object sender, RoutedEventArgs e) => await DownloadAndOpenTailscaleAsync();
 

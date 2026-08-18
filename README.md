@@ -139,7 +139,9 @@ If WSL has no registered distribution yet, run `wsl --install -d Ubuntu`, launch
 
 ## Remote browser access
 
-Select the globe in the title bar to open Remote Access.
+Select the globe in the title bar to open Remote Access. Opening the panel does not create a listener or publish a tunnel: choose LAN or Global, review the access settings, and select **Start Sharing** explicitly.
+
+An optional [Discord incoming webhook](https://docs.discord.com/developers/platform/webhooks#incoming-webhooks) can post a bot-style embed when sharing starts. The webhook URL is restricted to Discord's official HTTPS endpoint and encrypted for the current Windows user. Mentions are disabled, and including the one-time pairing code is a separate opt-in intended only for private, trusted channels. A Discord bot token is not required.
 
 ### LAN mode
 
