@@ -146,6 +146,7 @@ public partial class MainWindow : Window
         UpdateStatus("Native Windows Terminal renderer ready");
         Closing += WindowClosing;
         SourceInitialized += (_, _) => InitializeWindowsTerminalImport();
+        Loaded += async (_, _) => await AutoStartDiscordRemoteBotAsync();
         if (!automationMode) InitializeTrayIcon();
     }
 

@@ -13,11 +13,40 @@ public partial class MainWindow
 {
     private LanRemoteServer? lanRemoteServer;
     private TailscaleFunnelManager? globalRemoteTunnel;
+    private DiscordRemoteBotService? discordRemoteBot;
+    private bool discordBotAutoStartAttempted;
 
     private IReadOnlyList<LanRemoteSession> GetLanRemoteSessions() => state.Sessions
         .Where(profile => panes.TryGetValue(profile.Id, out _))
         .Select(profile => new LanRemoteSession(profile.Id, profile.Name, profile.Subtitle, panes[profile.Id]))
         .ToArray();
+
+    private DiscordRemoteBotService GetDiscordRemoteBot()
+    {
+        if (discordRemoteBot is not null) return discordRemoteBot;
+        discordRemoteBot = new DiscordRemoteBotService(Dispatcher, GetLanRemoteSessions);
+        discordRemoteBot.StatusChanged += (_, _) => UpdateLanRemoteTitleBarState();
+        return discordRemoteBot;
+    }
+
+    private async Task AutoStartDiscordRemoteBotAsync()
+    {
+        if (automationMode || discordBotAutoStartAttempted) return;
+        discordBotAutoStartAttempted = true;
+        var saved = DiscordRemoteBotStore.Load();
+        if (!saved.ReconnectOnStartup || !DiscordRemoteBotService.TryValidateSettings(saved, out _)) return;
+        try
+        {
+            await GetDiscordRemoteBot().StartAsync(saved);
+            UpdateStatus("Discord bot connected · two-way terminal control is ready");
+        }
+        catch (Exception exception)
+        {
+            LogNativeError("Discord bot auto-connect", exception);
+            UpdateStatus("Discord bot could not reconnect · open Remote Access to review its settings");
+        }
+        finally { UpdateLanRemoteTitleBarState(); }
+    }
 
     private void OpenLanRemoteClick(object sender, RoutedEventArgs e)
     {
@@ -27,12 +56,12 @@ public partial class MainWindow
         {
             lanRemoteServer ??= new LanRemoteServer(Dispatcher, GetLanRemoteSessions);
             var dialog = new LanRemoteDialog(lanRemoteServer, SwitchRemoteAccessModeAsync, StopRemoteAccessAsync,
-                executable => globalRemoteTunnel?.MarkTailscaleConnectionOwned(executable)) { Owner = this };
+                executable => globalRemoteTunnel?.MarkTailscaleConnectionOwned(executable), GetDiscordRemoteBot()) { Owner = this };
             dialog.ShowDialog();
             UpdateLanRemoteTitleBarState();
             UpdateStatus(lanRemoteServer.IsRunning
                 ? $"{(lanRemoteServer.Mode == RemoteAccessMode.Global ? "Global Remote" : "LAN Remote")} is sharing {panes.Count} session{(panes.Count == 1 ? string.Empty : "s")}"
-                : "Remote Access stopped");
+                : discordRemoteBot?.IsConnected == true ? "Discord bot connected · two-way terminal control is ready" : "Remote Access stopped");
         }
         catch (Exception exception)
         {
@@ -52,10 +81,14 @@ public partial class MainWindow
     private void UpdateLanRemoteTitleBarState()
     {
         var running = lanRemoteServer?.IsRunning == true;
-        LanRemoteStatusDot.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
-        TitleBarLanRemoteButton.ToolTip = running
-            ? $"{(lanRemoteServer!.Mode == RemoteAccessMode.Global ? "Global" : "LAN")} Remote active · {lanRemoteServer.ConnectedClients} connected"
-            : "Open LAN / Global Remote Access";
+        var botRunning = discordRemoteBot?.IsRunning == true;
+        var botConnected = discordRemoteBot?.IsConnected == true;
+        LanRemoteStatusDot.Visibility = running || botRunning ? Visibility.Visible : Visibility.Collapsed;
+        TitleBarLanRemoteButton.ToolTip = running && botRunning
+            ? $"{(lanRemoteServer!.Mode == RemoteAccessMode.Global ? "Global" : "LAN")} Remote active · Discord bot {(botConnected ? "connected" : "connecting")}"
+            : running
+                ? $"{(lanRemoteServer!.Mode == RemoteAccessMode.Global ? "Global" : "LAN")} Remote active · {lanRemoteServer.ConnectedClients} connected"
+                : botRunning ? $"Discord bot {(botConnected ? "connected" : "connecting")}" : "Open LAN / Global Remote Access and Discord bot";
     }
 
     private async Task SwitchRemoteAccessModeAsync(RemoteAccessMode mode)
@@ -129,17 +162,21 @@ public partial class MainWindow
 
     private void StopLanRemoteForShutdown()
     {
-        if (lanRemoteServer is null && globalRemoteTunnel is null) return;
+        if (lanRemoteServer is null && globalRemoteTunnel is null && discordRemoteBot is null) return;
         var server = lanRemoteServer;
         var tunnel = globalRemoteTunnel;
+        var bot = discordRemoteBot;
         lanRemoteServer = null;
         globalRemoteTunnel = null;
+        discordRemoteBot = null;
         server?.SignalShutdown();
         tunnel?.SignalShutdown();
+        bot?.SignalShutdown();
         _ = Task.Run(async () =>
         {
             try
             {
+                if (bot is not null) await bot.DisposeAsync();
                 if (tunnel is not null) await tunnel.DisposeAsync();
                 if (server is not null) await server.DisposeAsync();
             }
@@ -165,10 +202,14 @@ public partial class MainWindow
             var discordWebhookBoundary = DiscordRemoteWebhookClient.ContractPassesForTest();
             var discordWebhookDelivery = await DiscordRemoteWebhookClient.DeliveryContractPassesForTestAsync();
             var discordWebhookEncrypted = DiscordRemoteWebhookStore.EncryptionContractPassesForTest(Path.GetDirectoryName(reportPath)!);
+            var discordBotContract = DiscordRemoteBotService.ContractPassesForTest();
+            var discordBotEncrypted = DiscordRemoteBotStore.EncryptionContractPassesForTest(Path.GetDirectoryName(reportPath)!);
             details.Add($"RemoteDialogRequiresExplicitStart={explicitStartRequired}");
             details.Add($"DiscordWebhookUrlBoundary={discordWebhookBoundary}");
             details.Add($"DiscordWebhookDeliveryContract={discordWebhookDelivery}");
             details.Add($"DiscordWebhookEncryptedAtRest={discordWebhookEncrypted}");
+            details.Add($"DiscordBotCommandContract={discordBotContract}");
+            details.Add($"DiscordBotEncryptedAtRest={discordBotEncrypted}");
             await server.StartAsync(loopbackOnly: true);
             var baseAddress = new Uri(server.Urls.Single() + "/");
             var cookies = new CookieContainer();
@@ -813,6 +854,7 @@ public partial class MainWindow
             details.Add($"ThemedDialogContract={themedDialogContract}");
 
             var success = explicitStartRequired && discordWebhookBoundary && discordWebhookDelivery && discordWebhookEncrypted
+                && discordBotContract && discordBotEncrypted
                 && assetsEmbedded && responsiveClientEmbedded && remoteComposerFeaturesEmbedded && stableTerminalSizingEmbedded && rotationManifestEmbedded && securityHeadersPresent && addressMetadataVisible
                 && unauthenticatedRejected && wrongCodeRejected && pairingAccepted && savedPairingListed && persistentHttpOnlyCookieIssued && credentialStoredAsHashOnly
                 && sessionInventoryVisible && gridMetadataVisible && commandMetadataVisible && authenticatedUploadAccepted && unauthorizedUploadRejected
@@ -827,7 +869,7 @@ public partial class MainWindow
                 && cleanupRaceHandled && ownedConnectionDisconnected && loginConnectionDisconnected && existingConnectionUnchanged && disconnectVerification && connectionLifecycleArgumentsSafe
                 && loginRequiredDetected && loginBoundary
                 && installerUrlBoundary && installerLaunchBoundary && installerRetryBoundary && unsignedInstallerRejected && themedDialogContract && stoppedCleanly;
-            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access requires explicit sharing, preserves LAN/Global security boundaries, and supports encrypted Discord webhook notifications.\n{string.Join(Environment.NewLine, details)}");
+            File.WriteAllText(reportPath, $"{(success ? "PASS" : "FAIL")} Remote Access requires explicit sharing, preserves LAN/Global security boundaries, and supports encrypted Discord webhook notifications plus an allowlisted two-way Discord bot.\n{string.Join(Environment.NewLine, details)}");
             return success;
         }
         catch (Exception exception)

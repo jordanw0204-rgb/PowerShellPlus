@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,20 +14,23 @@ public partial class LanRemoteDialog : Window
     private readonly Func<Task> stopSharing;
     private readonly Action<string>? tailscaleConnectionEstablished;
     private readonly DiscordRemoteWebhookClient discordWebhookClient = new();
+    private readonly DiscordRemoteBotService? discordBotService;
     private readonly DispatcherTimer refreshTimer;
     private DiscordRemoteWebhookSettings discordSettings;
+    private DiscordRemoteBotSettings discordBotSettings;
     private string pairedDevicesSignature = string.Empty;
     private RemoteAccessMode displayedMode;
     private bool displayedRunning;
     private RemoteAccessMode selectedMode;
 
     internal LanRemoteDialog(LanRemoteServer server, Func<RemoteAccessMode, Task> switchMode, Func<Task> stopSharing,
-        Action<string>? tailscaleConnectionEstablished = null)
+        Action<string>? tailscaleConnectionEstablished = null, DiscordRemoteBotService? discordBotService = null)
     {
         this.server = server;
         this.switchMode = switchMode;
         this.stopSharing = stopSharing;
         this.tailscaleConnectionEstablished = tailscaleConnectionEstablished;
+        this.discordBotService = discordBotService;
         InitializeComponent();
         selectedMode = server.IsRunning ? server.Mode : RemoteAccessMode.Lan;
         displayedMode = selectedMode;
@@ -34,14 +38,35 @@ public partial class LanRemoteDialog : Window
         DiscordWebhookUrlBox.Password = discordSettings.WebhookUrl;
         DiscordNotifyOnStartToggle.IsChecked = discordSettings.NotifyWhenSharingStarts;
         DiscordIncludePairingCodeToggle.IsChecked = discordSettings.IncludePairingCode;
+        discordBotSettings = DiscordRemoteBotStore.Load();
+        DiscordBotTokenBox.Password = discordBotSettings.BotToken;
+        DiscordBotApplicationIdBox.Text = discordBotSettings.ApplicationId;
+        DiscordBotGuildIdBox.Text = discordBotSettings.GuildId;
+        DiscordBotChannelIdBox.Text = discordBotSettings.ChannelId;
+        DiscordBotAllowedUsersBox.Text = string.Join(", ", discordBotSettings.AllowedUserIds);
+        DiscordBotMessagesToggle.IsChecked = discordBotSettings.ReceiveChannelMessages;
+        DiscordBotMirrorOutputToggle.IsChecked = discordBotSettings.MirrorTerminalOutput;
+        DiscordBotPermissionToggle.IsChecked = discordBotSettings.AllowPermissionChanges;
+        DiscordBotReconnectToggle.IsChecked = discordBotSettings.ReconnectOnStartup;
+        DiscordBotPanel.IsEnabled = discordBotService is not null;
         BindAddresses();
         AllowInputToggle.IsChecked = server.AllowInput;
         refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        refreshTimer.Tick += (_, _) => RefreshConnectionCount();
+        refreshTimer.Tick += (_, _) =>
+        {
+            RefreshConnectionCount();
+            RefreshDiscordBotPresentation();
+        };
         refreshTimer.Start();
-        Closed += (_, _) => refreshTimer.Stop();
+        if (discordBotService is not null) discordBotService.StatusChanged += DiscordBotStatusChanged;
+        Closed += (_, _) =>
+        {
+            refreshTimer.Stop();
+            if (discordBotService is not null) discordBotService.StatusChanged -= DiscordBotStatusChanged;
+        };
         ApplyModePresentation();
         RefreshConnectionCount();
+        RefreshDiscordBotPresentation();
     }
 
     private void BindAddresses()
@@ -361,6 +386,132 @@ public partial class LanRemoteDialog : Window
             DiscordStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
         }
         finally { DiscordButtonsPanel.IsEnabled = true; }
+    }
+
+    private void DiscordBotStatusChanged(object? sender, EventArgs e) => RefreshDiscordBotPresentation();
+
+    private void RefreshDiscordBotPresentation()
+    {
+        if (discordBotService is null)
+        {
+            DiscordBotStatusText.Text = "Discord bot controls are unavailable in this test window.";
+            DiscordBotConnectButton.IsEnabled = false;
+            DiscordBotDisconnectButton.IsEnabled = false;
+            return;
+        }
+        var running = discordBotService.IsRunning;
+        var connected = discordBotService.IsConnected;
+        DiscordBotStatusText.Text = discordBotService.StatusText;
+        DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(connected
+            ? System.Windows.Media.Color.FromRgb(166, 227, 161)
+            : running ? System.Windows.Media.Color.FromRgb(249, 226, 175)
+            : System.Windows.Media.Color.FromRgb(166, 173, 200));
+        DiscordBotConnectButton.IsEnabled = !running;
+        DiscordBotDisconnectButton.IsEnabled = running;
+        DiscordBotFieldsPanel.IsEnabled = !running;
+    }
+
+    private DiscordRemoteBotSettings ReadDiscordBotSettings()
+    {
+        var allowedUsers = Regex.Split(DiscordBotAllowedUsersBox.Text, @"[,;\s]+")
+            .Select(value => value.Trim()).Where(value => value.Length > 0)
+            .Distinct(StringComparer.Ordinal).ToList();
+        return new DiscordRemoteBotSettings
+        {
+            BotToken = DiscordBotTokenBox.Password.Trim(),
+            ApplicationId = DiscordBotApplicationIdBox.Text.Trim(),
+            GuildId = DiscordBotGuildIdBox.Text.Trim(),
+            ChannelId = DiscordBotChannelIdBox.Text.Trim(),
+            AllowedUserIds = allowedUsers,
+            ReceiveChannelMessages = DiscordBotMessagesToggle.IsChecked == true,
+            MirrorTerminalOutput = DiscordBotMirrorOutputToggle.IsChecked == true,
+            AllowPermissionChanges = DiscordBotPermissionToggle.IsChecked == true,
+            ReconnectOnStartup = DiscordBotReconnectToggle.IsChecked == true,
+            SelectedTerminalId = discordBotSettings.SelectedTerminalId
+        };
+    }
+
+    private bool TryReadDiscordBotSettings(bool requireComplete, out DiscordRemoteBotSettings value)
+    {
+        value = ReadDiscordBotSettings();
+        if (requireComplete && !DiscordRemoteBotService.TryValidateSettings(value, out var error))
+        {
+            DiscordBotStatusText.Text = error;
+            DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+            return false;
+        }
+        discordBotSettings = value;
+        DiscordRemoteBotStore.Save(value);
+        return true;
+    }
+
+    private void SaveDiscordBotClick(object sender, RoutedEventArgs e)
+    {
+        if (!TryReadDiscordBotSettings(requireComplete: false, out _)) return;
+        DiscordBotStatusText.Text = "Discord bot settings saved securely for this Windows user.";
+        DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 227, 161));
+    }
+
+    private async void ConnectDiscordBotClick(object sender, RoutedEventArgs e)
+    {
+        if (discordBotService is null || !TryReadDiscordBotSettings(requireComplete: true, out var requested)) return;
+        DiscordBotButtonsPanel.IsEnabled = false;
+        DiscordBotFieldsPanel.IsEnabled = false;
+        DiscordBotStatusText.Text = "Connecting and registering slash commands…";
+        DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(137, 180, 250));
+        try { await discordBotService.StartAsync(requested); }
+        catch (Exception exception)
+        {
+            DiscordBotStatusText.Text = exception.GetBaseException().Message;
+            DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+        }
+        finally
+        {
+            DiscordBotButtonsPanel.IsEnabled = true;
+            RefreshDiscordBotPresentation();
+        }
+    }
+
+    private async void DisconnectDiscordBotClick(object sender, RoutedEventArgs e)
+    {
+        if (discordBotService is null) return;
+        DiscordBotButtonsPanel.IsEnabled = false;
+        try { await discordBotService.StopAsync(); }
+        catch (Exception exception)
+        {
+            DiscordBotStatusText.Text = exception.GetBaseException().Message;
+            DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+        }
+        finally
+        {
+            DiscordBotButtonsPanel.IsEnabled = true;
+            RefreshDiscordBotPresentation();
+        }
+    }
+
+    private void OpenDiscordDeveloperPortalClick(object sender, RoutedEventArgs e)
+        => OpenDiscordUri("https://discord.com/developers/applications");
+
+    private void InviteDiscordBotClick(object sender, RoutedEventArgs e)
+    {
+        var applicationId = DiscordBotApplicationIdBox.Text.Trim();
+        if (!DiscordRemoteBotStore.IsSnowflake(applicationId))
+        {
+            DiscordBotStatusText.Text = "Enter the Application ID before opening the bot invite.";
+            DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+            return;
+        }
+        OpenDiscordUri($"https://discord.com/oauth2/authorize?client_id={applicationId}&permissions=68608&integration_type=0&scope=bot%20applications.commands");
+    }
+
+    private void OpenDiscordUri(string address)
+    {
+        try { Process.Start(new ProcessStartInfo(address) { UseShellExecute = true }); }
+        catch (Exception exception)
+        {
+            DiscordBotStatusText.Text = exception.Message;
+            DiscordBotStatusText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(243, 139, 168));
+        }
     }
 
     internal bool ExplicitStartContractPassesForTest()

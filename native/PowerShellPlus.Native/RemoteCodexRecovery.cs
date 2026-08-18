@@ -306,7 +306,12 @@ internal static class RemoteCodexActivityProbe
         return $"__psp_file=$(find \"$HOME/.codex/sessions\" -type f -name {QuotePosix(filePattern)} -print 2>/dev/null | head -n 1); "
             + "if [ -z \"$__psp_file\" ]; then exit 3; fi; "
             + $"tail -c {MaximumProbeBytes} -- \"$__psp_file\" 2>/dev/null "
-            + "| grep -E '\"type\":\"(task_started|task_complete|turn_aborted|shutdown_complete|request_user_input|[^\"]*approval_request|[^\"]*_output)\"' "
+            // Modern Codex emits progress as response_item records (reasoning,
+            // tool calls, messages, and completed items) rather than repeating
+            // task_started. Preserve those records so the shared activity
+            // classifier cannot be left on an older idle marker while a remote
+            // turn is visibly active.
+            + "| grep -E '\"type\":\"(task_started|task_complete|turn_aborted|shutdown_complete|request_user_input|reasoning|custom_tool_call|function_call|message|item_completed|mcp_tool_call_end|patch_apply_end|[^\"]*approval_request|[^\"]*_output)\"' "
             + "| tail -n 512";
     }
 
@@ -316,6 +321,8 @@ internal static class RemoteCodexActivityProbe
         return command.Contains("tail -c 2097152", StringComparison.Ordinal)
             && command.Contains("find \"$HOME/.codex/sessions\"", StringComparison.Ordinal)
             && command.Contains("tail -n 512", StringComparison.Ordinal)
+            && command.Contains("custom_tool_call", StringComparison.Ordinal)
+            && command.Contains("item_completed", StringComparison.Ordinal)
             && !command.Contains("rm ", StringComparison.Ordinal)
             && !command.Contains("sed -i", StringComparison.Ordinal);
     }

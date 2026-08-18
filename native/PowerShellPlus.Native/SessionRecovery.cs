@@ -565,6 +565,13 @@ public static class CodexSessionLocator
             if (FindActivity(sessionId, root).State != CodexTurnActivityState.Waiting) return false;
             File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:28.703Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n");
             if (FindActivity(sessionId, root).State != CodexTurnActivityState.Idle) return false;
+            // Modern Codex sessions can emit enough records that the matching
+            // task_started event is outside our bounded scan. Reasoning and tool
+            // calls after an earlier completed turn must still re-latch Working.
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:40.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Working) return false;
+            File.AppendAllText(path, "{\"timestamp\":\"2026-07-20T11:21:50.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1b\"}}\n");
+            if (FindActivity(sessionId, root).State != CodexTurnActivityState.Idle) return false;
             // A bounded scan can miss task_started after a multi-megabyte burst.
             // Any later tool output must recover Working even from a previously
             // completed/Idle state.
@@ -713,7 +720,15 @@ public static class CodexSessionLocator
             && !line.Contains("turn_aborted", StringComparison.Ordinal)
             && !line.Contains("approval_request", StringComparison.Ordinal)
             && !line.Contains("request_user_input", StringComparison.Ordinal)
-            && !line.Contains("_output", StringComparison.Ordinal)) return;
+            && !line.Contains("_output", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"reasoning\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"message\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"agent_message\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"function_call\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"custom_tool_call\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"item_completed\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"mcp_tool_call_end\"", StringComparison.Ordinal)
+            && !line.Contains("\"type\":\"patch_apply_end\"", StringComparison.Ordinal)) return;
         try
         {
             using var document = JsonDocument.Parse(line);
@@ -742,12 +757,16 @@ public static class CodexSessionLocator
                 cursor.WaitingForUser = true;
                 cursor.UpdatedUtc = timestamp;
             }
-            else if (payloadType?.EndsWith("_output", StringComparison.Ordinal) == true)
+            else if (payloadType?.EndsWith("_output", StringComparison.Ordinal) == true
+                || payloadType is "reasoning" or "message" or "agent_message" or "function_call" or "custom_tool_call"
+                    or "item_completed" or "mcp_tool_call_end" or "patch_apply_end")
             {
                 // A busy Codex thread can append more than the bounded scan window
                 // between probes. In that case task_started may have fallen before
-                // the window, but a new tool/function output still proves the turn
-                // is active. Do not require a preceding approval state here.
+                // the window. Current Codex builds continuously append reasoning,
+                // tool-call, item-completed, and assistant-message records during
+                // the turn, so any of those records proves the thread is active
+                // until task_complete or turn_aborted arrives.
                 cursor.State = CodexTurnActivityState.Working;
                 cursor.WaitingForUser = false;
                 cursor.UpdatedUtc = timestamp;

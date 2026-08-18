@@ -143,6 +143,17 @@ Select the globe in the title bar to open Remote Access. Opening the panel does 
 
 An optional [Discord incoming webhook](https://docs.discord.com/developers/platform/webhooks#incoming-webhooks) can post a bot-style embed when sharing starts. The webhook URL is restricted to Discord's official HTTPS endpoint and encrypted for the current Windows user. Mentions are disabled, and including the one-time pairing code is a separate opt-in intended only for private, trusted channels. A Discord bot token is not required.
 
+### Two-way Discord bot
+
+Remote Access also includes an optional Discord bot connector for sending messages to terminals and receiving their output. It connects outward from the Windows PC to the [Discord Gateway](https://docs.discord.com/developers/events/gateway), so enabling the bot does not publish a new PowerShellPlus web port.
+
+1. Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Enable **Message Content Intent** on the Bot page if ordinary channel messages should be forwarded. Slash commands do not require that option.
+3. Turn on Discord Developer Mode and copy the application, server, channel, and allowed user IDs into PowerShellPlus.
+4. Select **Invite bot**, add it to the chosen private server, then select **Connect**.
+
+PowerShellPlus restricts every command to the configured server, channel, and explicit user-ID allowlist. The bot token is protected with Windows DPAPI for the current Windows user, mentions are disabled on outbound messages, and `/permissions` is disabled unless separately opted in. Available commands include `/terminal`, `/send`, `/queue`, `/status`, `/model`, `/reasoning`, `/permissions`, and `/interrupt`; ordinary messages target the currently selected terminal. Keep output mirroring limited to a private channel because terminal output may contain sensitive project data.
+
 ### LAN mode
 
 - Serves the embedded web client on active private IPv4 interfaces.
