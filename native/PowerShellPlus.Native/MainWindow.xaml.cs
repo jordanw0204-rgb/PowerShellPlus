@@ -104,6 +104,7 @@ public partial class MainWindow : Window
         terminalProfile = automationMode ? loadedTerminalProfile.ForAutomation() : loadedTerminalProfile;
         startupProgress?.Invoke(new StartupProgress("Loading workspace", "Reading sessions, terminals, drafts, and layouts", 1, 4));
         state = WorkspaceStore.Load(terminalProfile);
+        AppThemeCatalog.Apply(state.Settings.ApplicationTheme);
         startupProgress?.Invoke(new StartupProgress("Reading recovery state", "Checking saved transcripts, SSH connections, and agent sessions", 2, 4));
         loadedRecovery = automationMode || !state.Settings.RestoreSessionsAfterRestart ? new SessionRecoverySnapshot() : SessionRecoveryStore.Load();
         if (!automationMode && state.Settings.RestoreSessionsAfterRestart) ReconcileCodexRecovery();
@@ -1077,7 +1078,7 @@ public partial class MainWindow : Window
         var settings = state.Settings;
         var fontFace = string.IsNullOrWhiteSpace(settings.FontFace) ? terminalProfile.FontFace : settings.FontFace.Trim();
         var fontSize = Math.Clamp(settings.FontSize ?? terminalProfile.FontSize, 8, 32);
-        var theme = terminalProfile.Theme;
+        var theme = AppThemeCatalog.CreateTerminalTheme(terminalProfile.Theme, settings.ApplicationTheme);
         theme.CursorStyle = (settings.CursorStyle, settings.CursorBlink) switch
         {
             ("Block", true) => Microsoft.Terminal.Wpf.CursorStyle.BlinkingBlock,
@@ -2569,6 +2570,17 @@ public partial class MainWindow : Window
         if (openTerminalRight > minimizeLeft + 1)
             throw new InvalidOperationException($"Windows Terminal action must sit immediately before minimize. OpenRight={openTerminalRight:F1}, MinimizeLeft={minimizeLeft:F1}");
         Render(root, "ui-main.png");
+        var snapshotTheme = state.Settings.ApplicationTheme;
+        ShowSection(SettingsPanel);
+        foreach (var theme in AppThemeCatalog.Themes)
+        {
+            SettingsThemeList.SelectedItem = theme;
+            await Settle();
+            Render(root, $"ui-theme-{theme.Id}.png");
+        }
+        SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(snapshotTheme);
+        ShowSection(SessionsPanel);
+        await Settle();
         if (activePane is { } scrollbarSnapshotPane)
         {
             const string snapshotTail = "UI_SCROLLBAR_TAIL_READY";
@@ -3694,6 +3706,23 @@ public partial class MainWindow : Window
             var settingsScrollbarThemed = settingsScrollBar is not null
                 && ReferenceEquals(settingsScrollBar.Style, FindResource("ThemedScrollBar"));
             var updateUiContractReady = UpdateUiContractForTest;
+            var originalTheme = state.Settings.ApplicationTheme;
+            var previewTheme = AppThemeCatalog.Themes.First(theme => !string.Equals(theme.Id, originalTheme, StringComparison.OrdinalIgnoreCase));
+            SettingsThemeList.SelectedItem = previewTheme;
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            var themeCatalogContract = AppThemeCatalog.ContractPassesForTest();
+            var themePickerReady = SettingsThemeList.Items.Count == AppThemeCatalog.Themes.Count
+                && AppThemeCatalog.Themes.Any(theme => theme.Id == AppThemeCatalog.BlackThemeId);
+            var liveThemeSwitchWorks = state.Settings.ApplicationTheme == previewTheme.Id
+                && Background is SolidColorBrush liveThemeBrush
+                && previewTheme.PreviewBackground is SolidColorBrush expectedThemeBrush
+                && liveThemeBrush.Color == expectedThemeBrush.Color;
+            var themeSelectionPersists = WorkspaceStore.CreateSnapshot(state).Settings.ApplicationTheme == previewTheme.Id;
+            var themeStartupPersistenceWorks = WorkspaceStore.VerifyApplicationThemePersistenceForTest(terminalProfile,
+                Path.Combine(Path.GetDirectoryName(reportPath)!, "theme-persistence"));
+            SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(originalTheme);
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            var themeRestored = state.Settings.ApplicationTheme == AppThemeCatalog.Normalize(originalTheme);
             ShowSection(SessionsPanel);
             WorkspaceSessionList.UpdateLayout();
             SessionList.UpdateLayout();
@@ -4585,7 +4614,8 @@ public partial class MainWindow : Window
                 && inactiveTerminalsStartEagerly && startupFailureOffersRetry && startupManualRetryWorks
                 && tmuxScrollbackBridgeContract && localTmuxScrollbarRoutingContract && persistentTmuxScrollChannelContract && trayLifecycleContract
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
-                && settingsScrollbarThemed && updateUiContractReady && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
+                && settingsScrollbarThemed && updateUiContractReady && themeCatalogContract && themePickerReady && liveThemeSwitchWorks && themeSelectionPersists && themeStartupPersistenceWorks && themeRestored
+                && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && terminalTabQueuesInsideConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
                 && tmuxControlKeysReachConPty && tmuxOwnsCursorSequences
@@ -4624,6 +4654,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nAgentNotificationsUseExactTransitions={agentNotificationsUseExactTransitions}\nNotificationSettingsPersist={notificationSettingsPersist}\nPerTerminalNotificationsPersist={perTerminalNotificationsPersist}\nCustomNotificationToastReady={customNotificationToastReady}\nNewTerminalPersistenceDefaults={newTerminalPersistenceDefaults}\nTmuxControlKeysReachConPty={tmuxControlKeysReachConPty}\nTmuxOwnsCursorSequences={tmuxOwnsCursorSequences}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalTabHoverPreviews={terminalTabHoverPreviews}\nTerminalTabHoverRestores={terminalTabHoverRestores}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
+            File.AppendAllText(reportPath, $"\nThemeCatalogContract={themeCatalogContract}\nThemePickerReady={themePickerReady}\nLiveThemeSwitchWorks={liveThemeSwitchWorks}\nThemeSelectionPersists={themeSelectionPersists}\nThemeStartupPersistenceWorks={themeStartupPersistenceWorks}\nThemeRestored={themeRestored}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nInactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nStartupFailureOffersRetry={startupFailureOffersRetry}\nStartupManualRetryWorks={startupManualRetryWorks}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
@@ -5515,6 +5546,8 @@ public partial class MainWindow : Window
     {
         settingsUiReady = false;
         var settings = state.Settings;
+        SettingsThemeList.ItemsSource = AppThemeCatalog.Themes;
+        SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(settings.ApplicationTheme);
         SettingsFontFace.Text = settings.FontFace ?? string.Empty;
         SettingsFontSize.ItemsSource = new[] { "Windows Terminal default" }.Concat(Enumerable.Range(8, 25).Select(size => size.ToString(CultureInfo.InvariantCulture))).ToList();
         SettingsFontSize.SelectedIndex = settings.FontSize is int size && size >= 8 && size <= 32 ? size - 7 : 0;
@@ -5550,6 +5583,19 @@ public partial class MainWindow : Window
         foreach (var pane in panes.Values) pane.ApplyAppearance(appearance);
         ScheduleSave();
         UpdateStatus("Settings applied");
+    }
+
+    private void SettingsThemeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!settingsUiReady || SettingsThemeList.SelectedItem is not AppThemeDefinition theme) return;
+        if (string.Equals(state.Settings.ApplicationTheme, theme.Id, StringComparison.OrdinalIgnoreCase)) return;
+        state.Settings.ApplicationTheme = theme.Id;
+        AppThemeCatalog.Apply(theme.Id);
+        var appearance = EffectiveAppearance();
+        foreach (var pane in panes.Values) pane.ApplyAppearance(appearance);
+        InvalidateVisual();
+        ScheduleSave();
+        UpdateStatus($"{theme.Name} theme applied");
     }
 
     private void SettingsFontFaceChanged(object sender, RoutedEventArgs e)

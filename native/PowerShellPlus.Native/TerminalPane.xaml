@@ -4,10 +4,10 @@
              xmlns:term="clr-namespace:EasyWindowsTerminalControl;assembly=EasyWindowsTerminalControl"
              xmlns:local="clr-namespace:PowerShellPlus.Native"
              MinWidth="180" MinHeight="130" Focusable="True">
-  <Border x:Name="PaneBorder" Background="#11111B" BorderBrush="#313244" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4" PreviewMouseLeftButtonDown="ActivatePane">
+  <Border x:Name="PaneBorder" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Hover}" BorderThickness="1" CornerRadius="8" ClipToBounds="True" Margin="4" PreviewMouseLeftButtonDown="ActivatePane">
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Border x:Name="PaneHeader" Grid.Row="0" Background="#181825" BorderBrush="#313244" BorderThickness="0,0,0,1"
+      <Border x:Name="PaneHeader" Grid.Row="0" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,0,1"
               Cursor="SizeAll" PreviewMouseLeftButtonDown="PaneHeaderDragStart" PreviewMouseLeftButtonUp="PaneHeaderDragEnd"
               PreviewMouseMove="PaneHeaderDragMove" MouseLeave="PaneHeaderDragLeave">
         <Grid Margin="10,0,5,0">
@@ -20,25 +20,25 @@
                 <TranslateTransform x:Name="AgentStatusTranslate" X="0"/>
               </TransformGroup>
             </Grid.RenderTransform>
-            <Line x:Name="AgentAntenna" X1="8.5" Y1="1" X2="8.5" Y2="4" Stroke="#89B4FA" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
-            <Ellipse x:Name="AgentAntennaTip" Width="2.6" Height="2.6" Fill="#89B4FA" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-            <Border x:Name="AgentHead" Width="15" Height="11" Margin="0,4,0,0" BorderBrush="#89B4FA" BorderThickness="1.2" CornerRadius="4" Background="#241F2940">
+            <Line x:Name="AgentAntenna" X1="8.5" Y1="1" X2="8.5" Y2="4" Stroke="{DynamicResource Accent}" StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+            <Ellipse x:Name="AgentAntennaTip" Width="2.6" Height="2.6" Fill="{DynamicResource Accent}" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+            <Border x:Name="AgentHead" Width="15" Height="11" Margin="0,4,0,0" BorderBrush="{DynamicResource Accent}" BorderThickness="1.2" CornerRadius="4" Background="{DynamicResource AgentFill}">
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <Ellipse x:Name="AgentLeftEye" Width="2.2" Height="2.2" Fill="#89B4FA" HorizontalAlignment="Right" Margin="0,0,2,0"/>
-                <Ellipse x:Name="AgentRightEye" Grid.Column="1" Width="2.2" Height="2.2" Fill="#89B4FA" HorizontalAlignment="Left" Margin="2,0,0,0"/>
+                <Ellipse x:Name="AgentLeftEye" Width="2.2" Height="2.2" Fill="{DynamicResource Accent}" HorizontalAlignment="Right" Margin="0,0,2,0"/>
+                <Ellipse x:Name="AgentRightEye" Grid.Column="1" Width="2.2" Height="2.2" Fill="{DynamicResource Accent}" HorizontalAlignment="Left" Margin="2,0,0,0"/>
               </Grid>
             </Border>
             <Border x:Name="AgentWaitingBadge" Width="8" Height="8" Margin="0,-1,-4,0" Visibility="Collapsed"
                     HorizontalAlignment="Right" VerticalAlignment="Top" CornerRadius="4"
-                    Background="#F9E2AF" BorderBrush="#181825" BorderThickness="1">
-              <TextBlock Text="!" FontFamily="Segoe UI" FontSize="6" FontWeight="Bold" Foreground="#181825"
+                    Background="{DynamicResource Warning}" BorderBrush="{DynamicResource Surface}" BorderThickness="1">
+              <TextBlock Text="!" FontFamily="Segoe UI" FontSize="6" FontWeight="Bold" Foreground="{DynamicResource Surface}"
                          HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
             </Border>
           </Grid>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <TextBlock x:Name="TitleText" FontSize="11" FontWeight="SemiBold"/>
-            <TextBlock x:Name="StateText" Text="  Windows PowerShell" FontSize="9" Foreground="#6C7086" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StateText" Text="  Windows PowerShell" FontSize="9" Foreground="{DynamicResource MutedStrong}" VerticalAlignment="Center"/>
           </StackPanel>
           <StackPanel x:Name="PaneHeaderActions" Grid.Column="2" Orientation="Horizontal" Cursor="Arrow">
             <Button x:Name="PreviousOutputButton" Content="◷" ToolTip="Previous session output" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Visibility="Collapsed" Click="PreviousOutputClick"/>
@@ -47,17 +47,17 @@
             <Button Content="↻" ToolTip="Restart" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="RestartClick"/>
             <Button x:Name="DetachButton" Content="&gt;_" ToolTip="Move to Windows Terminal" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" FontFamily="Cascadia Mono" FontSize="9" FontWeight="SemiBold" Click="DetachClick"/>
             <Button Content="•••" ToolTip="Edit" Width="32" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Click="EditClick"/>
-            <Button Content="×" ToolTip="Close" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#F38BA8" Click="CloseClick"/>
+            <Button Content="×" ToolTip="Close" Width="28" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Danger}" Click="CloseClick"/>
           </StackPanel>
           <Border x:Name="PaneDropMarker" Grid.ColumnSpan="3" Width="4" Margin="-8,3" HorizontalAlignment="Left"
-                  Background="#CBA6F7" CornerRadius="2" Panel.ZIndex="8" Visibility="Collapsed" IsHitTestVisible="False"/>
+                  Background="{DynamicResource Purple}" CornerRadius="2" Panel.ZIndex="8" Visibility="Collapsed" IsHitTestVisible="False"/>
         </Grid>
       </Border>
       <Grid x:Name="TerminalSurfaceGrid" Grid.Row="1">
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/></Grid.ColumnDefinitions>
         <term:EasyTerminalControl x:Name="Terminal" Grid.Column="0" LogConPTYOutput="False" Win32InputMode="True" InputCapture="TabKey,DirectionKeys" PreviewMouseWheel="TerminalPreviewMouseWheel"/>
-        <Border x:Name="TerminalScrollbarGutter" Grid.Column="1" Background="#181825" BorderBrush="#313244" BorderThickness="1,0,0,0">
-          <Grid x:Name="TerminalScrollbarHost" Background="#181825">
+        <Border x:Name="TerminalScrollbarGutter" Grid.Column="1" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Hover}" BorderThickness="1,0,0,0">
+          <Grid x:Name="TerminalScrollbarHost" Background="{DynamicResource Surface}">
             <ScrollBar x:Name="TerminalViewportScrollbar" Orientation="Vertical" Style="{StaticResource ThemedScrollBar}"
                        Width="11" MinWidth="0" MaxWidth="11" HorizontalAlignment="Center" VerticalAlignment="Stretch" Visibility="Visible"
                        Scroll="TerminalViewportScrollbarScroll" PreviewMouseWheel="TerminalViewportScrollbarMouseWheel"
@@ -67,30 +67,30 @@
       </Grid>
       <Border x:Name="RemoteImagePasteIndicator" Grid.Row="1" Panel.ZIndex="4" Visibility="Collapsed"
               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" Padding="10,7"
-              Background="#F2181825" BorderBrush="#585B70" BorderThickness="1" CornerRadius="7">
+              Background="{DynamicResource GlassSurface}" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1" CornerRadius="7">
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <Grid Width="22" Height="22" Margin="0,0,8,0">
-            <TextBlock x:Name="RemoteImagePasteGlyph" Text="&#x21E7;" FontSize="15" FontWeight="Bold" Foreground="#F9E2AF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            <ProgressBar x:Name="RemoteImagePasteProgress" Width="22" Height="3" IsIndeterminate="True" VerticalAlignment="Bottom" Foreground="#89B4FA" Background="#313244" BorderThickness="0"/>
+            <TextBlock x:Name="RemoteImagePasteGlyph" Text="&#x21E7;" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource Warning}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <ProgressBar x:Name="RemoteImagePasteProgress" Width="22" Height="3" IsIndeterminate="True" VerticalAlignment="Bottom" Foreground="{DynamicResource Accent}" Background="{DynamicResource Hover}" BorderThickness="0"/>
           </Grid>
           <StackPanel Grid.Column="1" VerticalAlignment="Center">
-            <TextBlock x:Name="RemoteImagePasteStatusText" Text="Uploading image…" FontSize="11" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-            <TextBlock x:Name="RemoteImagePasteDetailText" Text="Securely copying through SSH" FontSize="9" Foreground="#A6ADC8" Margin="0,1,0,0"/>
+            <TextBlock x:Name="RemoteImagePasteStatusText" Text="Uploading image…" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+            <TextBlock x:Name="RemoteImagePasteDetailText" Text="Securely copying through SSH" FontSize="9" Foreground="{DynamicResource TextSecondary}" Margin="0,1,0,0"/>
           </StackPanel>
         </Grid>
       </Border>
-      <Grid x:Name="AttachmentPreviewOverlay" Grid.Row="1" Panel.ZIndex="8" Background="#F20B0B12" Visibility="Collapsed" MouseLeftButtonDown="AttachmentPreviewBackdropClick">
+      <Grid x:Name="AttachmentPreviewOverlay" Grid.Row="1" Panel.ZIndex="8" Background="{DynamicResource OverlayDeep}" Visibility="Collapsed" MouseLeftButtonDown="AttachmentPreviewBackdropClick">
         <Border x:Name="AttachmentPreviewCard" MaxWidth="720" MaxHeight="520" Margin="16" Padding="12"
                 HorizontalAlignment="Stretch" VerticalAlignment="Stretch" UseLayoutRounding="True"
-                Background="#181825" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="10" MouseLeftButtonDown="AttachmentPreviewCardClick">
+                Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="10" MouseLeftButtonDown="AttachmentPreviewCardClick">
           <Grid>
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <Grid Grid.Row="0" Margin="2,0,0,8">
               <TextBlock x:Name="AttachmentPreviewTitle" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
               <Button Content="&#x00D7;" Width="28" Height="26" HorizontalAlignment="Right" Padding="0" Click="CloseAttachmentPreviewClick"/>
             </Grid>
-            <Border x:Name="AttachmentPreviewViewport" Grid.Row="1" Background="#0B0B12" BorderBrush="#313244" BorderThickness="1"
+            <Border x:Name="AttachmentPreviewViewport" Grid.Row="1" Background="{DynamicResource SurfaceDeep}" BorderBrush="{DynamicResource Hover}" BorderThickness="1"
                     CornerRadius="7" Padding="8" ClipToBounds="True">
               <Grid ClipToBounds="True">
                 <Image x:Name="AttachmentPreviewImage" Stretch="Uniform" StretchDirection="DownOnly"
@@ -103,42 +103,42 @@
                   <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
                     <Button Content="Play" Padding="12,5" Click="PlayAttachmentPreviewClick"/>
                     <Button Content="Pause" Padding="12,5" Margin="7,0,0,0" Click="PauseAttachmentPreviewClick"/>
-                    <TextBlock x:Name="AttachmentPreviewMediaStatus" Text="Loading mediaâ€¦" Margin="12,0,0,0" Foreground="#A6ADC8" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="AttachmentPreviewMediaStatus" Text="Loading mediaâ€¦" Margin="12,0,0,0" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center"/>
                   </StackPanel>
                 </Grid>
                 <TextBox x:Name="AttachmentPreviewText" Visibility="Collapsed" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
-                         FontFamily="Cascadia Mono" FontSize="12" Background="#0B0B12" BorderThickness="0" Padding="8"
+                         FontFamily="Cascadia Mono" FontSize="12" Background="{DynamicResource SurfaceDeep}" BorderThickness="0" Padding="8"
                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
                 <StackPanel x:Name="AttachmentPreviewGeneric" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="560">
                   <TextBlock Text="&#x1F4C4;" FontSize="52" HorizontalAlignment="Center"/>
                   <TextBlock x:Name="AttachmentPreviewGenericName" Margin="0,12,0,0" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
-                  <TextBlock x:Name="AttachmentPreviewGenericDetails" Margin="0,7,0,0" Foreground="#A6ADC8" TextAlignment="Center" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="AttachmentPreviewGenericDetails" Margin="0,7,0,0" Foreground="{DynamicResource TextSecondary}" TextAlignment="Center" TextWrapping="Wrap"/>
                 </StackPanel>
               </Grid>
             </Border>
           </Grid>
         </Border>
       </Grid>
-      <Border x:Name="CommandBarContainer" Grid.Row="2" MinHeight="16" Background="#151520" BorderBrush="#313244" BorderThickness="0,1,0,0" Opacity="1" ClipToBounds="True">
+      <Border x:Name="CommandBarContainer" Grid.Row="2" MinHeight="16" Background="{DynamicResource SurfaceInset}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,1,0,0" Opacity="1" ClipToBounds="True">
         <Grid x:Name="CommandBarContent" Margin="6,4">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="34"/><ColumnDefinition/><ColumnDefinition Width="54"/><ColumnDefinition Width="34"/></Grid.ColumnDefinitions>
           <Border x:Name="AttachmentStrip" Grid.Row="0" Grid.Column="2" Grid.ColumnSpan="3" Visibility="Collapsed" Margin="0,0,0,5" Padding="5,4"
-                  Background="#181825" BorderBrush="#45475A" BorderThickness="1" CornerRadius="7">
+                  Background="{DynamicResource Surface}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" CornerRadius="7">
             <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
               <StackPanel x:Name="AttachmentPillPanel" Orientation="Horizontal"/>
             </ScrollViewer>
           </Border>
           <Border x:Name="CommandHistoryPanel" Grid.Row="1" Grid.Column="2" Visibility="Collapsed" Margin="0,0,0,5" Padding="7,5"
-                  Background="#11111B" BorderBrush="#45475A" BorderThickness="1" CornerRadius="6" MaxHeight="230">
+                  Background="{DynamicResource Bg}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" CornerRadius="6" MaxHeight="230">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
               <Grid Grid.Row="0" Margin="2,0,2,4">
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal"><Path Data="M3,8 A5,5 0 1 0 5,3 M5,3 H2 M5,3 V6 M8,5 V8 L10,9" Stroke="#89B4FA" StrokeThickness="1.2" Fill="Transparent" Width="13" Height="13" Stretch="Uniform"/><TextBlock Text="History" Foreground="#A6ADC8" FontSize="9" FontWeight="SemiBold" Margin="7,0,0,0" VerticalAlignment="Center"/></StackPanel>
-                <TextBlock x:Name="CommandHistoryEmptyText" Grid.Column="1" Text="Nothing sent from this terminal yet" Foreground="#6C7086" FontSize="9" Margin="8,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal"><Path Data="M3,8 A5,5 0 1 0 5,3 M5,3 H2 M5,3 V6 M8,5 V8 L10,9" Stroke="{DynamicResource Accent}" StrokeThickness="1.2" Fill="Transparent" Width="13" Height="13" Stretch="Uniform"/><TextBlock Text="History" Foreground="{DynamicResource TextSecondary}" FontSize="9" FontWeight="SemiBold" Margin="7,0,0,0" VerticalAlignment="Center"/></StackPanel>
+                <TextBlock x:Name="CommandHistoryEmptyText" Grid.Column="1" Text="Nothing sent from this terminal yet" Foreground="{DynamicResource MutedStrong}" FontSize="9" Margin="8,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                 <Button x:Name="ClearCommandHistoryButton" Grid.Column="2" Content="Clear history" Padding="7,2" MinHeight="20" Margin="8,0,0,0"
-                        Background="#242438" BorderBrush="#45475A" Foreground="#F38BA8" FontSize="9" FontWeight="SemiBold"
+                        Background="{DynamicResource Raised}" BorderBrush="{DynamicResource BorderStrong}" Foreground="{DynamicResource Danger}" FontSize="9" FontWeight="SemiBold"
                         Click="ClearCommandHistoryClick" ToolTip="Clear this terminal's saved history"/>
               </Grid>
               <ScrollViewer Grid.Row="1" MaxHeight="184" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -146,10 +146,10 @@
                   <ItemsControl.ItemTemplate>
                     <DataTemplate>
                       <Border Padding="7,5" Margin="0,1" Cursor="Hand" MouseLeftButtonDown="CommandHistoryEntryMouseDown" ToolTip="Restore this message to the input box">
-                        <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="Transparent"/><Setter Property="CornerRadius" Value="4"/><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#242438"/></Trigger></Style.Triggers></Style></Border.Style>
+                        <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="Transparent"/><Setter Property="CornerRadius" Value="4"/><Style.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource Raised}"/></Trigger></Style.Triggers></Style></Border.Style>
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="38"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                          <TextBlock Text="{Binding RelativeTime}" Foreground="#89B4FA" FontSize="9" FontWeight="SemiBold" Margin="0,2,8,0" VerticalAlignment="Top" TextAlignment="Right"/>
-                          <TextBlock Grid.Column="1" Text="{Binding Message}" FontFamily="Cascadia Mono" FontSize="11" Foreground="#CDD6F4" TextWrapping="Wrap" TextAlignment="Left"/>
+                          <TextBlock Text="{Binding RelativeTime}" Foreground="{DynamicResource Accent}" FontSize="9" FontWeight="SemiBold" Margin="0,2,8,0" VerticalAlignment="Top" TextAlignment="Right"/>
+                          <TextBlock Grid.Column="1" Text="{Binding Message}" FontFamily="Cascadia Mono" FontSize="11" Foreground="{DynamicResource Text}" TextWrapping="Wrap" TextAlignment="Left"/>
                         </Grid>
                       </Border>
                     </DataTemplate>
@@ -158,17 +158,17 @@
               </ScrollViewer>
             </Grid>
           </Border>
-          <Button x:Name="QuickAccessButton" Grid.Row="2" Grid.Column="0" Content="&#x26A1;" Width="30" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QuickAccessClick" ToolTip="Quick access commands"/>
+          <Button x:Name="QuickAccessButton" Grid.Row="2" Grid.Column="0" Content="&#x26A1;" Width="30" Height="26" Padding="0" VerticalAlignment="Bottom" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" Click="QuickAccessClick" ToolTip="Quick access commands"/>
           <Button x:Name="AutomationButton" Grid.Row="2" Grid.Column="1" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom"
-                  Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="AutomationButtonClick" ToolTip="Terminal automations">
+                  Background="{DynamicResource Bg}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" Click="AutomationButtonClick" ToolTip="Terminal automations">
             <Grid>
-              <Viewbox Width="14" Height="14"><Path Data="M2,7 A5,5 0 1 0 7,2 M7,2 V7 L10,9 M1,2 H4 M2.5,.5 V3.5" Stroke="#B4BEFE" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/></Viewbox>
-              <Border x:Name="AutomationCountBadge" Visibility="Collapsed" Background="#B4BEFE" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="AutomationCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+              <Viewbox Width="14" Height="14"><Path Data="M2,7 A5,5 0 1 0 7,2 M7,2 V7 L10,9 M1,2 H4 M2.5,.5 V3.5" Stroke="{DynamicResource AccentSoft}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/></Viewbox>
+              <Border x:Name="AutomationCountBadge" Visibility="Collapsed" Background="{DynamicResource AccentSoft}" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="AutomationCountText" Text="0" Foreground="{DynamicResource Bg}" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
             </Grid>
           </Button>
           <local:ComposerRichTextBox x:Name="CommandInput" Grid.Row="2" Grid.Column="2" MinLines="1" MaxLines="8" MinHeight="26"
-                                     Padding="7,3,30,3" BorderBrush="#45475A" BorderThickness="1" Background="#11111B"
-                                     Foreground="#CDD6F4" CaretBrush="#CDD6F4" FontFamily="Cascadia Mono" FontSize="11"
+                                     Padding="7,3,30,3" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" Background="{DynamicResource Bg}"
+                                     Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Text}" FontFamily="Cascadia Mono" FontSize="11"
                                      AcceptsReturn="True" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"
                                      HorizontalScrollBarVisibility="Disabled" PreviewKeyDown="CommandInputPreviewKeyDown"
                                      PreviewKeyUp="CommandInputPreviewKeyUp" PreviewMouseWheel="CommandInputPreviewMouseWheel"
@@ -189,7 +189,7 @@
                           <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource ComposerScrollRepeatButton}"/></Track.DecreaseRepeatButton>
                           <Track.Thumb>
                             <Thumb Margin="2,1" MinHeight="22">
-                              <Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="ThumbBorder" Background="#585B70" CornerRadius="3"/><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbBorder" Property="Background" Value="#89B4FA"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbBorder" Property="Background" Value="#B4BEFE"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template>
+                              <Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="ThumbBorder" Background="{DynamicResource BorderEmphasis}" CornerRadius="3"/><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource Accent}"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="ThumbBorder" Property="Background" Value="{DynamicResource AccentSoft}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template>
                             </Thumb>
                           </Track.Thumb>
                           <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource ComposerScrollRepeatButton}"/></Track.IncreaseRepeatButton>
@@ -202,48 +202,48 @@
             </local:ComposerRichTextBox.Resources>
           </local:ComposerRichTextBox>
           <Border x:Name="ComposerFileDropIndicator" Grid.Row="2" Grid.Column="2" Panel.ZIndex="6" Visibility="Collapsed"
-                  IsHitTestVisible="False" Background="#F21E1E2E" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="6">
+                  IsHitTestVisible="False" Background="{DynamicResource MenuSurface}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="6">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-              <TextBlock Text="&#x21E9;" Foreground="#89B4FA" FontSize="14" FontWeight="Bold" Margin="0,0,7,0"/>
-              <TextBlock Text="Drop to attach" Foreground="#CDD6F4" FontSize="10" FontWeight="SemiBold"/>
+              <TextBlock Text="&#x21E9;" Foreground="{DynamicResource Accent}" FontSize="14" FontWeight="Bold" Margin="0,0,7,0"/>
+              <TextBlock Text="Drop to attach" Foreground="{DynamicResource Text}" FontSize="10" FontWeight="SemiBold"/>
             </StackPanel>
           </Border>
           <Button x:Name="CommandHistoryButton" Grid.Row="2" Grid.Column="2" Panel.ZIndex="5" Width="25" Height="24" Padding="0" Margin="0,1,3,1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
                   Background="Transparent" BorderThickness="0" Click="CommandHistoryClick" ToolTip="Show history">
-            <Viewbox Width="14" Height="14"><Path x:Name="CommandHistoryIcon" Data="M4,7 A5,5 0 1 0 6,2 M6,2 H3 M6,2 V5 M9,4 V7 L11,8" Stroke="#A6ADC8" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/></Viewbox>
+            <Viewbox Width="14" Height="14"><Path x:Name="CommandHistoryIcon" Data="M4,7 A5,5 0 1 0 6,2 M6,2 H3 M6,2 V5 M9,4 V7 L11,8" Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/></Viewbox>
           </Button>
-          <Button x:Name="QueueCommandButton" Grid.Row="2" Grid.Column="3" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="#11111B" BorderBrush="#45475A" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
-            <Grid><TextBlock Text="Queue" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="#89B4FA" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="#11111B" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
+          <Button x:Name="QueueCommandButton" Grid.Row="2" Grid.Column="3" Width="54" Height="26" Padding="0" VerticalAlignment="Bottom" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" Click="QueueCommandClick" ToolTip="View command queue">
+            <Grid><TextBlock Text="Queue" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/><Border x:Name="QueueCountBadge" Visibility="Collapsed" Background="{DynamicResource Accent}" CornerRadius="6" MinWidth="12" Height="12" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-3,-3,0"><TextBlock x:Name="QueueCountText" Text="0" Foreground="{DynamicResource Bg}" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></Grid>
           </Button>
           <Button x:Name="RunCommandButton" Grid.Row="2" Grid.Column="4" Content="&#x25B6;" Width="30" Height="26" Padding="0" Margin="4,0,0,0" VerticalAlignment="Bottom" Click="RunCommandClick" PreviewMouseRightButtonUp="RunCommandRightButtonUp" MouseEnter="RunCommandMouseEnter" ToolTip="Run in this terminal (Enter)"/>
         </Grid>
       </Border>
       <Border x:Name="BottomCommandReveal" Grid.Row="2" Panel.ZIndex="5" Width="62" Height="16" Background="#01000000" HorizontalAlignment="Center" VerticalAlignment="Bottom">
-        <Button x:Name="CommandBarToggle" Content="&#x2304;" Width="34" Height="16" Padding="0" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="#DD242438" BorderBrush="#585B70" Click="ToggleCommandBarClick" ToolTip="Hide command bar">
+        <Button x:Name="CommandBarToggle" Content="&#x2304;" Width="34" Height="16" Padding="0" HorizontalAlignment="Center" VerticalAlignment="Bottom" Background="{DynamicResource RevealSurface}" BorderBrush="{DynamicResource BorderEmphasis}" Click="ToggleCommandBarClick" ToolTip="Hide command bar">
           <Button.Style><Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Opacity" Value="0"/><Style.Triggers><DataTrigger Binding="{Binding IsMouseOver, ElementName=BottomCommandReveal}" Value="True"><Setter Property="Opacity" Value="1"/></DataTrigger><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="Opacity" Value="1"/></Trigger></Style.Triggers></Style></Button.Style>
         </Button>
       </Border>
-      <Border x:Name="RecoveryOverlay" Grid.Row="1" Panel.ZIndex="2" Background="#FA11111B" Visibility="Collapsed">
+      <Border x:Name="RecoveryOverlay" Grid.Row="1" Panel.ZIndex="2" Background="{DynamicResource OverlayOpaque}" Visibility="Collapsed">
         <Grid Margin="12">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
           <Grid Grid.Row="0" Margin="2,0,2,9">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
               <TextBlock Text="Previous session output" FontSize="13" FontWeight="SemiBold"/>
-              <TextBlock x:Name="RecoveryTimestampText" Text="Recovered after restart" Foreground="#A6ADC8" FontSize="10" Margin="0,3,0,0"/>
+              <TextBlock x:Name="RecoveryTimestampText" Text="Recovered after restart" Foreground="{DynamicResource TextSecondary}" FontSize="10" Margin="0,3,0,0"/>
             </StackPanel>
             <Button Grid.Column="1" Content="Continue to new terminal" Padding="10,5" Click="CloseRecoveryClick"/>
           </Grid>
-          <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" FontSize="11" Background="#0B0B12" BorderBrush="#45475A" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"/>
+          <TextBox x:Name="RecoveryOutputText" Grid.Row="1" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" FontSize="11" Background="{DynamicResource SurfaceDeep}" BorderBrush="{DynamicResource BorderStrong}" Padding="10" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"/>
         </Grid>
       </Border>
-      <Border x:Name="StartupFailureOverlay" Grid.Row="1" Panel.ZIndex="12" Background="#FA11111B" Visibility="Collapsed">
+      <Border x:Name="StartupFailureOverlay" Grid.Row="1" Panel.ZIndex="12" Background="{DynamicResource OverlayOpaque}" Visibility="Collapsed">
         <StackPanel Width="390" MaxWidth="520" Margin="22" HorizontalAlignment="Center" VerticalAlignment="Center">
-          <Border Width="42" Height="42" CornerRadius="21" Background="#2A241F" BorderBrush="#F9E2AF" BorderThickness="1" HorizontalAlignment="Center">
-            <TextBlock Text="!" Foreground="#F9E2AF" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          <Border Width="42" Height="42" CornerRadius="21" Background="#2A241F" BorderBrush="{DynamicResource Warning}" BorderThickness="1" HorizontalAlignment="Center">
+            <TextBlock Text="!" Foreground="{DynamicResource Warning}" FontSize="21" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
-          <TextBlock x:Name="StartupFailureTitle" Text="Terminal recovery failed" Margin="0,14,0,0" Foreground="#CDD6F4" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
-          <TextBlock x:Name="StartupFailureDetail" Text="The saved terminal did not become ready." Margin="0,7,0,0" Foreground="#A6ADC8" FontSize="11" TextAlignment="Center" TextWrapping="Wrap"/>
+          <TextBlock x:Name="StartupFailureTitle" Text="Terminal recovery failed" Margin="0,14,0,0" Foreground="{DynamicResource Text}" FontSize="15" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+          <TextBlock x:Name="StartupFailureDetail" Text="The saved terminal did not become ready." Margin="0,7,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="11" TextAlignment="Center" TextWrapping="Wrap"/>
           <Button x:Name="StartupRetryButton" Content="Retry" Margin="0,16,0,0" MinWidth="104" Padding="16,7" HorizontalAlignment="Center" Click="RetryTerminalStartupClick"/>
         </StackPanel>
       </Border>

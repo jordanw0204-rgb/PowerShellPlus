@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="PowerShellPlus Native" Icon="Assets/PowerShellPlus.ico" Width="1500" Height="920" MinWidth="980" MinHeight="640"
-        WindowStyle="None" ResizeMode="CanResize" Background="{StaticResource Bg}" PreviewKeyDown="WindowPreviewKeyDown">
+        WindowStyle="None" ResizeMode="CanResize" Background="{DynamicResource Bg}" PreviewKeyDown="WindowPreviewKeyDown">
   <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/></shell:WindowChrome.WindowChrome>
   <Window.Resources>
     <Style x:Key="AccentCardListItem" TargetType="ListBoxItem">
@@ -31,37 +31,37 @@
                  DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Closed="CardContextMenuClosed">
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit terminal" Click="SessionItemEditClick"><MenuItem.Icon><TextBlock Text="&#x270E;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Restart terminal" Click="SessionItemRestartClick"><MenuItem.Icon><TextBlock Text="&#x21BB;" FontSize="15"/></MenuItem.Icon></MenuItem>
-      <MenuItem Style="{StaticResource CardMenuItem}" Header="Detach and keep running remotely" Click="SessionItemDetachRemoteClick"><MenuItem.Icon><TextBlock Text="&#x21F1;" FontSize="14" Foreground="#94E2D5"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Detach and keep running remotely" Click="SessionItemDetachRemoteClick"><MenuItem.Icon><TextBlock Text="&#x21F1;" FontSize="14" Foreground="{DynamicResource Teal}"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Toggle tmux persistence" Click="SessionItemToggleTmuxClick"><MenuItem.Icon><TextBlock Text="TM" FontSize="9" FontWeight="Bold" Foreground="#89DCEB"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Open file location" Click="SessionItemOpenLocationClick"><MenuItem.Icon><TextBlock Text="&#x1F4C2;" FontSize="13"/></MenuItem.Icon></MenuItem>
-      <MenuItem Style="{StaticResource CardMenuItem}" Header="Agent notifications" IsCheckable="True" IsChecked="{Binding AgentNotificationsEnabled, Mode=OneWay}" Click="SessionItemNotificationsClick"><MenuItem.Icon><TextBlock Text="&#x25CE;" FontSize="13" Foreground="#89B4FA"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardMenuItem}" Header="Agent notifications" IsCheckable="True" IsChecked="{Binding AgentNotificationsEnabled, Mode=OneWay}" Click="SessionItemNotificationsClick"><MenuItem.Icon><TextBlock Text="&#x25CE;" FontSize="13" Foreground="{DynamicResource Accent}"/></MenuItem.Icon></MenuItem>
       <Separator/>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move earlier" Click="SessionItemUpClick"><MenuItem.Icon><TextBlock Text="&#x2191;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <MenuItem Style="{StaticResource CardMenuItem}" Header="Move later" Click="SessionItemDownClick"><MenuItem.Icon><TextBlock Text="&#x2193;" FontSize="14"/></MenuItem.Icon></MenuItem>
       <Separator/>
-      <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="&#x00D7;" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
+      <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Remove terminal" Click="SessionItemRemoveClick"><MenuItem.Icon><TextBlock Text="&#x00D7;" FontSize="16" Foreground="{DynamicResource Danger}"/></MenuItem.Icon></MenuItem>
     </ContextMenu>
   </Window.Resources>
   <Grid>
     <Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition/><RowDefinition Height="24"/></Grid.RowDefinitions>
 
-    <Border Grid.Row="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,0,1" MouseLeftButtonDown="TitleBarMouseDown">
+    <Border Grid.Row="0" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,0,1" MouseLeftButtonDown="TitleBarMouseDown">
       <Grid>
         <Grid HorizontalAlignment="Left"><Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-          <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+          <TextBlock Text="›_" Foreground="{DynamicResource Accent}" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="15" VerticalAlignment="Center" HorizontalAlignment="Center"/>
           <TextBlock Grid.Column="1" Text="PowerShellPlus" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center"/>
         </Grid>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
           <Button x:Name="TitleBarLanRemoteButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenLanRemoteClick" ToolTip="Open LAN / Global Remote Access">
             <Grid Width="21" Height="21">
-              <Ellipse Stroke="#89B4FA" StrokeThickness="1.2" Margin="2"/>
-              <Path Data="M3,10.5 H18 M10.5,3 C7.5,6 7.5,15 10.5,18 M10.5,3 C13.5,6 13.5,15 10.5,18" Stroke="#89B4FA" StrokeThickness="1.05" Fill="Transparent"/>
-              <Ellipse x:Name="LanRemoteStatusDot" Width="6" Height="6" Fill="#A6E3A1" Stroke="#11111B" StrokeThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed"/>
+              <Ellipse Stroke="{DynamicResource Accent}" StrokeThickness="1.2" Margin="2"/>
+              <Path Data="M3,10.5 H18 M10.5,3 C7.5,6 7.5,15 10.5,18 M10.5,3 C13.5,6 13.5,15 10.5,18" Stroke="{DynamicResource Accent}" StrokeThickness="1.05" Fill="Transparent"/>
+              <Ellipse x:Name="LanRemoteStatusDot" Width="6" Height="6" Fill="{DynamicResource Success}" Stroke="{DynamicResource Bg}" StrokeThickness="1" HorizontalAlignment="Right" VerticalAlignment="Bottom" Visibility="Collapsed"/>
             </Grid>
           </Button>
           <Button x:Name="TitleBarOpenWindowsTerminalButton" Width="46" Height="43" Padding="0" Background="Transparent" BorderThickness="0" Click="OpenWindowsTerminalClick" ToolTip="Open this profile in Windows Terminal">
-            <Border Width="20" Height="15" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="2">
-              <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
+            <Border Width="20" Height="15" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="2">
+              <TextBlock Text="›_" Foreground="{DynamicResource Accent}" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
             </Border>
           </Button>
           <Button x:Name="MinimizeButton" Content="—" Width="46" Height="43" Background="Transparent" BorderThickness="0" Click="MinimizeClick" ToolTip="Minimize"/>
@@ -73,7 +73,7 @@
 
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition x:Name="WorkspaceSidebarColumn" Width="278"/><ColumnDefinition/></Grid.ColumnDefinitions>
-      <Border Grid.Column="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,1,0">
+      <Border Grid.Column="0" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,1,0">
         <DockPanel Margin="0,6">
           <StackPanel DockPanel.Dock="Top">
             <Button x:Name="SessionsRail" Style="{StaticResource RailButton}" Tag="Active" Click="SessionsSectionClick" ToolTip="Manage terminal sessions">
@@ -94,11 +94,11 @@
         </DockPanel>
       </Border>
 
-      <Border x:Name="WorkspaceSidebar" Grid.Column="1" Background="{StaticResource Surface}" BorderBrush="#313244" BorderThickness="0,0,1,0">
+      <Border x:Name="WorkspaceSidebar" Grid.Column="1" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,1,0">
         <Grid Margin="14,18,14,12">
           <Grid x:Name="SessionsPanel">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="3,0,3,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewWorkspaceSessionClick" ToolTip="New session"/></Grid>
+            <Grid Grid.Row="0" Margin="3,0,3,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="WORKSPACE" Foreground="{DynamicResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Sessions" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewWorkspaceSessionClick" ToolTip="New session"/></Grid>
             <ListBox x:Name="WorkspaceSessionList" Grid.Row="1" MaxHeight="174" Margin="0,0,0,12" SelectionChanged="WorkspaceSessionSelectionChanged"
                      ItemContainerStyle="{StaticResource AccentCardListItem}">
               <ListBox.ItemTemplate>
@@ -107,44 +107,44 @@
                           ContextMenu="{StaticResource WorkspaceSessionContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown" MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
                   <Grid x:Name="WorkspaceSessionCard" MinHeight="46">
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
-                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"/><TextBlock Text="{Binding Subtitle}" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,3,0,0"/></StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Session actions" Tag="{Binding ElementName=WorkspaceSessionSurface}" Click="OpenCardMenuClick"/>
                   </Grid>
                   </Border>
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
-            <Grid Grid.Row="2" Margin="3,0,3,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ACTIVE SESSION" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/><TextBlock Text="Terminals" FontSize="15" FontWeight="SemiBold" Margin="0,2,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="17" Width="30" Height="30" Padding="0" Click="NewSessionClick" ToolTip="New terminal in this session"/></Grid>
-            <Border x:Name="LayoutControls" Grid.Row="3" Margin="0,0,0,10" Padding="7,6,7,7" Background="#181825" BorderBrush="#313244" BorderThickness="1" CornerRadius="8">
+            <Grid Grid.Row="2" Margin="3,0,3,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ACTIVE SESSION" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/><TextBlock Text="Terminals" FontSize="15" FontWeight="SemiBold" Margin="0,2,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="17" Width="30" Height="30" Padding="0" Click="NewSessionClick" ToolTip="New terminal in this session"/></Grid>
+            <Border x:Name="LayoutControls" Grid.Row="3" Margin="0,0,0,10" Padding="7,6,7,7" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Hover}" BorderThickness="1" CornerRadius="8">
               <Border.Resources>
                 <Style x:Key="SessionLayoutButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
                   <Setter Property="Height" Value="48"/><Setter Property="Margin" Value="2"/><Setter Property="Padding" Value="3"/>
-                  <Setter Property="Background" Value="#1E1E2E"/><Setter Property="BorderBrush" Value="#313244"/><Setter Property="BorderThickness" Value="1"/>
+                  <Setter Property="Background" Value="{DynamicResource Surface2}"/><Setter Property="BorderBrush" Value="{DynamicResource Hover}"/><Setter Property="BorderThickness" Value="1"/>
                   <Setter Property="ToolTipService.InitialShowDelay" Value="350"/><Setter Property="ToolTipService.BetweenShowDelay" Value="120"/><Setter Property="ToolTipService.ShowDuration" Value="30000"/>
                   <Style.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#292940"/><Setter Property="BorderBrush" Value="#585B70"/></Trigger>
-                    <Trigger Property="Tag" Value="Active"><Setter Property="Background" Value="#263653"/><Setter Property="BorderBrush" Value="#89B4FA"/></Trigger>
+                    <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#292940"/><Setter Property="BorderBrush" Value="{DynamicResource BorderEmphasis}"/></Trigger>
+                    <Trigger Property="Tag" Value="Active"><Setter Property="Background" Value="#263653"/><Setter Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
                   </Style.Triggers>
                 </Style>
               </Border.Resources>
               <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <Grid Margin="2,0,2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="SESSION LAYOUT" Foreground="{StaticResource Muted}" FontSize="8" FontWeight="Bold" VerticalAlignment="Center"/><TextBlock x:Name="ActiveLayoutText" Grid.Column="1" Text="Grid" Foreground="#89B4FA" FontSize="8" FontWeight="SemiBold" VerticalAlignment="Center"/></Grid>
+                <Grid Margin="2,0,2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="SESSION LAYOUT" Foreground="{DynamicResource Muted}" FontSize="8" FontWeight="Bold" VerticalAlignment="Center"/><TextBlock x:Name="ActiveLayoutText" Grid.Column="1" Text="Grid" Foreground="{DynamicResource Accent}" FontSize="8" FontWeight="SemiBold" VerticalAlignment="Center"/></Grid>
                 <UniformGrid Grid.Row="1" Columns="5">
                   <Button x:Name="GridLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="GridLayoutClick" AutomationProperties.Name="Grid terminal layout">
-                    <StackPanel><TextBlock Text="&#x25A6;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Grid" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                    <StackPanel><TextBlock Text="&#x25A6;" Foreground="{DynamicResource Accent}" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Grid" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
                   <Button x:Name="ColumnsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="ColumnsLayoutClick" AutomationProperties.Name="Columns terminal layout">
-                    <StackPanel><TextBlock Text="&#x25A5;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Cols" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                    <StackPanel><TextBlock Text="&#x25A5;" Foreground="{DynamicResource Accent}" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Cols" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
                   <Button x:Name="RowsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="RowsLayoutClick" AutomationProperties.Name="Rows terminal layout">
-                    <StackPanel><TextBlock Text="&#x25A4;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Rows" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                    <StackPanel><TextBlock Text="&#x25A4;" Foreground="{DynamicResource Accent}" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Rows" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
                   <Button x:Name="FocusLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="FocusLayoutClick" AutomationProperties.Name="Focus terminal layout">
-                    <StackPanel><TextBlock Text="&#x25A3;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Focus" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                    <StackPanel><TextBlock Text="&#x25A3;" Foreground="{DynamicResource Accent}" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Focus" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
                   <Button x:Name="TabsLayoutButton" Style="{StaticResource SessionLayoutButton}" Click="TabsLayoutClick" AutomationProperties.Name="Tabs terminal layout">
-                    <StackPanel><TextBlock Text="&#x229F;" Foreground="#89B4FA" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Tabs" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
+                    <StackPanel><TextBlock Text="&#x229F;" Foreground="{DynamicResource Accent}" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Tabs" FontSize="9" HorizontalAlignment="Center" Margin="0,-2,0,0"/></StackPanel>
                   </Button>
                 </UniformGrid>
               </Grid>
@@ -161,12 +161,12 @@
                         ToolTipService.ShowDuration="60000" ToolTipService.Placement="Right">
                     <Grid.ToolTip><ToolTip><TextBlock Text="Loading live terminal details…"/></ToolTip></Grid.ToolTip>
                     <Border Width="3" Background="{Binding AccentBrush}" CornerRadius="2" HorizontalAlignment="Left" Margin="0,5,0,5"/>
-                    <StackPanel VerticalAlignment="Center" Margin="11,0,96,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"><Run Text="{Binding DirectoryPrefix, Mode=OneWay}" Foreground="#89B4FA" FontWeight="SemiBold"/><Run Text="{Binding Subtitle, Mode=OneWay}"/></TextBlock></StackPanel>
+                    <StackPanel VerticalAlignment="Center" Margin="11,0,96,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"><Run Text="{Binding DirectoryPrefix, Mode=OneWay}" Foreground="{DynamicResource Accent}" FontWeight="SemiBold"/><Run Text="{Binding Subtitle, Mode=OneWay}"/></TextBlock></StackPanel>
                     <StackPanel HorizontalAlignment="Right" VerticalAlignment="Center" Orientation="Horizontal">
-                      <Border Margin="0,0,6,0" MinWidth="34" Height="16" Padding="5,0" CornerRadius="3" Background="#356A78" BorderThickness="0"
+                      <Border Margin="0,0,6,0" MinWidth="34" Height="16" Padding="5,0" CornerRadius="3" Background="{DynamicResource Teal}" BorderThickness="0"
                               Cursor="Hand" ToolTip="Toggle tmux persistence" MouseLeftButtonUp="TmuxBadgeMouseLeftButtonUp">
                         <Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding IsTmuxTerminal, Mode=OneWay}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></Border.Style>
-                        <TextBlock Text="TMUX" Foreground="#F1FCFF" FontSize="8" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Text="TMUX" Foreground="{DynamicResource Bg}" FontSize="8" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                       </Border>
                       <Button Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Terminal actions" Tag="{Binding ElementName=SessionSurface}" Click="OpenCardMenuClick"/>
                     </StackPanel>
@@ -179,7 +179,7 @@
 
           <Grid x:Name="CommandsPanel" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="LIBRARY" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Commands" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Double-click to run in the selected pane." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewSnippetClick"/></Grid>
+            <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="LIBRARY" Foreground="{DynamicResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Commands" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Double-click to run in the selected pane." Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewSnippetClick"/></Grid>
             <ListBox x:Name="SnippetList" Grid.Row="1" MouseDoubleClick="SnippetDoubleClick" SelectionChanged="EditableListSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
@@ -190,10 +190,10 @@
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Run in all terminals" Click="SnippetItemRunAllClick"><MenuItem.Icon><TextBlock Text="≫" FontSize="15"/></MenuItem.Icon></MenuItem>
                         <Separator/>
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit command" Click="SnippetItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Delete command" Click="SnippetItemDeleteClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
+                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Delete command" Click="SnippetItemDeleteClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="{DynamicResource Danger}"/></MenuItem.Icon></MenuItem>
                       </ContextMenu>
                     </Grid.ContextMenu>
-                    <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
+                    <StackPanel VerticalAlignment="Center" Margin="0,0,40,0"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/><TextBlock Text="{Binding Subtitle}" Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Command actions" Tag="{Binding ElementName=CommandCard}" Click="OpenCardMenuClick"/>
                   </Grid>
                 </DataTemplate>
@@ -203,7 +203,7 @@
 
           <Grid x:Name="AutomationPanel" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-            <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="SCHEDULER" Foreground="{StaticResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Automations" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Native sessions stay interactive while jobs run." Foreground="{StaticResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewAutomationClick"/></Grid>
+            <Grid Grid.Row="0" Margin="3,0,3,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="SCHEDULER" Foreground="{DynamicResource Muted}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Automations" FontSize="22" FontWeight="SemiBold" Margin="0,3,0,0"/><TextBlock Text="Native sessions stay interactive while jobs run." Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,7,0,0"/></StackPanel><Button Grid.Column="1" Content="＋" FontSize="19" Width="36" Height="36" Padding="0" Click="NewAutomationClick"/></Grid>
             <ListBox x:Name="AutomationList" Grid.Row="1" MouseDoubleClick="AutomationDoubleClick" SelectionChanged="EditableListSelectionChanged">
               <ListBox.ItemTemplate>
                 <DataTemplate>
@@ -215,12 +215,12 @@
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Enable or pause" Click="AutomationItemToggleClick"><MenuItem.Icon><TextBlock Text="◉" FontSize="14"/></MenuItem.Icon></MenuItem>
                         <Separator/>
                         <MenuItem Style="{StaticResource CardMenuItem}" Header="Edit automation" Click="AutomationItemEditClick"><MenuItem.Icon><TextBlock Text="✎" FontSize="14"/></MenuItem.Icon></MenuItem>
-                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Delete automation" Click="AutomationItemDeleteClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="#F38BA8"/></MenuItem.Icon></MenuItem>
+                        <MenuItem Style="{StaticResource CardDangerMenuItem}" Header="Delete automation" Click="AutomationItemDeleteClick"><MenuItem.Icon><TextBlock Text="×" FontSize="16" Foreground="{DynamicResource Danger}"/></MenuItem.Icon></MenuItem>
                       </ContextMenu>
                     </Grid.ContextMenu>
                     <StackPanel VerticalAlignment="Center" Margin="0,0,40,0">
                       <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
-                      <Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis"/><Border Grid.Column="1" Background="#242438" CornerRadius="9" Padding="7,3" Margin="7,0,0,0"><TextBlock Text="{Binding Countdown}" Foreground="#A6E3A1" FontSize="10" FontWeight="SemiBold"/></Border></Grid>
+                      <Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Subtitle}" Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis"/><Border Grid.Column="1" Background="{DynamicResource Raised}" CornerRadius="9" Padding="7,3" Margin="7,0,0,0"><TextBlock Text="{Binding Countdown}" Foreground="{DynamicResource Success}" FontSize="10" FontWeight="SemiBold"/></Border></Grid>
                     </StackPanel>
                     <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CardOverflowButton}" Content="⋯" ToolTip="Automation actions" Tag="{Binding ElementName=AutomationCard}" Click="OpenCardMenuClick"/>
                   </Grid>
@@ -232,21 +232,65 @@
           <Grid x:Name="SettingsPanel" Visibility="Collapsed">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
             <StackPanel Grid.Row="0" Margin="3,0,3,12">
-              <TextBlock Text="PREFERENCES" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+              <TextBlock Text="PREFERENCES" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
               <TextBlock Text="Settings" FontSize="19" FontWeight="SemiBold" Margin="0,3,0,0"/>
-              <TextBlock Text="Blank appearance fields inherit your Windows Terminal profile." Foreground="{StaticResource Muted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap"/>
+              <TextBlock Text="Blank appearance fields inherit your Windows Terminal profile." Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap"/>
             </StackPanel>
             <ScrollViewer x:Name="SettingsScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Loaded="SettingsScrollerLoaded">
               <StackPanel Margin="3,0">
-                <TextBlock Text="TERMINAL APPEARANCE" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,4,0,8"/>
-                <TextBlock Text="Font family" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                <TextBlock Text="APPLICATION THEME" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,4,0,8"/>
+                <ListBox x:Name="SettingsThemeList" SelectionChanged="SettingsThemeChanged" Margin="0,0,0,4">
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                      <Setter Property="Padding" Value="0"/>
+                      <Setter Property="Margin" Value="0,0,0,7"/>
+                      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                      <Setter Property="Template">
+                        <Setter.Value>
+                          <ControlTemplate TargetType="ListBoxItem">
+                            <Border x:Name="ThemeCard" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8">
+                              <ContentPresenter/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ThemeCard" Property="Background" Value="{DynamicResource Hover}"/><Setter TargetName="ThemeCard" Property="BorderBrush" Value="{DynamicResource BorderStrong}"/></Trigger>
+                              <Trigger Property="IsSelected" Value="True"><Setter TargetName="ThemeCard" Property="Background" Value="{DynamicResource SurfaceTint}"/><Setter TargetName="ThemeCard" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="ThemeCard" Property="BorderThickness" Value="2"/></Trigger>
+                            </ControlTemplate.Triggers>
+                          </ControlTemplate>
+                        </Setter.Value>
+                      </Setter>
+                    </Style>
+                  </ListBox.ItemContainerStyle>
+                  <ListBox.ItemTemplate>
+                    <DataTemplate>
+                      <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="72"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Border Width="62" Height="39" Background="{Binding PreviewBackground}" BorderBrush="{Binding PreviewAccent}" BorderThickness="1" CornerRadius="6" HorizontalAlignment="Left">
+                          <Grid Margin="5">
+                            <Grid.RowDefinitions><RowDefinition Height="8"/><RowDefinition/></Grid.RowDefinitions>
+                            <Border Grid.Row="0" Background="{Binding PreviewAccent}" CornerRadius="2" Width="25" HorizontalAlignment="Left"/>
+                            <Border Grid.Row="1" Background="{Binding PreviewSurface}" CornerRadius="3" Margin="0,4,0,0">
+                              <StackPanel Margin="5,4" Orientation="Horizontal"><Ellipse Width="4" Height="4" Fill="{Binding PreviewAccent}" Margin="0,0,4,0"/><Border Width="26" Height="3" Background="{Binding PreviewText}" CornerRadius="2" Opacity="0.78"/></StackPanel>
+                            </Border>
+                          </Grid>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"/>
+                          <TextBlock Text="{Binding Description}" Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        </StackPanel>
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+
+                <TextBlock Text="TERMINAL APPEARANCE" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,4,0,8"/>
+                <TextBlock Text="Font family" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                 <TextBox x:Name="SettingsFontFace" LostFocus="SettingsFontFaceChanged" KeyDown="SettingsTextBoxKeyDown"/>
-                <TextBlock Text="Font size" Foreground="{StaticResource Muted}" Margin="0,12,0,5"/>
+                <TextBlock Text="Font size" Foreground="{DynamicResource Muted}" Margin="0,12,0,5"/>
                 <ComboBox x:Name="SettingsFontSize" SelectionChanged="SettingsFontSizeChanged"/>
                 <Grid Margin="0,12,0,0">
                   <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <StackPanel>
-                    <TextBlock Text="Cursor style" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                    <TextBlock Text="Cursor style" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                     <ComboBox x:Name="SettingsCursorStyle" SelectionChanged="SettingsCursorChanged">
                       <ComboBoxItem Content="Bar"/><ComboBoxItem Content="Block"/><ComboBoxItem Content="Underline"/>
                     </ComboBox>
@@ -254,31 +298,31 @@
                 <CheckBox x:Name="SettingsCursorBlink" Grid.Column="2" Content="Blink" Style="{StaticResource ThemedCheckBox}" VerticalAlignment="Bottom" Margin="0,0,0,8" Click="SettingsCursorChanged"/>
                 </Grid>
 
-                <TextBlock Text="NEW SESSION DEFAULTS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
-                <TextBlock Text="Default shell command line" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                <TextBlock Text="NEW SESSION DEFAULTS" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock Text="Default shell command line" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                 <TextBox x:Name="SettingsDefaultShell" FontFamily="Cascadia Mono" LostFocus="SettingsDefaultsChanged" KeyDown="SettingsTextBoxKeyDown"/>
-                <TextBlock Text="Default working directory" Foreground="{StaticResource Muted}" Margin="0,12,0,5"/>
+                <TextBlock Text="Default working directory" Foreground="{DynamicResource Muted}" Margin="0,12,0,5"/>
                 <Grid>
                   <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                   <TextBox x:Name="SettingsDefaultDirectory" LostFocus="SettingsDefaultsChanged" KeyDown="SettingsTextBoxKeyDown"/>
                   <Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="SettingsBrowseDirectoryClick"/>
                 </Grid>
                 <CheckBox x:Name="SettingsAutomaticTerminalColors" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="SettingsAutomaticTerminalColorsChanged"><TextBlock Text="Automatically set a color for new terminals" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Each newly created terminal gets a random color from the PowerShellPlus palette. Turn this off to use the default blue." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
+                <TextBlock Text="Each newly created terminal gets a random color from the PowerShellPlus palette. Turn this off to use the default blue." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
-                <TextBlock Text="BEHAVIOR" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock Text="BEHAVIOR" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsConfirmRemove" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Confirm before removing a session" TextWrapping="Wrap" Width="178"/></CheckBox>
                 <CheckBox x:Name="SettingsSendAllModifierEnabled" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="SettingsSendAllChanged"><TextBlock Text="Use a modifier to send commands to every terminal" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Send-to-all modifier" Foreground="{StaticResource Muted}" Margin="49,10,0,5"/>
+                <TextBlock Text="Send-to-all modifier" Foreground="{DynamicResource Muted}" Margin="49,10,0,5"/>
                 <ComboBox x:Name="SettingsSendAllModifier" Margin="49,0,0,0" SelectionChanged="SettingsSendAllChanged">
                   <ComboBoxItem Content="Shift"/><ComboBoxItem Content="Alt"/>
                 </ComboBox>
-                <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. Ctrl+Enter always adds the command to the queue." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
+                <TextBlock Text="Hold the modifier while pressing Enter or clicking Send. Ctrl+Enter always adds the command to the queue." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,6,0,0"/>
 
-                <TextBlock Text="AGENT NOTIFICATIONS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock Text="AGENT NOTIFICATIONS" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsAgentNotifications" Style="{StaticResource ToggleSwitch}" Click="SettingsNotificationsChanged"><TextBlock Text="Notify me when an agent finishes or needs a response" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Notifications identify the terminal and open it when clicked." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
-                <TextBlock Text="Notification sound" Foreground="{StaticResource Muted}" Margin="49,0,0,5"/>
+                <TextBlock Text="Notifications identify the terminal and open it when clicked." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
+                <TextBlock Text="Notification sound" Foreground="{DynamicResource Muted}" Margin="49,0,0,5"/>
                 <ComboBox x:Name="SettingsNotificationSound" Margin="49,0,0,0" SelectionChanged="SettingsNotificationsChanged">
                   <ComboBoxItem Content="System default"/><ComboBoxItem Content="Custom sound"/><ComboBoxItem Content="Silent"/>
                 </ComboBox>
@@ -290,27 +334,27 @@
                 <Button x:Name="SettingsTestNotificationButton" Content="Test notification" Margin="49,7,0,0" HorizontalAlignment="Stretch" Click="SettingsTestNotificationClick"/>
 
                 <CheckBox x:Name="SettingsTmuxToggleWarning" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0" Click="SettingsNotificationsChanged"><TextBlock Text="Warn before changing tmux persistence" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Re-enable this if you previously chose Don't show this warning again." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
+                <TextBlock Text="Re-enable this if you previously chose Don't show this warning again." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
-                <TextBlock Text="SESSION RECOVERY" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock Text="SESSION RECOVERY" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <CheckBox x:Name="SettingsKeepSessionsInTray" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Keep live sessions running when the window closes" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="The close button hides PowerShellPlus in the system tray. PowerShell, Codex, SSH, jobs, and other running programs stay alive." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
+                <TextBlock Text="The close button hides PowerShellPlus in the system tray. PowerShell, Codex, SSH, jobs, and other running programs stay alive." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
                 <CheckBox x:Name="SettingsRestoreAfterRestart" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Recover sessions after an app or Windows restart" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Recreates each terminal and resumes Codex only when that pane was positively detected as a Codex process." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
+                <TextBlock Text="Recreates each terminal and resumes Codex only when that pane was positively detected as a Codex process." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,12"/>
                 <CheckBox x:Name="SettingsSaveTranscripts" Style="{StaticResource ToggleSwitch}" Click="SettingsBehaviorChanged"><TextBlock Text="Save previous terminal output locally" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Keeps up to 500,000 characters per pane in your PowerShellPlus data folder. Terminal output can contain private information." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
+                <TextBlock Text="Keeps up to 500,000 characters per pane in your PowerShellPlus data folder. Terminal output can contain private information." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,0"/>
 
-                <TextBlock Text="APPLICATION UPDATES" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
-                <TextBlock x:Name="SettingsInstalledVersion" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                <TextBlock Text="APPLICATION UPDATES" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock x:Name="SettingsInstalledVersion" Foreground="{DynamicResource Text}" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,10"/>
                 <CheckBox x:Name="SettingsAutomaticUpdates" Style="{StaticResource ToggleSwitch}" Click="SettingsUpdatesChanged"><TextBlock Text="Notify me when updates are available" TextWrapping="Wrap" Width="178"/></CheckBox>
-                <TextBlock Text="Checks the latest stable GitHub Release when PowerShellPlus starts. No update is installed until you approve it." Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
+                <TextBlock Text="Checks the latest stable GitHub Release when PowerShellPlus starts. No update is installed until you approve it." Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="49,5,0,10"/>
                 <Button x:Name="SettingsCheckForUpdatesButton" Content="Check for updates" HorizontalAlignment="Stretch" Click="CheckForUpdatesClick"/>
-                <TextBlock x:Name="SettingsUpdateStatus" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,7,0,0"/>
+                <TextBlock x:Name="SettingsUpdateStatus" Foreground="{DynamicResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,7,0,0"/>
 
-                <TextBlock Text="WORKSPACE DATA" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
+                <TextBlock Text="WORKSPACE DATA" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,22,0,8"/>
                 <Button Content="Open workspace data folder" HorizontalAlignment="Stretch" Margin="0,0,0,6" Click="OpenDataFolderClick"/>
                 <Button Content="Reset appearance to WT profile" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="SettingsResetClick" ToolTip="Clear overrides and use the Windows Terminal profile appearance"/>
-                <Button Content="Quit PowerShellPlus and close all sessions" Foreground="#F38BA8" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="QuitApplicationClick"/>
+                <Button Content="Quit PowerShellPlus and close all sessions" Foreground="{DynamicResource Danger}" HorizontalAlignment="Stretch" Margin="0,0,0,14" Click="QuitApplicationClick"/>
               </StackPanel>
             </ScrollViewer>
           </Grid>
@@ -319,7 +363,7 @@
 
       <Grid Grid.Column="2">
         <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition/></Grid.RowDefinitions>
-        <Border Grid.Row="0" Background="#11111B" BorderBrush="#313244" BorderThickness="0,0,0,1">
+        <Border Grid.Row="0" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,0,1">
           <DockPanel Margin="7,3">
             <Button DockPanel.Dock="Right" Content="＋" Width="30" Height="28" Padding="0" FontSize="16" Click="NewWorkspaceSessionClick" ToolTip="New session"/>
             <ListBox x:Name="WorkspaceSessionTabs" SelectionChanged="WorkspaceSessionSelectionChanged" BorderThickness="0" Background="Transparent" AllowDrop="True"
@@ -331,14 +375,14 @@
                     ContextMenu="{StaticResource WorkspaceSessionContextMenu}" PreviewMouseRightButtonDown="CardRightButtonDown"
                     MouseEnter="WorkspaceSessionCardMouseEnter" MouseLeave="WorkspaceSessionCardMouseLeave">
                 <Border.Style><Style TargetType="Border"><Setter Property="Background" Value="{Binding AccentTintBrush}"/><Setter Property="BorderBrush" Value="{Binding AccentBrush}"/><Setter Property="BorderThickness" Value="0,0,0,2"/><Style.Triggers><DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"><Setter Property="Background" Value="{Binding AccentSelectedBrush}"/><Setter Property="BorderThickness" Value="1,1,1,3"/></DataTrigger></Style.Triggers></Style></Border.Style>
-                <TextBlock Text="{Binding Name}" Foreground="{StaticResource Text}" FontSize="11" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding Name}" Foreground="{DynamicResource Text}" FontSize="11" FontWeight="SemiBold"/>
               </Border></DataTemplate></ListBox.ItemTemplate>
             </ListBox>
           </DockPanel>
         </Border>
         <Grid x:Name="TerminalArea" Grid.Row="1">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-          <Border x:Name="TerminalTabBar" Grid.Row="0" Visibility="Collapsed" Background="#151520" BorderBrush="#313244" BorderThickness="0,0,0,1" Padding="6,4,6,0">
+          <Border x:Name="TerminalTabBar" Grid.Row="0" Visibility="Collapsed" Background="{DynamicResource SurfaceInset}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,0,0,1" Padding="6,4,6,0">
             <ListBox x:Name="TerminalTabList" SelectionChanged="TerminalTabSelectionChanged"
                      AllowDrop="True" Background="Transparent" BorderThickness="0"
                      ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Disabled"
@@ -400,7 +444,7 @@
                         </Grid.Style>
                         <Line X1="7" Y1="0.5" X2="7" Y2="3.3" Stroke="{Binding AgentStatusBrush, Mode=OneWay}" StrokeThickness="1.1" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
                         <Ellipse Width="2.3" Height="2.3" Fill="{Binding AgentStatusBrush, Mode=OneWay}" HorizontalAlignment="Center" VerticalAlignment="Top"/>
-                        <Border Width="13" Height="9.5" Margin="0,3.5,0,0" BorderBrush="{Binding AgentStatusBrush, Mode=OneWay}" BorderThickness="1.1" CornerRadius="3.5" Background="#241F2940">
+                        <Border Width="13" Height="9.5" Margin="0,3.5,0,0" BorderBrush="{Binding AgentStatusBrush, Mode=OneWay}" BorderThickness="1.1" CornerRadius="3.5" Background="{DynamicResource AgentFill}">
                           <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                             <Ellipse Width="2" Height="2" Fill="{Binding AgentStatusBrush, Mode=OneWay}" HorizontalAlignment="Right" Margin="0,0,1.7,0"/>
@@ -408,14 +452,14 @@
                           </Grid>
                         </Border>
                         <Border Width="7" Height="7" Margin="0,-1,-3,0" HorizontalAlignment="Right" VerticalAlignment="Top"
-                                CornerRadius="3.5" Background="#F9E2AF" BorderBrush="#181825" BorderThickness="1">
+                                CornerRadius="3.5" Background="{DynamicResource Warning}" BorderBrush="{DynamicResource Surface}" BorderThickness="1">
                           <Border.Style>
                             <Style TargetType="Border">
                               <Setter Property="Visibility" Value="Collapsed"/>
                               <Style.Triggers><DataTrigger Binding="{Binding AgentStatusState, Mode=OneWay}" Value="waiting"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
                             </Style>
                           </Border.Style>
-                          <TextBlock Text="!" FontFamily="Segoe UI" FontSize="5.5" FontWeight="Bold" Foreground="#181825"
+                          <TextBlock Text="!" FontFamily="Segoe UI" FontSize="5.5" FontWeight="Bold" Foreground="{DynamicResource Surface}"
                                      HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-1,0,0"/>
                         </Border>
                       </Grid>
@@ -426,7 +470,7 @@
               </ListBox.ItemTemplate>
             </ListBox>
           </Border>
-          <Grid x:Name="TerminalHost" Grid.Row="1" Background="#11111B" AllowDrop="True"
+          <Grid x:Name="TerminalHost" Grid.Row="1" Background="{DynamicResource Bg}" AllowDrop="True"
                 DragOver="TerminalLayoutDragOver" DragLeave="TerminalLayoutDragLeave" Drop="TerminalLayoutDrop"/>
           <!-- Inactive Session/Tab panes are briefly mounted here during cold
                start so EasyTerminalControl receives a real Loaded/native HWND
@@ -435,88 +479,88 @@
                   ClipToBounds="True" IsHitTestVisible="False" Panel.ZIndex="-1">
             <Grid x:Name="TerminalWarmupHost" Width="900" Height="560" Canvas.Left="-1800" Canvas.Top="-1200"/>
           </Canvas>
-          <Grid x:Name="LayoutTransitionOverlay" Grid.RowSpan="2" Panel.ZIndex="12" Background="#F211111B" Visibility="Collapsed" IsHitTestVisible="False" Opacity="1">
+          <Grid x:Name="LayoutTransitionOverlay" Grid.RowSpan="2" Panel.ZIndex="12" Background="{DynamicResource OverlaySurface}" Visibility="Collapsed" IsHitTestVisible="False" Opacity="1">
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-              <TextBlock x:Name="LayoutTransitionTitle" Text="GRID LAYOUT" Foreground="#B4BEFE" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+              <TextBlock x:Name="LayoutTransitionTitle" Text="GRID LAYOUT" Foreground="{DynamicResource AccentSoft}" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,12"/>
               <Canvas x:Name="LayoutTransitionCanvas" Width="240" Height="138"/>
             </StackPanel>
           </Grid>
         </Grid>
       </Grid>
-      <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="#E6242438" BorderBrush="#585B70" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
+      <Button x:Name="WorkspaceSidebarToggle" Grid.Column="0" Panel.ZIndex="15" Content="&#x2039;" Width="18" Height="42" Padding="0" Margin="0,0,-1,0" HorizontalAlignment="Right" VerticalAlignment="Center" Background="{DynamicResource SidebarToggleSurface}" BorderBrush="{DynamicResource BorderEmphasis}" Click="WorkspaceSidebarToggleClick" ToolTip="Collapse workspace sidebar"/>
     </Grid>
 
-    <Border Grid.Row="2" Background="#11111B" BorderBrush="#313244" BorderThickness="0,1,0,0"><Grid Margin="10,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="StatusText" Text="Ready" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center"/><TextBlock Grid.Column="1" x:Name="CountText" Foreground="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center"/></Grid></Border>
+    <Border Grid.Row="2" Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Hover}" BorderThickness="0,1,0,0"><Grid Margin="10,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource Muted}" FontSize="9" VerticalAlignment="Center"/><TextBlock Grid.Column="1" x:Name="CountText" Foreground="{DynamicResource Muted}" FontSize="9" VerticalAlignment="Center"/></Grid></Border>
 
-    <Grid x:Name="WindowsTerminalDropOverlay" Grid.RowSpan="3" Background="#ED11111B" Visibility="Collapsed" IsHitTestVisible="False" Panel.ZIndex="30">
-      <Border Width="570" Background="#181825" BorderBrush="#89B4FA" BorderThickness="2" CornerRadius="16" Padding="38" VerticalAlignment="Center" HorizontalAlignment="Center">
+    <Grid x:Name="WindowsTerminalDropOverlay" Grid.RowSpan="3" Background="{DynamicResource OverlaySurface}" Visibility="Collapsed" IsHitTestVisible="False" Panel.ZIndex="30">
+      <Border Width="570" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="2" CornerRadius="16" Padding="38" VerticalAlignment="Center" HorizontalAlignment="Center">
         <StackPanel HorizontalAlignment="Center">
-          <Border Width="82" Height="60" BorderBrush="#89B4FA" BorderThickness="2" CornerRadius="8" HorizontalAlignment="Center">
-            <TextBlock Text="›_" Foreground="#89B4FA" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="29" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          <Border Width="82" Height="60" BorderBrush="{DynamicResource Accent}" BorderThickness="2" CornerRadius="8" HorizontalAlignment="Center">
+            <TextBlock Text="›_" Foreground="{DynamicResource Accent}" FontFamily="Cascadia Mono" FontWeight="Bold" FontSize="29" HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
           <TextBlock x:Name="WindowsTerminalDropTitle" Text="Hold to import Windows Terminal" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,22,0,0"/>
-          <TextBlock x:Name="WindowsTerminalDropDetail" Text="Keep the window here for a moment, then release it." Foreground="#A6ADC8" FontSize="13" TextAlignment="Center" TextWrapping="Wrap" Margin="0,9,0,0"/>
-          <TextBlock Text="Each tab becomes a named Terminal in the active Session. Codex thread, model, permission profile, approval policy, and reviewer are verified before import." Foreground="#89B4FA" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,16,0,0"/>
+          <TextBlock x:Name="WindowsTerminalDropDetail" Text="Keep the window here for a moment, then release it." Foreground="{DynamicResource TextSecondary}" FontSize="13" TextAlignment="Center" TextWrapping="Wrap" Margin="0,9,0,0"/>
+          <TextBlock Text="Each tab becomes a named Terminal in the active Session. Codex thread, model, permission profile, approval policy, and reviewer are verified before import." Foreground="{DynamicResource Accent}" FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="0,16,0,0"/>
         </StackPanel>
       </Border>
     </Grid>
 
     <Grid x:Name="EditorOverlay" Grid.RowSpan="3" Background="#B0000000" Visibility="Collapsed" Panel.ZIndex="20" MouseLeftButtonDown="EditorOverlayMouseLeftButtonDown">
-      <Border x:Name="EditorCard" Width="580" MaxHeight="720" Background="#181825" BorderBrush="#45475A" BorderThickness="1" CornerRadius="12" Padding="24" VerticalAlignment="Center" HorizontalAlignment="Center">
+      <Border x:Name="EditorCard" Width="580" MaxHeight="720" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" CornerRadius="12" Padding="24" VerticalAlignment="Center" HorizontalAlignment="Center">
         <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
           <TextBlock x:Name="EditorTitle" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,18"/>
           <Grid Grid.Row="1">
             <StackPanel x:Name="SessionEditor">
-              <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/>
-              <TextBlock Text="Terminal color" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/>
+              <TextBlock Text="Name" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SessionNameEdit"/>
+              <TextBlock Text="Terminal color" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <ComboBox x:Name="SessionAccentEdit" SelectedValuePath="Value" SelectionChanged="SessionAccentSelectionChanged"><ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Ellipse Width="11" Height="11" Fill="{Binding Brush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate></ComboBox>
-                <Button Grid.Column="1" Margin="7,0,0,0" Padding="10,5" Click="OpenTerminalColorPickerClick" ToolTip="Choose any custom terminal color"><StackPanel Orientation="Horizontal"><Border x:Name="SessionAccentPreview" Width="13" Height="13" CornerRadius="4" BorderBrush="#CDD6F4" BorderThickness="1" Margin="0,0,7,0"/><TextBlock x:Name="SessionAccentValueText" Text="Custom" FontSize="11"/></StackPanel></Button>
+                <Button Grid.Column="1" Margin="7,0,0,0" Padding="10,5" Click="OpenTerminalColorPickerClick" ToolTip="Choose any custom terminal color"><StackPanel Orientation="Horizontal"><Border x:Name="SessionAccentPreview" Width="13" Height="13" CornerRadius="4" BorderBrush="{DynamicResource Text}" BorderThickness="1" Margin="0,0,7,0"/><TextBlock x:Name="SessionAccentValueText" Text="Custom" FontSize="11"/></StackPanel></Button>
               </Grid>
-              <TextBlock Text="Command line" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
-              <TextBlock Text="Working directory" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
+              <TextBlock Text="Command line" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SessionCommandEdit" FontFamily="Cascadia Mono"/>
+              <TextBlock Text="Working directory" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="SessionDirectoryEdit"/><Button Grid.Column="1" Content="Browse" Margin="6,0,0,0" Click="BrowseDirectoryClick"/></Grid>
               <CheckBox x:Name="SessionAutoStartEdit" Content="Start with workspace" Style="{StaticResource ThemedCheckBox}" Margin="0,16,0,0"/>
               <CheckBox x:Name="SessionAgentNotificationsEdit" Content="Notify me when this terminal finishes or needs a response" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0"/>
               <CheckBox x:Name="SessionUseLocalTmuxEdit" Content="Keep this local terminal alive with tmux (WSL)" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseLocalTmuxEditClick" ToolTip="Runs the configured Windows terminal inside tmux through WSL interoperability, so it can survive a PowerShellPlus restart."/>
-              <TextBlock x:Name="SessionLocalTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
+              <TextBlock x:Name="SessionLocalTmuxStatusText" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
               <CheckBox x:Name="SessionUseTmuxEdit" Content="Keep SSH connections alive with remote tmux" Style="{StaticResource ThemedCheckBox}" Margin="0,10,0,0" Click="SessionUseTmuxEditClick" ToolTip="Creates tmux on the SSH host so the remote shell and agent can survive a disconnect."/>
-              <TextBlock x:Name="SessionTmuxStatusText" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
+              <TextBlock x:Name="SessionTmuxStatusText" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="24,5,0,0"/>
             </StackPanel>
             <StackPanel x:Name="WorkspaceSessionEditor" Visibility="Collapsed">
-              <TextBlock Text="Session name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/>
-              <TextBlock Text="Session color" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/>
+              <TextBlock Text="Session name" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="WorkspaceSessionNameEdit"/>
+              <TextBlock Text="Session color" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <ComboBox x:Name="WorkspaceSessionAccentEdit" SelectedValuePath="Value" SelectionChanged="WorkspaceSessionAccentSelectionChanged"><ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal"><Ellipse Width="11" Height="11" Fill="{Binding Brush}" Margin="0,0,8,0"/><TextBlock Text="{Binding Name}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate></ComboBox>
-                <Button Grid.Column="1" Margin="7,0,0,0" Padding="10,5" Click="OpenWorkspaceColorPickerClick" ToolTip="Choose any custom session color"><StackPanel Orientation="Horizontal"><Border x:Name="WorkspaceSessionAccentPreview" Width="13" Height="13" CornerRadius="4" BorderBrush="#CDD6F4" BorderThickness="1" Margin="0,0,7,0"/><TextBlock x:Name="WorkspaceSessionAccentValueText" Text="Custom" FontSize="11"/></StackPanel></Button>
+                <Button Grid.Column="1" Margin="7,0,0,0" Padding="10,5" Click="OpenWorkspaceColorPickerClick" ToolTip="Choose any custom session color"><StackPanel Orientation="Horizontal"><Border x:Name="WorkspaceSessionAccentPreview" Width="13" Height="13" CornerRadius="4" BorderBrush="{DynamicResource Text}" BorderThickness="1" Margin="0,0,7,0"/><TextBlock x:Name="WorkspaceSessionAccentValueText" Text="Custom" FontSize="11"/></StackPanel></Button>
               </Grid>
-              <TextBlock Text="A Session remembers its own terminals, selected terminal, layout, divider sizes, and color." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+              <TextBlock Text="A Session remembers its own terminals, selected terminal, layout, divider sizes, and color." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,12,0,0"/>
             </StackPanel>
             <StackPanel x:Name="SnippetEditor" Visibility="Collapsed">
-              <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/>
-              <TextBlock Text="Category" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/>
-              <TextBlock Text="PowerShell input" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCommandEdit" Height="150" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" VerticalScrollBarVisibility="Auto"/>
+              <TextBlock Text="Name" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/><TextBox x:Name="SnippetNameEdit"/>
+              <TextBlock Text="Category" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCategoryEdit"/>
+              <TextBlock Text="PowerShell input" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/><TextBox x:Name="SnippetCommandEdit" Height="150" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" VerticalScrollBarVisibility="Auto"/>
               <CheckBox x:Name="SnippetQuickAccessEdit" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0"><TextBlock Text="Show in terminal quick access" TextWrapping="Wrap"/></CheckBox>
             </StackPanel>
             <StackPanel x:Name="AutomationEditor" Visibility="Collapsed">
-              <TextBlock Text="Name" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+              <TextBlock Text="Name" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
               <TextBox x:Name="AutomationNameEdit"/>
-              <TextBlock Text="PowerShell input" Foreground="{StaticResource Muted}" Margin="0,15,0,5"/>
+              <TextBlock Text="PowerShell input" Foreground="{DynamicResource Muted}" Margin="0,15,0,5"/>
               <TextBox x:Name="AutomationCommandEdit" Height="90" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Cascadia Mono" VerticalScrollBarVisibility="Auto"/>
               <Grid Margin="0,15,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                <StackPanel><TextBlock Text="Target" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><ComboBox x:Name="AutomationTargetEdit" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
-                <StackPanel Grid.Column="2"><TextBlock Text="Schedule" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/><ComboBox x:Name="AutomationTypeEdit" SelectionChanged="AutomationTypeChanged"><ComboBoxItem Content="None · manual only"/><ComboBoxItem Content="Interval"/><ComboBoxItem Content="Daily"/><ComboBoxItem Content="One time"/></ComboBox></StackPanel>
+                <StackPanel><TextBlock Text="Target" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/><ComboBox x:Name="AutomationTargetEdit" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
+                <StackPanel Grid.Column="2"><TextBlock Text="Schedule" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/><ComboBox x:Name="AutomationTypeEdit" SelectionChanged="AutomationTypeChanged"><ComboBoxItem Content="None · manual only"/><ComboBoxItem Content="Interval"/><ComboBoxItem Content="Daily"/><ComboBoxItem Content="One time"/></ComboBox></StackPanel>
               </Grid>
               <StackPanel x:Name="AutomationIntervalPanel" Margin="0,15,0,0">
-                <TextBlock Text="Minutes between runs" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                <TextBlock Text="Minutes between runs" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                 <TextBox x:Name="AutomationValueEdit"/>
               </StackPanel>
               <StackPanel x:Name="AutomationExactPanel" Margin="0,15,0,0" Visibility="Collapsed">
                 <StackPanel x:Name="AutomationDatePanel" Margin="0,0,0,12">
-                  <TextBlock Text="Run date" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                  <TextBlock Text="Run date" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                   <DatePicker x:Name="AutomationDateEdit" SelectedDateFormat="Long" CalendarOpened="AutomationDateCalendarOpened"/>
                 </StackPanel>
-                <TextBlock x:Name="AutomationTimeLabel" Text="Run every day at" Foreground="{StaticResource Muted}" Margin="0,0,0,5"/>
+                <TextBlock x:Name="AutomationTimeLabel" Text="Run every day at" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
                 <StackPanel Orientation="Horizontal">
                   <ComboBox x:Name="AutomationHourEdit" Width="76"/>
                   <TextBlock Text=":" FontSize="18" Margin="7,4"/>
@@ -528,19 +572,19 @@
               <CheckBox x:Name="AutomationEnabledEdit" Content="Enabled" Style="{StaticResource ToggleSwitch}" Margin="0,16,0,0"/>
             </StackPanel>
           </Grid>
-          <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0"><Button Content="Cancel" Width="90" Margin="0,0,8,0" Click="CancelEditorClick"/><Button Content="Save" Width="90" Background="#45475A" Click="SaveEditorClick"/></StackPanel>
+          <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0"><Button Content="Cancel" Width="90" Margin="0,0,8,0" Click="CancelEditorClick"/><Button Content="Save" Width="90" Background="{DynamicResource BorderStrong}" Click="SaveEditorClick"/></StackPanel>
         </Grid>
       </Border>
-      <Grid x:Name="AccentColorPickerOverlay" Background="#B80B0B12" Visibility="Collapsed" Panel.ZIndex="8" MouseLeftButtonDown="AccentColorPickerBackdropMouseDown">
-        <Border x:Name="AccentColorPickerCard" Width="410" Background="#181825" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="12" Padding="18"
+      <Grid x:Name="AccentColorPickerOverlay" Background="{DynamicResource OverlayDeep}" Visibility="Collapsed" Panel.ZIndex="8" MouseLeftButtonDown="AccentColorPickerBackdropMouseDown">
+        <Border x:Name="AccentColorPickerCard" Width="410" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="12" Padding="18"
                 HorizontalAlignment="Center" VerticalAlignment="Center" MouseLeftButtonDown="AccentColorPickerCardMouseDown">
           <Grid>
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <Grid Margin="0,0,0,14"><StackPanel><TextBlock Text="Custom color" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="Pick a color or enter its hex value" Foreground="#A6ADC8" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button Content="&#x00D7;" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" Click="CancelAccentColorPickerClick"/></Grid>
+            <Grid Margin="0,0,0,14"><StackPanel><TextBlock Text="Custom color" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="Pick a color or enter its hex value" Foreground="{DynamicResource TextSecondary}" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button Content="&#x00D7;" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" Click="CancelAccentColorPickerClick"/></Grid>
             <Border x:Name="AccentColorField" Grid.Row="1" Height="190" CornerRadius="8" ClipToBounds="True" Cursor="Cross"
                     MouseLeftButtonDown="AccentColorFieldMouseDown" MouseMove="AccentColorFieldMouseMove" MouseLeftButtonUp="AccentColorFieldMouseUp">
               <Grid>
-                <Border x:Name="AccentColorHueBase" Background="#89B4FA"/>
+                <Border x:Name="AccentColorHueBase" Background="{DynamicResource Accent}"/>
                 <Border><Border.Background><LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="White" Offset="0"/><GradientStop Color="#00FFFFFF" Offset="1"/></LinearGradientBrush></Border.Background></Border>
                 <Border><Border.Background><LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1"><GradientStop Color="#00000000" Offset="0"/><GradientStop Color="Black" Offset="1"/></LinearGradientBrush></Border.Background></Border>
                 <Canvas IsHitTestVisible="False"><Ellipse x:Name="AccentColorFieldThumb" Width="14" Height="14" Stroke="White" StrokeThickness="2" Fill="#22000000"/></Canvas>
@@ -549,13 +593,13 @@
             <Grid x:Name="AccentHueBar" Grid.Row="2" Height="18" Margin="0,13,0,0" Cursor="Hand" ClipToBounds="False"
                   MouseLeftButtonDown="AccentHueBarMouseDown" MouseMove="AccentHueBarMouseMove" MouseLeftButtonUp="AccentHueBarMouseUp">
               <Border CornerRadius="6"><Border.Background><LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5"><GradientStop Color="#F38BA8" Offset="0"/><GradientStop Color="#F9E2AF" Offset="0.167"/><GradientStop Color="#A6E3A1" Offset="0.333"/><GradientStop Color="#94E2D5" Offset="0.5"/><GradientStop Color="#89B4FA" Offset="0.667"/><GradientStop Color="#CBA6F7" Offset="0.833"/><GradientStop Color="#F38BA8" Offset="1"/></LinearGradientBrush></Border.Background></Border>
-              <Canvas IsHitTestVisible="False"><Border x:Name="AccentHueThumb" Width="8" Height="24" Margin="0,-3,0,0" CornerRadius="4" Background="#CDD6F4" BorderBrush="#11111B" BorderThickness="1"/></Canvas>
+              <Canvas IsHitTestVisible="False"><Border x:Name="AccentHueThumb" Width="8" Height="24" Margin="0,-3,0,0" CornerRadius="4" Background="{DynamicResource Text}" BorderBrush="{DynamicResource Bg}" BorderThickness="1"/></Canvas>
             </Grid>
             <Grid Grid.Row="3" Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
-              <Border x:Name="AccentColorPreview" Width="48" Height="38" CornerRadius="8" BorderBrush="#585B70" BorderThickness="1"/>
-              <StackPanel Grid.Column="1" Margin="12,0,0,0"><TextBlock Text="HEX" Foreground="#6C7086" FontSize="9" FontWeight="Bold"/><TextBox x:Name="AccentColorHexEdit" FontFamily="Cascadia Mono" MaxLength="7" TextChanged="AccentColorHexTextChanged"/></StackPanel>
+              <Border x:Name="AccentColorPreview" Width="48" Height="38" CornerRadius="8" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/>
+              <StackPanel Grid.Column="1" Margin="12,0,0,0"><TextBlock Text="HEX" Foreground="{DynamicResource MutedStrong}" FontSize="9" FontWeight="Bold"/><TextBox x:Name="AccentColorHexEdit" FontFamily="Cascadia Mono" MaxLength="7" TextChanged="AccentColorHexTextChanged"/></StackPanel>
             </Grid>
-            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0"><Button Content="Cancel" Width="88" Margin="0,0,8,0" Click="CancelAccentColorPickerClick"/><Button Content="Use color" Width="96" Background="#45475A" Click="ApplyAccentColorPickerClick"/></StackPanel>
+            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0"><Button Content="Cancel" Width="88" Margin="0,0,8,0" Click="CancelAccentColorPickerClick"/><Button Content="Use color" Width="96" Background="{DynamicResource BorderStrong}" Click="ApplyAccentColorPickerClick"/></StackPanel>
           </Grid>
         </Border>
       </Grid>

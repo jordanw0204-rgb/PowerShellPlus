@@ -14,6 +14,20 @@ public static class WorkspaceStore
     public static string DirectoryPath => DirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PowerShellPlus");
     public static string FilePath => Path.Combine(DirectoryPath, "native-workspace.json");
 
+    internal static string LoadApplicationTheme()
+    {
+        try
+        {
+            if (!File.Exists(FilePath)) return AppThemeCatalog.DefaultThemeId;
+            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
+            if (!document.RootElement.TryGetProperty(nameof(WorkspaceState.Settings), out var settings)
+                || !settings.TryGetProperty(nameof(WorkspaceSettings.ApplicationTheme), out var theme))
+                return AppThemeCatalog.DefaultThemeId;
+            return AppThemeCatalog.Normalize(theme.GetString());
+        }
+        catch { return AppThemeCatalog.DefaultThemeId; }
+    }
+
     public static WorkspaceState Load(WindowsTerminalProfile terminalProfile)
     {
         try
@@ -26,6 +40,7 @@ public static class WorkspaceStore
                 var upgradedFromLegacy = loaded.Version <= 6;
                 loaded.Version = 8;
                 loaded.Settings ??= new WorkspaceSettings();
+                loaded.Settings.ApplicationTheme = AppThemeCatalog.Normalize(loaded.Settings.ApplicationTheme);
                 if (loaded.Settings.NotificationSound is not ("System" or "Custom" or "Silent"))
                     loaded.Settings.NotificationSound = "System";
                 if (string.IsNullOrWhiteSpace(loaded.Settings.CustomNotificationSoundPath))
@@ -222,6 +237,33 @@ public static class WorkspaceStore
         }
     }
 
+    internal static bool VerifyApplicationThemePersistenceForTest(WindowsTerminalProfile terminalProfile, string directory)
+    {
+        var originalDirectory = DirectoryOverride;
+        try
+        {
+            DirectoryOverride = directory;
+            Directory.CreateDirectory(directory);
+            var terminal = new SessionProfile { Name = "Theme persistence" };
+            var state = new WorkspaceState
+            {
+                Sessions = [terminal],
+                ActiveSessionId = terminal.Id,
+                TerminalSessions = [new TerminalSession { Name = "Session 1", TerminalIds = [terminal.Id], ActiveTerminalId = terminal.Id }],
+                Settings = new WorkspaceSettings { ApplicationTheme = AppThemeCatalog.BlackThemeId }
+            };
+            state.ActiveTerminalSessionId = state.TerminalSessions[0].Id;
+            Save(state);
+            return LoadApplicationTheme() == AppThemeCatalog.BlackThemeId
+                && Load(terminalProfile).Settings.ApplicationTheme == AppThemeCatalog.BlackThemeId;
+        }
+        finally
+        {
+            DirectoryOverride = originalDirectory;
+            try { Directory.Delete(directory, true); } catch { }
+        }
+    }
+
     public static void Save(WorkspaceState state)
     {
         var version = Interlocked.Increment(ref latestSaveVersion);
@@ -285,6 +327,7 @@ public static class WorkspaceStore
         })],
         Settings = new WorkspaceSettings
         {
+            ApplicationTheme = state.Settings.ApplicationTheme,
             FontFace = state.Settings.FontFace,
             FontSize = state.Settings.FontSize,
             CursorStyle = state.Settings.CursorStyle,

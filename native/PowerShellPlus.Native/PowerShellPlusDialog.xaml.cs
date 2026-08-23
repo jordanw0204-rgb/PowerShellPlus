@@ -41,24 +41,24 @@ public partial class PowerShellPlusDialog : Window
         CancelActionButton.Content = cancelText ?? string.Empty;
         CancelActionButton.Visibility = string.IsNullOrWhiteSpace(cancelText) ? Visibility.Collapsed : Visibility.Visible;
 
-        var (glyph, color) = kind switch
+        var (glyph, resourceKey) = kind switch
         {
-            PowerShellPlusDialogKind.Success => ("✓", "#A6E3A1"),
-            PowerShellPlusDialogKind.Warning => ("!", "#F9E2AF"),
-            PowerShellPlusDialogKind.Error => ("×", "#F38BA8"),
-            PowerShellPlusDialogKind.Question => ("?", "#89B4FA"),
-            _ => ("i", "#89DCEB")
+            PowerShellPlusDialogKind.Success => ("✓", "Success"),
+            PowerShellPlusDialogKind.Warning => ("!", "Warning"),
+            PowerShellPlusDialogKind.Error => ("×", "Danger"),
+            PowerShellPlusDialogKind.Question => ("?", "Accent"),
+            _ => ("i", "Teal")
         };
-        var brush = (Brush)new BrushConverter().ConvertFromString(color)!;
+        var brush = (Brush)Application.Current.FindResource(resourceKey);
         IconText.Text = glyph;
         IconText.Foreground = brush;
         IconBorder.BorderBrush = brush;
 
         if (primaryIsDangerous)
         {
-            PrimaryActionButton.Background = (Brush)new BrushConverter().ConvertFromString("#5A2D3E")!;
-            PrimaryActionButton.BorderBrush = (Brush)new BrushConverter().ConvertFromString("#A64A67")!;
-            PrimaryActionButton.Foreground = (Brush)new BrushConverter().ConvertFromString("#F38BA8")!;
+            PrimaryActionButton.Background = (Brush)Application.Current.FindResource("DangerSurface");
+            PrimaryActionButton.BorderBrush = (Brush)Application.Current.FindResource("Danger");
+            PrimaryActionButton.Foreground = (Brush)Application.Current.FindResource("Danger");
         }
 
         PrimaryActionButton.IsDefault = defaultToPrimary;

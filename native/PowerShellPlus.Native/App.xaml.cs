@@ -29,6 +29,7 @@ public partial class App : Application
             SshLaunchStore.DirectoryOverride = Path.Combine(WorkspaceStore.DirectoryPath, "session-recovery", "ssh-launches");
         }
         if (!automationMode) await WaitForRestartSourceAsync(e.Args);
+        AppThemeCatalog.Apply(WorkspaceStore.LoadApplicationTheme());
         if (!automationMode && !ClaimPrimaryInstance())
         {
             Shutdown(0);

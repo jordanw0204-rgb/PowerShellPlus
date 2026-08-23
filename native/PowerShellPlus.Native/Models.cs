@@ -115,6 +115,7 @@ public sealed class PaneLayoutSizing
 
 public sealed class WorkspaceSettings
 {
+    public string ApplicationTheme { get; set; } = AppThemeCatalog.DefaultThemeId;
     // Null/empty string and null int mean "inherit from the Windows Terminal profile".
     public string? FontFace { get; set; }
     public int? FontSize { get; set; }

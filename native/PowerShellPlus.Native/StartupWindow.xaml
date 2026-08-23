@@ -5,7 +5,7 @@
         Width="520" Height="310" WindowStartupLocation="CenterScreen"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
         Background="Transparent" ShowInTaskbar="True" Topmost="True">
-  <Border Background="#F211111B" BorderBrush="#585B70" BorderThickness="1" CornerRadius="14">
+  <Border Background="{DynamicResource OverlaySurface}" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1" CornerRadius="14">
     <Border.Effect>
       <DropShadowEffect BlurRadius="28" ShadowDepth="8" Opacity="0.55" Color="#05050A"/>
     </Border.Effect>
@@ -19,32 +19,32 @@
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
         <Grid Width="54" Height="54">
-          <Border x:Name="LogoGlow" Background="#202D5D87" CornerRadius="14"/>
-          <Border Margin="5" Background="#181825" BorderBrush="#89B4FA" BorderThickness="1" CornerRadius="10">
+          <Border x:Name="LogoGlow" Background="{DynamicResource AccentGlow}" CornerRadius="14"/>
+          <Border Margin="5" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="10">
             <Viewbox Margin="9">
               <Grid Width="24" Height="24">
-                <Path Data="M4,6 L10,12 L4,18 M12,18 H20" Stroke="#89B4FA" StrokeThickness="2.2"
+                <Path Data="M4,6 L10,12 L4,18 M12,18 H20" Stroke="{DynamicResource Accent}" StrokeThickness="2.2"
                       StrokeStartLineCap="Round" StrokeEndLineCap="Round" Fill="Transparent"/>
               </Grid>
             </Viewbox>
           </Border>
         </Grid>
         <StackPanel Grid.Column="1" Margin="16,3,0,0">
-          <TextBlock Text="PowerShellPlus" FontSize="22" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-          <TextBlock Text="Safe startup · updates before sessions" FontSize="11" Foreground="#89B4FA" Margin="0,4,0,0"/>
+          <TextBlock Text="PowerShellPlus" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+          <TextBlock Text="Safe startup · updates before sessions" FontSize="11" Foreground="{DynamicResource Accent}" Margin="0,4,0,0"/>
         </StackPanel>
       </Grid>
 
       <StackPanel Grid.Row="1" VerticalAlignment="Center" Margin="0,12,0,10">
-        <TextBlock x:Name="StageText" Text="Starting PowerShellPlus" FontSize="16" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-        <TextBlock x:Name="DetailText" Text="Preparing the application" FontSize="11" Foreground="#A6ADC8"
+        <TextBlock x:Name="StageText" Text="Starting PowerShellPlus" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+        <TextBlock x:Name="DetailText" Text="Preparing the application" FontSize="11" Foreground="{DynamicResource TextSecondary}"
                    TextTrimming="CharacterEllipsis" Margin="0,7,0,0"/>
       </StackPanel>
 
       <Grid Grid.Row="2">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <ProgressBar x:Name="StartupProgressBar" Height="5" Minimum="0" Maximum="1" Value="0"
-                     BorderThickness="0" Background="#313244" Foreground="#89B4FA">
+                     BorderThickness="0" Background="{DynamicResource Hover}" Foreground="{DynamicResource Accent}">
           <ProgressBar.Template>
             <ControlTemplate TargetType="ProgressBar">
               <Grid ClipToBounds="True">
@@ -59,8 +59,8 @@
         </ProgressBar>
         <Grid Grid.Row="1" Margin="0,10,0,0">
           <TextBlock Text="Sessions, SSH connections, and agent state are restored without recreating your work."
-                     FontSize="9" Foreground="#6C7086"/>
-          <TextBlock x:Name="ProgressText" Text="Initializing" HorizontalAlignment="Right" FontSize="9" Foreground="#A6ADC8"/>
+                     FontSize="9" Foreground="{DynamicResource MutedStrong}"/>
+          <TextBlock x:Name="ProgressText" Text="Initializing" HorizontalAlignment="Right" FontSize="9" Foreground="{DynamicResource TextSecondary}"/>
         </Grid>
       </Grid>
     </Grid>

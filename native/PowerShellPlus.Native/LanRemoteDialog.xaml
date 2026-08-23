@@ -4,14 +4,14 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Remote Access" Icon="Assets/PowerShellPlus.ico" Width="650" Height="900"
         MinWidth="580" MinHeight="720" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
-        WindowStyle="None" Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+        WindowStyle="None" Background="{DynamicResource Bg}" Foreground="{DynamicResource Text}">
   <shell:WindowChrome.WindowChrome>
     <shell:WindowChrome CaptionHeight="46" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/>
   </shell:WindowChrome.WindowChrome>
-  <Border BorderBrush="#585B70" BorderThickness="1" Background="{StaticResource Bg}">
+  <Border BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1" Background="{DynamicResource Bg}">
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition/></Grid.RowDefinitions>
-      <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1"
+      <Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1"
               MouseLeftButtonDown="TitleBarMouseDown">
         <Grid Margin="16,0,7,0">
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -19,7 +19,7 @@
             <TextBlock Text="Remote Access" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
           </StackPanel>
           <Button Content="&#x00D7;" Width="38" Height="34" Padding="0" HorizontalAlignment="Right"
-                  Background="Transparent" BorderThickness="0" Foreground="{StaticResource Muted}" FontSize="20"
+                  Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Muted}" FontSize="20"
                   shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="DoneClick" ToolTip="Close"/>
         </Grid>
       </Border>
@@ -27,10 +27,10 @@
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 
     <StackPanel>
-      <TextBlock x:Name="ModeEyebrowText" Text="LAN REMOTE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold"/>
+      <TextBlock x:Name="ModeEyebrowText" Text="LAN REMOTE" Foreground="{DynamicResource Accent}" FontSize="10" FontWeight="Bold"/>
       <TextBlock x:Name="ModeTitleText" Text="Your terminals, on this network" FontSize="24" FontWeight="SemiBold" Margin="0,5,0,0"/>
-      <TextBlock x:Name="ModeDescriptionText" Text="Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
-      <Border Margin="0,14,0,0" Padding="5" HorizontalAlignment="Left" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="8">
+      <TextBlock x:Name="ModeDescriptionText" Text="Open the recommended address on your phone and pair it once. Every current session is mirrored live without moving or restarting its PowerShell process." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" LineHeight="19" Margin="0,10,0,0"/>
+      <Border Margin="0,14,0,0" Padding="5" HorizontalAlignment="Left" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8">
         <StackPanel x:Name="ModeControls" Orientation="Horizontal">
           <Button x:Name="LanModeButton" Content="LAN" MinWidth="92" Click="LanModeClick"/>
           <Button x:Name="GlobalModeButton" Content="GLOBAL" MinWidth="108" Margin="6,0,0,0" Click="GlobalModeClick"/>
@@ -38,91 +38,91 @@
       </Border>
     </StackPanel>
 
-    <Border Grid.Row="1" Margin="0,20,0,0" Padding="16" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9">
+    <Border Grid.Row="1" Margin="0,20,0,0" Padding="16" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="9">
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="210"/></Grid.ColumnDefinitions>
         <StackPanel>
-          <TextBlock x:Name="AddressLabelText" Text="LAN ADDRESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+          <TextBlock x:Name="AddressLabelText" Text="LAN ADDRESS" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
           <ListBox x:Name="AddressList" Margin="-10,5,0,0" MaxHeight="142" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
             <ListBox.ItemTemplate>
               <DataTemplate>
                 <StackPanel Margin="0,3,8,5">
-                  <TextBlock Text="{Binding Heading}" FontSize="11" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-                  <TextBlock Text="{Binding Details}" FontFamily="Cascadia Mono,Consolas" FontSize="10" Foreground="#94E2D5" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Text="{Binding Heading}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+                  <TextBlock Text="{Binding Details}" FontFamily="Cascadia Mono,Consolas" FontSize="10" Foreground="{DynamicResource Teal}" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
-          <TextBlock x:Name="AddressHelpText" Text="Wi-Fi or Ethernet with an internet gateway is listed first. Virtual adapters work only for devices attached to those networks." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,10,0"/>
+          <TextBlock x:Name="AddressHelpText" Text="Wi-Fi or Ethernet with an internet gateway is listed first. Virtual adapters work only for devices attached to those networks." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,10,0"/>
         </StackPanel>
         <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-          <TextBlock Text="PAIRING CODE" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Right"/>
-          <TextBlock x:Name="PairingCodeText" FontFamily="Cascadia Mono,Consolas" FontSize="23" FontWeight="SemiBold" Foreground="#F9E2AF" HorizontalAlignment="Right" Margin="0,5,0,0"/>
+          <TextBlock Text="PAIRING CODE" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Right"/>
+          <TextBlock x:Name="PairingCodeText" FontFamily="Cascadia Mono,Consolas" FontSize="23" FontWeight="SemiBold" Foreground="{DynamicResource Warning}" HorizontalAlignment="Right" Margin="0,5,0,0"/>
         </StackPanel>
       </Grid>
     </Border>
 
     <Grid Grid.Row="2" Margin="0,11,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <TextBlock x:Name="ConnectionCountText" Text="0 devices connected" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+      <TextBlock x:Name="ConnectionCountText" Text="0 devices connected" Foreground="{DynamicResource Muted}" VerticalAlignment="Center"/>
       <Button x:Name="CopyAddressButton" Grid.Column="1" Content="Copy address" Margin="0,0,8,0" Click="CopyAddressClick"/>
       <Button x:Name="OpenBrowserButton" Grid.Column="2" Content="Open on this PC" Click="OpenBrowserClick"/>
     </Grid>
 
     <ScrollViewer Grid.Row="3" Margin="0,22,0,0" VerticalScrollBarVisibility="Auto">
       <StackPanel Margin="0,0,8,0">
-        <TextBlock Text="ACCESS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,9"/>
+        <TextBlock Text="ACCESS" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,9"/>
         <CheckBox x:Name="AllowInputToggle" Style="{StaticResource ToggleSwitch}" Content="Allow paired devices to type in terminals" Click="AllowInputChanged"/>
-        <TextBlock Text="Read-only is the default. When enabled, remote keystrokes go directly to the selected live ConPTY session, so they have the same PowerShell and Codex permissions as that session." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="49,7,0,0"/>
+        <TextBlock Text="Read-only is the default. When enabled, remote keystrokes go directly to the selected live ConPTY session, so they have the same PowerShell and Codex permissions as that session." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="49,7,0,0"/>
 
-        <TextBlock Text="DISCORD WEBHOOK" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
-        <Border Padding="14" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9">
+        <TextBlock Text="DISCORD WEBHOOK" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
+        <Border Padding="14" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="9">
           <StackPanel>
-            <TextBlock Text="Send Remote Access details to Discord" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-            <TextBlock Text="Paste an incoming webhook URL from a private Discord channel. PowerShellPlus encrypts it for this Windows user and never stores a bot token." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,5,0,10"/>
+            <TextBlock Text="Send Remote Access details to Discord" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+            <TextBlock Text="Paste an incoming webhook URL from a private Discord channel. PowerShellPlus encrypts it for this Windows user and never stores a bot token." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,5,0,10"/>
             <PasswordBox x:Name="DiscordWebhookUrlBox" Height="34" Padding="9,6" FontFamily="Cascadia Mono,Consolas" FontSize="10"
-                         Background="{StaticResource Surface}" Foreground="{StaticResource Text}" BorderBrush="{StaticResource Border}" BorderThickness="1"
+                         Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
                          ToolTip="https://discord.com/api/webhooks/…"/>
             <CheckBox x:Name="DiscordNotifyOnStartToggle" Style="{StaticResource ToggleSwitch}"
                       Content="Notify Discord whenever sharing starts" Margin="0,12,0,0"/>
             <CheckBox x:Name="DiscordIncludePairingCodeToggle" Style="{StaticResource ToggleSwitch}"
                       Content="Include the current pairing code" Margin="0,9,0,0"/>
-            <TextBlock Text="Leave pairing-code sharing off unless every person who can read that Discord channel is trusted with terminal access." Foreground="#F9E2AF" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="49,5,0,0"/>
+            <TextBlock Text="Leave pairing-code sharing off unless every person who can read that Discord channel is trusted with terminal access." Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="49,5,0,0"/>
             <StackPanel x:Name="DiscordButtonsPanel" Orientation="Horizontal" Margin="0,12,0,0">
               <Button Content="Save" Click="SaveDiscordClick"/>
               <Button Content="Send test" Margin="7,0,0,0" Click="TestDiscordClick"/>
               <Button x:Name="SendDiscordNowButton" Content="Send sharing details" Margin="7,0,0,0" Click="SendDiscordNowClick"/>
             </StackPanel>
-            <TextBlock x:Name="DiscordStatusText" Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,8,0,0"/>
+            <TextBlock x:Name="DiscordStatusText" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,8,0,0"/>
           </StackPanel>
         </Border>
 
-        <TextBlock Text="DISCORD BOT · TWO-WAY CONTROL" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
-        <Border x:Name="DiscordBotPanel" Padding="14" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="9">
+        <TextBlock Text="DISCORD BOT · TWO-WAY CONTROL" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
+        <Border x:Name="DiscordBotPanel" Padding="14" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="9">
           <StackPanel>
-            <TextBlock Text="Send and receive terminal messages in Discord" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-            <TextBlock Text="PowerShellPlus connects directly to Discord's secure Gateway from this PC—no public web server is opened. Access is restricted to one server, one channel, and the Discord user IDs you allow below. Keep the bot in a private channel." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,5,0,10"/>
+            <TextBlock Text="Send and receive terminal messages in Discord" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+            <TextBlock Text="PowerShellPlus connects directly to Discord's secure Gateway from this PC—no public web server is opened. Access is restricted to one server, one channel, and the Discord user IDs you allow below. Keep the bot in a private channel." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,5,0,10"/>
             <StackPanel x:Name="DiscordBotFieldsPanel">
-              <TextBlock Text="BOT TOKEN" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+              <TextBlock Text="BOT TOKEN" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
               <PasswordBox x:Name="DiscordBotTokenBox" Height="34" Padding="9,6" Margin="0,5,0,9" FontFamily="Cascadia Mono,Consolas" FontSize="10"
-                           Background="{StaticResource Surface}" Foreground="{StaticResource Text}" BorderBrush="{StaticResource Border}" BorderThickness="1"
+                           Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
                            ToolTip="Stored with Windows DPAPI for this Windows user"/>
               <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                 <StackPanel Margin="0,0,6,0">
-                  <TextBlock Text="APPLICATION ID" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+                  <TextBlock Text="APPLICATION ID" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
                   <TextBox x:Name="DiscordBotApplicationIdBox" Margin="0,5,0,0" FontFamily="Cascadia Mono,Consolas" FontSize="10"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="3,0">
-                  <TextBlock Text="SERVER ID" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+                  <TextBlock Text="SERVER ID" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
                   <TextBox x:Name="DiscordBotGuildIdBox" Margin="0,5,0,0" FontFamily="Cascadia Mono,Consolas" FontSize="10"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Margin="6,0,0,0">
-                  <TextBlock Text="CHANNEL ID" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold"/>
+                  <TextBlock Text="CHANNEL ID" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold"/>
                   <TextBox x:Name="DiscordBotChannelIdBox" Margin="0,5,0,0" FontFamily="Cascadia Mono,Consolas" FontSize="10"/>
                 </StackPanel>
               </Grid>
-              <TextBlock Text="ALLOWED DISCORD USER IDS" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,10,0,0"/>
+              <TextBlock Text="ALLOWED DISCORD USER IDS" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,10,0,0"/>
               <TextBox x:Name="DiscordBotAllowedUsersBox" Margin="0,5,0,0" FontFamily="Cascadia Mono,Consolas" FontSize="10"
                        ToolTip="Comma- or space-separated Discord user IDs"/>
               <CheckBox x:Name="DiscordBotMessagesToggle" Style="{StaticResource ToggleSwitch}"
@@ -131,7 +131,7 @@
                         Content="Mirror selected terminal output back to Discord" Margin="0,9,0,0"/>
               <CheckBox x:Name="DiscordBotPermissionToggle" Style="{StaticResource ToggleSwitch}"
                         Content="Allow the /permissions command" Margin="0,9,0,0"/>
-              <TextBlock Text="Leave remote permission changes disabled unless every allowed account is trusted. Codex still enforces the terminal's configured sandbox and approval boundaries." Foreground="#F9E2AF" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="49,5,0,0"/>
+              <TextBlock Text="Leave remote permission changes disabled unless every allowed account is trusted. Codex still enforces the terminal's configured sandbox and approval boundaries." Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="49,5,0,0"/>
               <CheckBox x:Name="DiscordBotReconnectToggle" Style="{StaticResource ToggleSwitch}"
                         Content="Reconnect this bot when PowerShellPlus starts" Margin="0,9,0,0"/>
             </StackPanel>
@@ -139,48 +139,48 @@
               <Button Content="Developer Portal" Click="OpenDiscordDeveloperPortalClick"/>
               <Button Content="Invite bot" Margin="7,0,0,0" Click="InviteDiscordBotClick"/>
               <Button Content="Save" Margin="7,0,0,0" Click="SaveDiscordBotClick"/>
-              <Button x:Name="DiscordBotConnectButton" Content="Connect" Margin="7,0,0,0" Background="{StaticResource Accent}" Foreground="#11111B" BorderBrush="{StaticResource Accent}" FontWeight="SemiBold" Click="ConnectDiscordBotClick"/>
-              <Button x:Name="DiscordBotDisconnectButton" Content="Disconnect" Margin="7,0,0,0" Foreground="#F38BA8" BorderBrush="#5A3947" Background="#2A202C" Click="DisconnectDiscordBotClick"/>
+              <Button x:Name="DiscordBotConnectButton" Content="Connect" Margin="7,0,0,0" Background="{DynamicResource Accent}" Foreground="{DynamicResource Bg}" BorderBrush="{DynamicResource Accent}" FontWeight="SemiBold" Click="ConnectDiscordBotClick"/>
+              <Button x:Name="DiscordBotDisconnectButton" Content="Disconnect" Margin="7,0,0,0" Foreground="{DynamicResource Danger}" BorderBrush="{DynamicResource DangerSurface}" Background="{DynamicResource DangerDeep}" Click="DisconnectDiscordBotClick"/>
             </WrapPanel>
-            <TextBlock x:Name="DiscordBotStatusText" Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,8,0,0"/>
-            <TextBlock Text="Setup: create a Bot in the Discord Developer Portal, enable Message Content Intent if ordinary messages are enabled, copy the IDs with Developer Mode, then invite and connect. Slash commands include /terminal, /send, /queue, /status, /model, /reasoning, /permissions, and /interrupt." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="0,7,0,0"/>
+            <TextBlock x:Name="DiscordBotStatusText" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,8,0,0"/>
+            <TextBlock Text="Setup: create a Bot in the Discord Developer Portal, enable Message Content Intent if ordinary messages are enabled, copy the IDs with Developer Mode, then invite and connect. Slash commands include /terminal, /send, /queue, /status, /model, /reasoning, /permissions, and /interrupt." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="9" LineHeight="14" Margin="0,7,0,0"/>
           </StackPanel>
         </Border>
 
-        <TextBlock Text="SAVED PAIRED DEVICES" Foreground="{StaticResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
-        <TextBlock x:Name="PairedDevicesEmptyText" Text="No devices are saved yet. Pair a browser once and it will appear here." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,8"/>
-        <ListBox x:Name="PairedDeviceList" MaxHeight="190" HorizontalContentAlignment="Stretch" Background="{StaticResource Surface2}" BorderBrush="{StaticResource Border}" BorderThickness="1" ScrollViewer.VerticalScrollBarVisibility="Auto">
+        <TextBlock Text="SAVED PAIRED DEVICES" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,24,0,8"/>
+        <TextBlock x:Name="PairedDevicesEmptyText" Text="No devices are saved yet. Pair a browser once and it will appear here." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,3,0,8"/>
+        <ListBox x:Name="PairedDeviceList" MaxHeight="190" HorizontalContentAlignment="Stretch" Background="{DynamicResource Surface2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" ScrollViewer.VerticalScrollBarVisibility="Auto">
           <ListBox.ItemTemplate>
             <DataTemplate>
               <Grid Margin="8,7">
                 <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
-                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="#CDD6F4"/>
-                  <TextBlock Text="{Binding Details}" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource Text}"/>
+                  <TextBlock Text="{Binding Details}" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
-                <Button Grid.Column="1" Content="Remove" Tag="{Binding Id}" Foreground="#F38BA8" BorderBrush="#5A3947" Background="#2A202C" Margin="12,0,0,0" Padding="10,4" Click="RemovePairedDeviceClick"/>
+                <Button Grid.Column="1" Content="Remove" Tag="{Binding Id}" Foreground="{DynamicResource Danger}" BorderBrush="{DynamicResource DangerSurface}" Background="{DynamicResource DangerDeep}" Margin="12,0,0,0" Padding="10,4" Click="RemovePairedDeviceClick"/>
               </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
-        <TextBlock Text="Pairing is saved in that browser for up to one year. Removing a device here immediately invalidates its saved credential." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,0,0"/>
+        <TextBlock Text="Pairing is saved in that browser for up to one year. Removing a device here immediately invalidates its saved credential." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="10" LineHeight="15" Margin="0,7,0,0"/>
 
-        <Border Margin="0,22,0,0" Padding="14" Background="#2A202C" BorderBrush="#5A3947" BorderThickness="1" CornerRadius="8">
+        <Border Margin="0,22,0,0" Padding="14" Background="{DynamicResource DangerDeep}" BorderBrush="{DynamicResource DangerSurface}" BorderThickness="1" CornerRadius="8">
           <StackPanel>
-            <TextBlock x:Name="SecurityTitleText" Text="Trusted private network only" Foreground="#F9E2AF" FontWeight="SemiBold"/>
+            <TextBlock x:Name="SecurityTitleText" Text="Trusted private network only" Foreground="{DynamicResource Warning}" FontWeight="SemiBold"/>
             <TextBlock x:Name="SecurityBodyText" Text="LAN mode uses local HTTP. Use it only on trusted Private Wi-Fi/Ethernet and never forward its port through your router." Foreground="#C9A9B6" TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0"/>
           </StackPanel>
         </Border>
 
-        <TextBlock x:Name="ModeHelpText" Text="Switch to Global for browser-only access away from home. Direct router port-forwarding remains blocked." Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
+        <TextBlock x:Name="ModeHelpText" Text="Switch to Global for browser-only access away from home. Direct router port-forwarding remains blocked." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" LineHeight="18" Margin="0,18,0,0"/>
         <Button x:Name="TailscaleSetupButton" Content="Install / open Tailscale on this PC" HorizontalAlignment="Left" Margin="0,10,0,0" Click="TailscaleSetupClick"/>
       </StackPanel>
     </ScrollViewer>
 
     <Grid Grid.Row="4" Margin="0,20,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <Button x:Name="StopSharingButton" Content="Stop sharing" Foreground="#F38BA8" BorderBrush="#5A3947" Background="#2A202C" HorizontalAlignment="Left" Click="StopSharingClick"/>
-      <Button x:Name="StartSharingButton" Grid.Column="1" Content="Start Sharing" MinWidth="112" Margin="0,0,8,0" Background="{StaticResource Accent}" Foreground="#11111B" BorderBrush="{StaticResource Accent}" FontWeight="SemiBold" Click="StartSharingClick"/>
+      <Button x:Name="StopSharingButton" Content="Stop sharing" Foreground="{DynamicResource Danger}" BorderBrush="{DynamicResource DangerSurface}" Background="{DynamicResource DangerDeep}" HorizontalAlignment="Left" Click="StopSharingClick"/>
+      <Button x:Name="StartSharingButton" Grid.Column="1" Content="Start Sharing" MinWidth="112" Margin="0,0,8,0" Background="{DynamicResource Accent}" Foreground="{DynamicResource Bg}" BorderBrush="{DynamicResource Accent}" FontWeight="SemiBold" Click="StartSharingClick"/>
       <Button Grid.Column="2" Content="Done" MinWidth="88" Click="DoneClick"/>
     </Grid>
   </Grid>
