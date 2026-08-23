@@ -835,7 +835,8 @@ public partial class TerminalPane : UserControl
             await Task.Delay(500);
             var marker = SshLaunchStore.Load(Profile.Id);
             switch (EvaluateRecoveredSshStartup(
-                        Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc))
+                        Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc,
+                        IsPersistedSshShellAlive(marker)))
             {
                 case RecoveredSshStartupState.Ready:
                     return;
@@ -860,13 +861,45 @@ public partial class TerminalPane : UserControl
     }
 
     private static RecoveredSshStartupState EvaluateRecoveredSshStartup(
-        long remoteDirectoryMarkerTicks, SshLaunchMarker? marker, DateTime startedUtc)
+        long remoteDirectoryMarkerTicks, SshLaunchMarker? marker, DateTime startedUtc,
+        bool persistedShellAlive = false)
     {
         if (remoteDirectoryMarkerTicks >= startedUtc.AddSeconds(-2).Ticks)
             return RecoveredSshStartupState.Ready;
         if (marker?.RecoveryAttempt == true && marker.StartedUtc >= startedUtc.AddSeconds(-2) && marker.IsFailedRecovery)
             return RecoveredSshStartupState.Failed;
+        // A local tmux session can preserve the original PowerShell -> ssh
+        // process tree across an app restart. Reattaching that outer tmux does
+        // not start a new remote shell, so no fresh OSC directory marker is
+        // emitted. Treat the older persistent wrapper as the handshake only
+        // after its exact process has been verified alive; a current recovery
+        // attempt must still produce a marker or an explicit failure.
+        if (persistedShellAlive && marker is
+            {
+                RecoveryAttempt: false,
+                PersistentSessionRequested: true,
+                IsActive: true
+            } && marker.StartedUtc < startedUtc.AddSeconds(-2))
+            return RecoveredSshStartupState.Ready;
         return RecoveredSshStartupState.Waiting;
+    }
+
+    private static bool IsPersistedSshShellAlive(SshLaunchMarker? marker)
+    {
+        if (marker is not
+            {
+                ShellProcessId: > 0,
+                RecoveryAttempt: false,
+                PersistentSessionRequested: true,
+                IsActive: true
+            }) return false;
+        try
+        {
+            using var process = Process.GetProcessById(marker.ShellProcessId.Value);
+            if (process.HasExited || process.ProcessName is not ("powershell" or "pwsh")) return false;
+            return (process.StartTime.ToUniversalTime() - marker.StartedUtc).Duration() < TimeSpan.FromMinutes(2);
+        }
+        catch { return false; }
     }
 
     private void SetStartupRetryingState(string message)
@@ -944,9 +977,18 @@ public partial class TerminalPane : UserControl
             EndedUtc = startedUtc.AddSeconds(1),
             ExitCode = 255
         };
+        var persisted = new SshLaunchMarker
+        {
+            PaneId = "persisted-fixture",
+            StartedUtc = startedUtc.AddMinutes(-5),
+            ConnectionArguments = ["ubuntu@example.com"],
+            PersistentSessionRequested = true
+        };
         return EvaluateRecoveredSshStartup(0, active, startedUtc) == RecoveredSshStartupState.Waiting
             && EvaluateRecoveredSshStartup(0, failed, startedUtc) == RecoveredSshStartupState.Failed
-            && EvaluateRecoveredSshStartup(startedUtc.AddSeconds(1).Ticks, active, startedUtc) == RecoveredSshStartupState.Ready;
+            && EvaluateRecoveredSshStartup(startedUtc.AddSeconds(1).Ticks, active, startedUtc) == RecoveredSshStartupState.Ready
+            && EvaluateRecoveredSshStartup(0, persisted, startedUtc) == RecoveredSshStartupState.Waiting
+            && EvaluateRecoveredSshStartup(0, persisted, startedUtc, true) == RecoveredSshStartupState.Ready;
     }
 
     private void ApplyAccent()
