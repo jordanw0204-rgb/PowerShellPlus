@@ -18,7 +18,16 @@ namespace PowerShellPlus.Native;
 public partial class MainWindow : Window
 {
     private enum EditorMode { Terminal, WorkspaceSession, Snippet, Automation }
-    private enum AccentColorPickerTarget { Terminal, WorkspaceSession }
+    private enum AccentColorPickerTarget
+    {
+        Terminal,
+        WorkspaceSession,
+        ThemeBackground,
+        ThemeSurface,
+        ThemeAccent,
+        ThemeText,
+        ThemeGradientEnd
+    }
     private const string TrayOpenLabel = "Open PowerShellPlus";
     private const string TrayQuitLabel = "Quit PowerShellPlus";
     private const string TrayRestartLabel = "Restart PowerShellPlus";
@@ -95,6 +104,8 @@ public partial class MainWindow : Window
     private bool accentHexSync;
     private bool accentFieldDragging;
     private bool accentHueDragging;
+    private CustomAppThemeState? customThemeDraft;
+    private string? editingCustomThemeId;
 
     public MainWindow(bool automationMode = false, Action<StartupProgress>? startupProgress = null)
     {
@@ -1665,8 +1676,13 @@ public partial class MainWindow : Window
     private void OpenAccentColorPicker(AccentColorPickerTarget target, string colorValue)
     {
         accentColorPickerTarget = target;
-        var color = (Color)ColorConverter.ConvertFromString(WorkspaceAccentPalette.Normalize(colorValue,
-            target == AccentColorPickerTarget.Terminal ? WorkspaceAccentPalette.DefaultTerminal : WorkspaceAccentPalette.DefaultSession))!;
+        var fallback = target switch
+        {
+            AccentColorPickerTarget.Terminal => WorkspaceAccentPalette.DefaultTerminal,
+            AccentColorPickerTarget.WorkspaceSession => WorkspaceAccentPalette.DefaultSession,
+            _ => "#89B4FA"
+        };
+        var color = (Color)ColorConverter.ConvertFromString(AppThemeCatalog.NormalizeColor(colorValue, fallback))!;
         (accentPickerHue, accentPickerSaturation, accentPickerValue) = RgbToHsv(color);
         AccentColorPickerOverlay.Visibility = Visibility.Visible;
         Dispatcher.BeginInvoke(() => UpdateAccentColorPickerVisuals(true), DispatcherPriority.Loaded);
@@ -1686,8 +1702,12 @@ public partial class MainWindow : Window
     private void ApplyAccentColorPickerClick(object sender, RoutedEventArgs e)
     {
         var value = ColorToHex(HsvToColor(accentPickerHue, accentPickerSaturation, accentPickerValue));
-        if (accentColorPickerTarget == AccentColorPickerTarget.Terminal) SetTerminalEditorAccent(value);
-        else SetWorkspaceEditorAccent(value);
+        switch (accentColorPickerTarget)
+        {
+            case AccentColorPickerTarget.Terminal: SetTerminalEditorAccent(value); break;
+            case AccentColorPickerTarget.WorkspaceSession: SetWorkspaceEditorAccent(value); break;
+            default: SetCustomThemeColor(accentColorPickerTarget, value); break;
+        }
         CloseAccentColorPicker();
         e.Handled = true;
     }
@@ -2578,6 +2598,19 @@ public partial class MainWindow : Window
             await Settle();
             Render(root, $"ui-theme-{theme.Id}.png");
         }
+        SettingsThemeList.SelectedItem = AppThemeCatalog.BuiltInThemes.First(theme => theme.IsGradient);
+        NewCustomThemeClick(this, new RoutedEventArgs());
+        if (customThemeDraft is not null)
+        {
+            customThemeDraft.Name = "Northern lights";
+            customThemeDraft.UseGradient = true;
+            customThemeDraft.GradientDirection = "Horizontal";
+            CustomThemeNameEdit.Text = customThemeDraft.Name;
+            UpdateCustomThemeEditorVisuals();
+        }
+        await Settle();
+        Render(root, "ui-custom-theme-editor.png");
+        CancelCustomThemeClick(this, new RoutedEventArgs());
         SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(snapshotTheme);
         ShowSection(SessionsPanel);
         await Settle();
@@ -3720,6 +3753,26 @@ public partial class MainWindow : Window
             var themeSelectionPersists = WorkspaceStore.CreateSnapshot(state).Settings.ApplicationTheme == previewTheme.Id;
             var themeStartupPersistenceWorks = WorkspaceStore.VerifyApplicationThemePersistenceForTest(terminalProfile,
                 Path.Combine(Path.GetDirectoryName(reportPath)!, "theme-persistence"));
+            var gradientTheme = AppThemeCatalog.BuiltInThemes.First(theme => theme.IsGradient);
+            SettingsThemeList.SelectedItem = gradientTheme;
+            await Dispatcher.Yield(DispatcherPriority.Render);
+            var gradientThemeReady = state.Settings.ApplicationTheme == gradientTheme.Id
+                && FindResource("AppBackdrop") is LinearGradientBrush
+                && gradientTheme.PreviewBackground is LinearGradientBrush;
+            NewCustomThemeClick(this, new RoutedEventArgs());
+            if (customThemeDraft is not null)
+            {
+                customThemeDraft.UseGradient = true;
+                customThemeDraft.GradientDirection = "Horizontal";
+                UpdateCustomThemeEditorVisuals();
+            }
+            root.UpdateLayout();
+            var customThemeEditorReady = CustomThemeEditorPanel.Visibility == Visibility.Visible
+                && ThemeGradientOptions.Visibility == Visibility.Visible
+                && ThemeEditorPreview.Background is LinearGradientBrush
+                && ThemeBackgroundHex.Text.StartsWith('#')
+                && ThemeGradientEndHex.Text.StartsWith('#');
+            CancelCustomThemeClick(this, new RoutedEventArgs());
             SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(originalTheme);
             await Dispatcher.Yield(DispatcherPriority.Render);
             var themeRestored = state.Settings.ApplicationTheme == AppThemeCatalog.Normalize(originalTheme);
@@ -4614,7 +4667,7 @@ public partial class MainWindow : Window
                 && inactiveTerminalsStartEagerly && startupFailureOffersRetry && startupManualRetryWorks
                 && tmuxScrollbackBridgeContract && localTmuxScrollbarRoutingContract && persistentTmuxScrollChannelContract && trayLifecycleContract
                 && terminalScrollbarHasRealRange && terminalScrollbarMovesNativeViewport && terminalScrollbarRebindsReplacement && terminalScrollbarSurvivesRestart && recoverySurfaceOwnershipStable
-                && settingsScrollbarThemed && updateUiContractReady && themeCatalogContract && themePickerReady && liveThemeSwitchWorks && themeSelectionPersists && themeStartupPersistenceWorks && themeRestored
+                && settingsScrollbarThemed && updateUiContractReady && themeCatalogContract && themePickerReady && liveThemeSwitchWorks && themeSelectionPersists && themeStartupPersistenceWorks && gradientThemeReady && customThemeEditorReady && themeRestored
                 && startupLoadingScreenReady && layoutControlsInSidebar && layoutHoverPreviewsReady && layoutPreviewGeometryWorks && layoutTransitionContractReady
                 && sidebarCollapses && sidebarExpands && sidebarStatePersists && sidebarCardsUseSingleFrame && sidebarCardHoverStylesReady && sidebarCardSelectionVisible && workspaceCardMenuReliable && terminalCardMenuReliable
                 && terminalSurfaceHooked && terminalInputRouterPrecedesConPty && terminalTabQueuesInsideConPty && remoteImagePasteIndicatorReady && remoteImageShortcutInterceptReady && remoteImagePasteModesWork && remoteSshPasteConsumesAllClipboardKinds && threadMessagePasteInterceptsBeforeConPty && remoteImagePasteIndicatorStatesWork
@@ -4654,7 +4707,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nAgentNotificationsUseExactTransitions={agentNotificationsUseExactTransitions}\nNotificationSettingsPersist={notificationSettingsPersist}\nPerTerminalNotificationsPersist={perTerminalNotificationsPersist}\nCustomNotificationToastReady={customNotificationToastReady}\nNewTerminalPersistenceDefaults={newTerminalPersistenceDefaults}\nTmuxControlKeysReachConPty={tmuxControlKeysReachConPty}\nTmuxOwnsCursorSequences={tmuxOwnsCursorSequences}");
             File.AppendAllText(reportPath, $"\nSettingsScrollbarThemed={settingsScrollbarThemed}\nTabsLayout={tabs}\nTerminalTabsShowAgentAndName={terminalTabsShowAgentAndName}\nTerminalTabAgentStateMirrorsPane={terminalTabAgentStateMirrorsPane}\nTerminalTabHoverPreviews={terminalTabHoverPreviews}\nTerminalTabHoverRestores={terminalTabHoverRestores}\nTerminalReorderSynchronizes={terminalReorderSynchronizes}\nTerminalMovesAcrossSessions={terminalMovesAcrossSessions}\nTmuxBadgeTracksManagedState={tmuxBadgeTracksManagedState}\nTerminalDragInteractionReady={terminalDragInteractionReady}\nAccentColorsApply={accentColorsApply}\nAgentIdleStateVisible={agentIdleStateVisible}\nPlainPowerShellHeaderVisible={plainPowerShellHeaderVisible}\nAgentActivityClassificationExact={agentActivityClassificationExact}");
             File.AppendAllText(reportPath, $"\nUpdateUiContractReady={updateUiContractReady}");
-            File.AppendAllText(reportPath, $"\nThemeCatalogContract={themeCatalogContract}\nThemePickerReady={themePickerReady}\nLiveThemeSwitchWorks={liveThemeSwitchWorks}\nThemeSelectionPersists={themeSelectionPersists}\nThemeStartupPersistenceWorks={themeStartupPersistenceWorks}\nThemeRestored={themeRestored}");
+            File.AppendAllText(reportPath, $"\nThemeCatalogContract={themeCatalogContract}\nThemePickerReady={themePickerReady}\nLiveThemeSwitchWorks={liveThemeSwitchWorks}\nThemeSelectionPersists={themeSelectionPersists}\nThemeStartupPersistenceWorks={themeStartupPersistenceWorks}\nGradientThemeReady={gradientThemeReady}\nCustomThemeEditorReady={customThemeEditorReady}\nThemeRestored={themeRestored}");
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nInactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nStartupFailureOffersRetry={startupFailureOffersRetry}\nStartupManualRetryWorks={startupManualRetryWorks}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
@@ -5542,12 +5595,227 @@ public partial class MainWindow : Window
     private void SettingsSectionClick(object sender, RoutedEventArgs e) => ShowSection(SettingsPanel);
 
     private bool settingsUiReady;
+    private void RefreshThemeList(string? selectedId = null)
+    {
+        var ready = settingsUiReady;
+        settingsUiReady = false;
+        SettingsThemeList.ItemsSource = null;
+        SettingsThemeList.ItemsSource = AppThemeCatalog.Themes;
+        SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(selectedId ?? state.Settings.ApplicationTheme);
+        settingsUiReady = ready;
+        UpdateCustomThemeButtons();
+    }
+
+    private void UpdateCustomThemeButtons()
+    {
+        var theme = SettingsThemeList.SelectedItem as AppThemeDefinition;
+        EditCustomThemeButton.IsEnabled = theme is not null;
+        DeleteCustomThemeButton.IsEnabled = theme?.IsCustom == true;
+    }
+
+    private void NewCustomThemeClick(object sender, RoutedEventArgs e)
+    {
+        var basis = SettingsThemeList.SelectedItem as AppThemeDefinition ?? AppThemeCatalog.Resolve(state.Settings.ApplicationTheme);
+        editingCustomThemeId = null;
+        customThemeDraft = new CustomAppThemeState
+        {
+            Name = "My theme",
+            Background = basis.Background,
+            Surface = basis.Surface,
+            Accent = basis.Accent,
+            Text = basis.Text,
+            UseGradient = basis.IsGradient,
+            GradientEnd = basis.GradientEnd ?? AppThemeCatalog.NormalizeColor(basis.Raised, "#242438"),
+            GradientDirection = basis.GradientDirection
+        };
+        ShowCustomThemeEditor("Create custom theme");
+    }
+
+    private void EditCustomThemeClick(object sender, RoutedEventArgs e)
+    {
+        if (SettingsThemeList.SelectedItem is not AppThemeDefinition selected) return;
+        var saved = state.Settings.CustomThemes.FirstOrDefault(value => string.Equals(value.Id, selected.Id, StringComparison.OrdinalIgnoreCase));
+        editingCustomThemeId = saved?.Id;
+        customThemeDraft = saved?.Copy() ?? new CustomAppThemeState
+        {
+            Name = $"{selected.Name} Custom",
+            Background = selected.Background,
+            Surface = selected.Surface,
+            Accent = selected.Accent,
+            Text = selected.Text,
+            UseGradient = selected.IsGradient,
+            GradientEnd = selected.GradientEnd ?? selected.Raised,
+            GradientDirection = selected.GradientDirection
+        };
+        ShowCustomThemeEditor(saved is null ? $"Customize {selected.Name}" : "Edit custom theme");
+    }
+
+    private void ShowCustomThemeEditor(string title)
+    {
+        if (customThemeDraft is null) return;
+        CustomThemeEditorTitle.Text = title;
+        CustomThemeNameEdit.Text = customThemeDraft.Name;
+        CustomThemeValidationText.Visibility = Visibility.Collapsed;
+        CustomThemeEditorPanel.Visibility = Visibility.Visible;
+        UpdateCustomThemeEditorVisuals();
+        CustomThemeEditorPanel.BringIntoView();
+        Dispatcher.BeginInvoke(() => CustomThemeNameEdit.Focus(), DispatcherPriority.Loaded);
+    }
+
+    private void CancelCustomThemeClick(object sender, RoutedEventArgs e)
+    {
+        customThemeDraft = null;
+        editingCustomThemeId = null;
+        CustomThemeEditorPanel.Visibility = Visibility.Collapsed;
+    }
+
+    private void SaveCustomThemeClick(object sender, RoutedEventArgs e)
+    {
+        if (customThemeDraft is null) return;
+        var name = CustomThemeNameEdit.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            CustomThemeValidationText.Text = "Give this theme a name before saving it.";
+            CustomThemeValidationText.Visibility = Visibility.Visible;
+            CustomThemeNameEdit.Focus();
+            return;
+        }
+
+        customThemeDraft.Name = name;
+        var saved = AppThemeCatalog.NormalizeCustomTheme(customThemeDraft);
+        var existingIndex = state.Settings.CustomThemes.FindIndex(value =>
+            string.Equals(value.Id, editingCustomThemeId ?? saved.Id, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
+        {
+            saved.Id = state.Settings.CustomThemes[existingIndex].Id;
+            state.Settings.CustomThemes[existingIndex] = saved;
+        }
+        else state.Settings.CustomThemes.Add(saved);
+
+        AppThemeCatalog.ConfigureCustomThemes(state.Settings.CustomThemes);
+        state.Settings.ApplicationTheme = saved.Id;
+        customThemeDraft = null;
+        editingCustomThemeId = null;
+        CustomThemeEditorPanel.Visibility = Visibility.Collapsed;
+        RefreshThemeList(saved.Id);
+        ApplySelectedApplicationTheme(AppThemeCatalog.Resolve(saved.Id));
+        UpdateStatus($"{saved.Name} custom theme saved and applied");
+    }
+
+    private void DeleteCustomThemeClick(object sender, RoutedEventArgs e)
+    {
+        if (SettingsThemeList.SelectedItem is not AppThemeDefinition { IsCustom: true } selected) return;
+        if (!PowerShellPlusDialog.Confirm(this,
+                $"Delete the custom theme {selected.Name}? This cannot be undone.",
+                "Delete custom theme", PowerShellPlusDialogKind.Warning,
+                "Delete", "Cancel", defaultToPrimary: false, primaryIsDangerous: true)) return;
+        state.Settings.CustomThemes.RemoveAll(value => string.Equals(value.Id, selected.Id, StringComparison.OrdinalIgnoreCase));
+        var wasActive = string.Equals(state.Settings.ApplicationTheme, selected.Id, StringComparison.OrdinalIgnoreCase);
+        if (wasActive) state.Settings.ApplicationTheme = AppThemeCatalog.DefaultThemeId;
+        AppThemeCatalog.ConfigureCustomThemes(state.Settings.CustomThemes);
+        RefreshThemeList(state.Settings.ApplicationTheme);
+        if (wasActive) ApplySelectedApplicationTheme(AppThemeCatalog.Resolve(state.Settings.ApplicationTheme));
+        ScheduleSave();
+        UpdateStatus($"{selected.Name} theme deleted");
+    }
+
+    private void OpenThemeBackgroundColorClick(object sender, RoutedEventArgs e) => OpenCustomThemeColorPicker(AccentColorPickerTarget.ThemeBackground);
+    private void OpenThemeSurfaceColorClick(object sender, RoutedEventArgs e) => OpenCustomThemeColorPicker(AccentColorPickerTarget.ThemeSurface);
+    private void OpenThemeAccentColorClick(object sender, RoutedEventArgs e) => OpenCustomThemeColorPicker(AccentColorPickerTarget.ThemeAccent);
+    private void OpenThemeTextColorClick(object sender, RoutedEventArgs e) => OpenCustomThemeColorPicker(AccentColorPickerTarget.ThemeText);
+    private void OpenThemeGradientEndColorClick(object sender, RoutedEventArgs e) => OpenCustomThemeColorPicker(AccentColorPickerTarget.ThemeGradientEnd);
+
+    private void OpenCustomThemeColorPicker(AccentColorPickerTarget target)
+    {
+        if (customThemeDraft is null) return;
+        var value = target switch
+        {
+            AccentColorPickerTarget.ThemeBackground => customThemeDraft.Background,
+            AccentColorPickerTarget.ThemeSurface => customThemeDraft.Surface,
+            AccentColorPickerTarget.ThemeText => customThemeDraft.Text,
+            AccentColorPickerTarget.ThemeGradientEnd => customThemeDraft.GradientEnd,
+            _ => customThemeDraft.Accent
+        };
+        OpenAccentColorPicker(target, value);
+    }
+
+    private void SetCustomThemeColor(AccentColorPickerTarget target, string value)
+    {
+        if (customThemeDraft is null) return;
+        switch (target)
+        {
+            case AccentColorPickerTarget.ThemeBackground: customThemeDraft.Background = value; break;
+            case AccentColorPickerTarget.ThemeSurface: customThemeDraft.Surface = value; break;
+            case AccentColorPickerTarget.ThemeText: customThemeDraft.Text = value; break;
+            case AccentColorPickerTarget.ThemeGradientEnd: customThemeDraft.GradientEnd = value; break;
+            default: customThemeDraft.Accent = value; break;
+        }
+        UpdateCustomThemeEditorVisuals();
+    }
+
+    private void ThemeGradientChanged(object sender, RoutedEventArgs e)
+    {
+        if (customThemeDraft is null) return;
+        customThemeDraft.UseGradient = ThemeGradientEnabled.IsChecked == true;
+        UpdateCustomThemeEditorVisuals();
+    }
+
+    private void ThemeGradientDirectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (customThemeDraft is null || ThemeGradientDirection.SelectedItem is not ComboBoxItem item) return;
+        customThemeDraft.GradientDirection = AppThemeCatalog.NormalizeDirection(item.Content?.ToString());
+        UpdateCustomThemeEditorPreview();
+    }
+
+    private void UpdateCustomThemeEditorVisuals()
+    {
+        if (customThemeDraft is null) return;
+        ThemeBackgroundSwatch.Background = AppThemeCatalog.Brush(customThemeDraft.Background);
+        ThemeSurfaceSwatch.Background = AppThemeCatalog.Brush(customThemeDraft.Surface);
+        ThemeAccentSwatch.Background = AppThemeCatalog.Brush(customThemeDraft.Accent);
+        ThemeTextSwatch.Background = AppThemeCatalog.Brush(customThemeDraft.Text);
+        ThemeGradientEndSwatch.Background = AppThemeCatalog.Brush(customThemeDraft.GradientEnd);
+        ThemeBackgroundHex.Text = customThemeDraft.Background;
+        ThemeSurfaceHex.Text = customThemeDraft.Surface;
+        ThemeAccentHex.Text = customThemeDraft.Accent;
+        ThemeTextHex.Text = customThemeDraft.Text;
+        ThemeGradientEndHex.Text = customThemeDraft.GradientEnd;
+        ThemeGradientEnabled.IsChecked = customThemeDraft.UseGradient;
+        ThemeGradientOptions.Visibility = customThemeDraft.UseGradient ? Visibility.Visible : Visibility.Collapsed;
+        ThemeGradientDirection.SelectedIndex = customThemeDraft.GradientDirection switch
+        {
+            "Horizontal" => 1,
+            "Vertical" => 2,
+            "Reverse diagonal" => 3,
+            _ => 0
+        };
+        UpdateCustomThemeEditorPreview();
+    }
+
+    private void UpdateCustomThemeEditorPreview()
+    {
+        if (customThemeDraft is null) return;
+        ThemeEditorPreview.Background = AppThemeCatalog.ThemeBrush(customThemeDraft.Background,
+            customThemeDraft.UseGradient ? customThemeDraft.GradientEnd : null, customThemeDraft.GradientDirection);
+        ThemeEditorPreviewSurface.Background = AppThemeCatalog.Brush(customThemeDraft.Surface);
+        ThemeEditorPreviewAccent.Background = AppThemeCatalog.Brush(customThemeDraft.Accent);
+        ThemeEditorPreviewText.Foreground = AppThemeCatalog.Brush(customThemeDraft.Text);
+    }
+
+    private void ApplySelectedApplicationTheme(AppThemeDefinition theme)
+    {
+        AppThemeCatalog.Apply(theme);
+        var appearance = EffectiveAppearance();
+        foreach (var pane in panes.Values) pane.ApplyAppearance(appearance);
+        InvalidateVisual();
+        ScheduleSave();
+    }
+
     private void PopulateSettingsUi()
     {
         settingsUiReady = false;
         var settings = state.Settings;
-        SettingsThemeList.ItemsSource = AppThemeCatalog.Themes;
-        SettingsThemeList.SelectedItem = AppThemeCatalog.Resolve(settings.ApplicationTheme);
+        RefreshThemeList(settings.ApplicationTheme);
         SettingsFontFace.Text = settings.FontFace ?? string.Empty;
         SettingsFontSize.ItemsSource = new[] { "Windows Terminal default" }.Concat(Enumerable.Range(8, 25).Select(size => size.ToString(CultureInfo.InvariantCulture))).ToList();
         SettingsFontSize.SelectedIndex = settings.FontSize is int size && size >= 8 && size <= 32 ? size - 7 : 0;
@@ -5587,14 +5855,11 @@ public partial class MainWindow : Window
 
     private void SettingsThemeChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateCustomThemeButtons();
         if (!settingsUiReady || SettingsThemeList.SelectedItem is not AppThemeDefinition theme) return;
         if (string.Equals(state.Settings.ApplicationTheme, theme.Id, StringComparison.OrdinalIgnoreCase)) return;
         state.Settings.ApplicationTheme = theme.Id;
-        AppThemeCatalog.Apply(theme.Id);
-        var appearance = EffectiveAppearance();
-        foreach (var pane in panes.Values) pane.ApplyAppearance(appearance);
-        InvalidateVisual();
-        ScheduleSave();
+        ApplySelectedApplicationTheme(theme);
         UpdateStatus($"{theme.Name} theme applied");
     }
 

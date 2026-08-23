@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="PowerShellPlus Native" Icon="Assets/PowerShellPlus.ico" Width="1500" Height="920" MinWidth="980" MinHeight="640"
-        WindowStyle="None" ResizeMode="CanResize" Background="{DynamicResource Bg}" PreviewKeyDown="WindowPreviewKeyDown">
+        WindowStyle="None" ResizeMode="CanResize" Background="{DynamicResource AppBackdrop}" PreviewKeyDown="WindowPreviewKeyDown">
   <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="44" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0"/></shell:WindowChrome.WindowChrome>
   <Window.Resources>
     <Style x:Key="AccentCardListItem" TargetType="ListBoxItem">
@@ -274,13 +274,64 @@
                           </Grid>
                         </Border>
                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                          <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"/>
+                          <DockPanel LastChildFill="True"><TextBlock Text="{Binding Kind}" DockPanel.Dock="Right" Foreground="{DynamicResource Accent}" FontSize="8" FontWeight="Bold" Margin="6,1,0,0"/><TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/></DockPanel>
                           <TextBlock Text="{Binding Description}" Foreground="{DynamicResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,3,0,0"/>
                         </StackPanel>
                       </Grid>
                     </DataTemplate>
                   </ListBox.ItemTemplate>
                 </ListBox>
+
+                <Grid Margin="0,1,0,8">
+                  <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <Button Content="New custom theme" Click="NewCustomThemeClick" HorizontalAlignment="Stretch"/>
+                  <Button x:Name="EditCustomThemeButton" Grid.Column="1" Content="Edit" Margin="6,0,0,0" Click="EditCustomThemeClick"/>
+                  <Button x:Name="DeleteCustomThemeButton" Grid.Column="2" Content="Delete" Margin="6,0,0,0" Foreground="{DynamicResource Danger}" Click="DeleteCustomThemeClick" IsEnabled="False"/>
+                </Grid>
+
+                <Border x:Name="CustomThemeEditorPanel" Visibility="Collapsed" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="0,0,0,12">
+                  <StackPanel>
+                    <DockPanel LastChildFill="True" Margin="0,0,0,10">
+                      <Button Content="&#x00D7;" DockPanel.Dock="Right" Width="27" Height="27" Padding="0" Click="CancelCustomThemeClick"/>
+                      <StackPanel><TextBlock x:Name="CustomThemeEditorTitle" Text="Create custom theme" FontSize="14" FontWeight="SemiBold"/><TextBlock Text="Choose your palette and optional gradient" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,2,0,0"/></StackPanel>
+                    </DockPanel>
+                    <TextBlock Text="Theme name" Foreground="{DynamicResource Muted}" FontSize="9" Margin="0,0,0,4"/>
+                    <TextBox x:Name="CustomThemeNameEdit" MaxLength="40"/>
+                    <TextBlock Text="COLORS" Foreground="{DynamicResource Muted}" FontSize="8" FontWeight="Bold" Margin="0,12,0,6"/>
+                    <UniformGrid Columns="2" Rows="2">
+                      <Button x:Name="ThemeBackgroundColorButton" Margin="0,0,4,4" Click="OpenThemeBackgroundColorClick" ToolTip="Background color">
+                        <StackPanel Orientation="Horizontal"><Border x:Name="ThemeBackgroundSwatch" Width="16" Height="16" CornerRadius="4" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/><StackPanel Margin="6,0,0,0"><TextBlock Text="Background" FontSize="8" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="ThemeBackgroundHex" FontFamily="Cascadia Mono" FontSize="9"/></StackPanel></StackPanel>
+                      </Button>
+                      <Button x:Name="ThemeSurfaceColorButton" Margin="4,0,0,4" Click="OpenThemeSurfaceColorClick" ToolTip="Surface color">
+                        <StackPanel Orientation="Horizontal"><Border x:Name="ThemeSurfaceSwatch" Width="16" Height="16" CornerRadius="4" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/><StackPanel Margin="6,0,0,0"><TextBlock Text="Surface" FontSize="8" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="ThemeSurfaceHex" FontFamily="Cascadia Mono" FontSize="9"/></StackPanel></StackPanel>
+                      </Button>
+                      <Button x:Name="ThemeAccentColorButton" Margin="0,4,4,0" Click="OpenThemeAccentColorClick" ToolTip="Accent color">
+                        <StackPanel Orientation="Horizontal"><Border x:Name="ThemeAccentSwatch" Width="16" Height="16" CornerRadius="4" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/><StackPanel Margin="6,0,0,0"><TextBlock Text="Accent" FontSize="8" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="ThemeAccentHex" FontFamily="Cascadia Mono" FontSize="9"/></StackPanel></StackPanel>
+                      </Button>
+                      <Button x:Name="ThemeTextColorButton" Margin="4,4,0,0" Click="OpenThemeTextColorClick" ToolTip="Text color">
+                        <StackPanel Orientation="Horizontal"><Border x:Name="ThemeTextSwatch" Width="16" Height="16" CornerRadius="4" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/><StackPanel Margin="6,0,0,0"><TextBlock Text="Text" FontSize="8" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="ThemeTextHex" FontFamily="Cascadia Mono" FontSize="9"/></StackPanel></StackPanel>
+                      </Button>
+                    </UniformGrid>
+                    <CheckBox x:Name="ThemeGradientEnabled" Content="Use a gradient background" Style="{StaticResource ToggleSwitch}" Margin="0,12,0,0" Click="ThemeGradientChanged"/>
+                    <Grid x:Name="ThemeGradientOptions" Visibility="Collapsed" Margin="0,8,0,0">
+                      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="8"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                      <Button x:Name="ThemeGradientEndColorButton" Click="OpenThemeGradientEndColorClick" ToolTip="Gradient end color">
+                        <StackPanel Orientation="Horizontal"><Border x:Name="ThemeGradientEndSwatch" Width="16" Height="16" CornerRadius="4" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1"/><StackPanel Margin="6,0,0,0"><TextBlock Text="Gradient end" FontSize="8" Foreground="{DynamicResource Muted}"/><TextBlock x:Name="ThemeGradientEndHex" FontFamily="Cascadia Mono" FontSize="9"/></StackPanel></StackPanel>
+                      </Button>
+                      <ComboBox x:Name="ThemeGradientDirection" Grid.Column="2" SelectionChanged="ThemeGradientDirectionChanged" ToolTip="Gradient direction">
+                        <ComboBoxItem Content="Diagonal"/><ComboBoxItem Content="Horizontal"/><ComboBoxItem Content="Vertical"/><ComboBoxItem Content="Reverse diagonal"/>
+                      </ComboBox>
+                    </Grid>
+                    <TextBlock Text="LIVE PREVIEW" Foreground="{DynamicResource Muted}" FontSize="8" FontWeight="Bold" Margin="0,12,0,5"/>
+                    <Border x:Name="ThemeEditorPreview" Height="62" CornerRadius="8" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1" Padding="9">
+                      <Border x:Name="ThemeEditorPreviewSurface" CornerRadius="6" Padding="8" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                        <StackPanel><Border x:Name="ThemeEditorPreviewAccent" Width="42" Height="4" CornerRadius="2" HorizontalAlignment="Left"/><TextBlock x:Name="ThemeEditorPreviewText" Text="PowerShellPlus  ›  custom theme" FontFamily="Cascadia Mono" FontSize="10" Margin="0,8,0,0"/></StackPanel>
+                      </Border>
+                    </Border>
+                    <TextBlock x:Name="CustomThemeValidationText" Foreground="{DynamicResource Danger}" FontSize="9" TextWrapping="Wrap" Margin="0,7,0,0" Visibility="Collapsed"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0"><Button Content="Cancel" MinWidth="72" Margin="0,0,7,0" Click="CancelCustomThemeClick"/><Button Content="Save theme" MinWidth="88" Background="{DynamicResource BorderStrong}" Click="SaveCustomThemeClick"/></StackPanel>
+                  </StackPanel>
+                </Border>
 
                 <TextBlock Text="TERMINAL APPEARANCE" Foreground="{DynamicResource Muted}" FontSize="9" FontWeight="Bold" Margin="0,4,0,8"/>
                 <TextBlock Text="Font family" Foreground="{DynamicResource Muted}" Margin="0,0,0,5"/>
@@ -470,7 +521,7 @@
               </ListBox.ItemTemplate>
             </ListBox>
           </Border>
-          <Grid x:Name="TerminalHost" Grid.Row="1" Background="{DynamicResource Bg}" AllowDrop="True"
+          <Grid x:Name="TerminalHost" Grid.Row="1" Background="{DynamicResource AppBackdrop}" AllowDrop="True"
                 DragOver="TerminalLayoutDragOver" DragLeave="TerminalLayoutDragLeave" Drop="TerminalLayoutDrop"/>
           <!-- Inactive Session/Tab panes are briefly mounted here during cold
                start so EasyTerminalControl receives a real Loaded/native HWND

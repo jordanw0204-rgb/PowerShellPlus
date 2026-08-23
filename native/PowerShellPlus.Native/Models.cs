@@ -116,6 +116,7 @@ public sealed class PaneLayoutSizing
 public sealed class WorkspaceSettings
 {
     public string ApplicationTheme { get; set; } = AppThemeCatalog.DefaultThemeId;
+    public List<CustomAppThemeState> CustomThemes { get; set; } = [];
     // Null/empty string and null int mean "inherit from the Windows Terminal profile".
     public string? FontFace { get; set; }
     public int? FontSize { get; set; }
@@ -135,6 +136,32 @@ public sealed class WorkspaceSettings
     public string NotificationSound { get; set; } = "System";
     public string? CustomNotificationSoundPath { get; set; }
     public bool ShowTmuxToggleWarning { get; set; } = true;
+}
+
+public sealed class CustomAppThemeState
+{
+    public string Id { get; set; } = $"custom-{Guid.NewGuid():N}";
+    public string Name { get; set; } = "My theme";
+    public string Background { get; set; } = "#11111B";
+    public string Surface { get; set; } = "#1E1E2E";
+    public string Accent { get; set; } = "#89B4FA";
+    public string Text { get; set; } = "#CDD6F4";
+    public bool UseGradient { get; set; }
+    public string GradientEnd { get; set; } = "#242438";
+    public string GradientDirection { get; set; } = "Diagonal";
+
+    public CustomAppThemeState Copy() => new()
+    {
+        Id = Id,
+        Name = Name,
+        Background = Background,
+        Surface = Surface,
+        Accent = Accent,
+        Text = Text,
+        UseGradient = UseGradient,
+        GradientEnd = GradientEnd,
+        GradientDirection = GradientDirection
+    };
 }
 
 public sealed class SessionProfile : INotifyPropertyChanged

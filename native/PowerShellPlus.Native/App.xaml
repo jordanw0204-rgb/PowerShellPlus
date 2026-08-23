@@ -10,6 +10,7 @@
     <Color x:Key="MutedColor">#7F849C</Color>
     <Color x:Key="AccentColor">#89B4FA</Color>
     <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}"/>
+    <SolidColorBrush x:Key="AppBackdrop" Color="{StaticResource BgColor}"/>
     <SolidColorBrush x:Key="Surface" Color="{StaticResource SurfaceColor}"/>
     <SolidColorBrush x:Key="Surface2" Color="{StaticResource Surface2Color}"/>
     <SolidColorBrush x:Key="Border" Color="{StaticResource BorderColor}"/>

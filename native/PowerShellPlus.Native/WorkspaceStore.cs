@@ -18,14 +18,29 @@ public static class WorkspaceStore
     {
         try
         {
-            if (!File.Exists(FilePath)) return AppThemeCatalog.DefaultThemeId;
+            if (!File.Exists(FilePath))
+            {
+                AppThemeCatalog.ConfigureCustomThemes([]);
+                return AppThemeCatalog.DefaultThemeId;
+            }
             using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
             if (!document.RootElement.TryGetProperty(nameof(WorkspaceState.Settings), out var settings)
                 || !settings.TryGetProperty(nameof(WorkspaceSettings.ApplicationTheme), out var theme))
+            {
+                AppThemeCatalog.ConfigureCustomThemes([]);
                 return AppThemeCatalog.DefaultThemeId;
+            }
+            var customThemes = settings.TryGetProperty(nameof(WorkspaceSettings.CustomThemes), out var customThemeElement)
+                ? JsonSerializer.Deserialize<List<CustomAppThemeState>>(customThemeElement.GetRawText(), JsonOptions) ?? []
+                : [];
+            AppThemeCatalog.ConfigureCustomThemes(customThemes);
             return AppThemeCatalog.Normalize(theme.GetString());
         }
-        catch { return AppThemeCatalog.DefaultThemeId; }
+        catch
+        {
+            AppThemeCatalog.ConfigureCustomThemes([]);
+            return AppThemeCatalog.DefaultThemeId;
+        }
     }
 
     public static WorkspaceState Load(WindowsTerminalProfile terminalProfile)
@@ -40,6 +55,14 @@ public static class WorkspaceStore
                 var upgradedFromLegacy = loaded.Version <= 6;
                 loaded.Version = 8;
                 loaded.Settings ??= new WorkspaceSettings();
+                loaded.Settings.CustomThemes ??= [];
+                loaded.Settings.CustomThemes = loaded.Settings.CustomThemes
+                    .Select(AppThemeCatalog.NormalizeCustomTheme)
+                    .GroupBy(value => value.Id, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .Take(32)
+                    .ToList();
+                AppThemeCatalog.ConfigureCustomThemes(loaded.Settings.CustomThemes);
                 loaded.Settings.ApplicationTheme = AppThemeCatalog.Normalize(loaded.Settings.ApplicationTheme);
                 if (loaded.Settings.NotificationSound is not ("System" or "Custom" or "Silent"))
                     loaded.Settings.NotificationSound = "System";
@@ -110,6 +133,7 @@ public static class WorkspaceStore
         }
         catch { }
 
+        AppThemeCatalog.ConfigureCustomThemes([]);
         var state = new WorkspaceState();
         // Keep the first-run bootstrap terminal independent of optional WSL/tmux.
         // User-created terminals still default all persistence choices on in the
@@ -240,6 +264,7 @@ public static class WorkspaceStore
     internal static bool VerifyApplicationThemePersistenceForTest(WindowsTerminalProfile terminalProfile, string directory)
     {
         var originalDirectory = DirectoryOverride;
+        var originalCustomThemes = AppThemeCatalog.CustomThemeStates;
         try
         {
             DirectoryOverride = directory;
@@ -250,16 +275,33 @@ public static class WorkspaceStore
                 Sessions = [terminal],
                 ActiveSessionId = terminal.Id,
                 TerminalSessions = [new TerminalSession { Name = "Session 1", TerminalIds = [terminal.Id], ActiveTerminalId = terminal.Id }],
-                Settings = new WorkspaceSettings { ApplicationTheme = AppThemeCatalog.BlackThemeId }
+                Settings = new WorkspaceSettings
+                {
+                    ApplicationTheme = "custom-persistence",
+                    CustomThemes =
+                    [
+                        new CustomAppThemeState
+                        {
+                            Id = "custom-persistence", Name = "Persistence", Background = "#010203", Surface = "#111820",
+                            Accent = "#22CCAA", Text = "#F0F2F4", UseGradient = true, GradientEnd = "#241040",
+                            GradientDirection = "Horizontal"
+                        }
+                    ]
+                }
             };
             state.ActiveTerminalSessionId = state.TerminalSessions[0].Id;
             Save(state);
-            return LoadApplicationTheme() == AppThemeCatalog.BlackThemeId
-                && Load(terminalProfile).Settings.ApplicationTheme == AppThemeCatalog.BlackThemeId;
+            var startupTheme = LoadApplicationTheme();
+            var restored = Load(terminalProfile).Settings;
+            return startupTheme == "custom-persistence"
+                && restored.ApplicationTheme == "custom-persistence"
+                && restored.CustomThemes is [{ UseGradient: true, GradientDirection: "Horizontal" }]
+                && AppThemeCatalog.Resolve(startupTheme).IsCustom;
         }
         finally
         {
             DirectoryOverride = originalDirectory;
+            AppThemeCatalog.ConfigureCustomThemes(originalCustomThemes);
             try { Directory.Delete(directory, true); } catch { }
         }
     }
@@ -328,6 +370,7 @@ public static class WorkspaceStore
         Settings = new WorkspaceSettings
         {
             ApplicationTheme = state.Settings.ApplicationTheme,
+            CustomThemes = [.. state.Settings.CustomThemes.Select(value => value.Copy())],
             FontFace = state.Settings.FontFace,
             FontSize = state.Settings.FontSize,
             CursorStyle = state.Settings.CursorStyle,
