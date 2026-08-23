@@ -423,6 +423,7 @@ public partial class TerminalPane : UserControl
     private readonly System.Windows.Threading.DispatcherTimer tmuxScrollbarRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(900) };
     private readonly System.Windows.Threading.DispatcherTimer tmuxScrollbarApplyTimer = new() { Interval = TimeSpan.FromMilliseconds(24) };
     private RemoteTmuxScrollbackState tmuxScrollbackState;
+    private bool tmuxScrollbackUsesRemote;
     private RemoteTmuxScrollbackClient? tmuxScrollbackClient;
     private bool tmuxScrollbarProbeInFlight;
     private bool tmuxScrollbarProbeRequested;
@@ -3215,6 +3216,10 @@ public partial class TerminalPane : UserControl
     private static bool ShouldUseLocalTmuxScrollback(SessionProfile profile, bool verified)
         => profile.UseLocalTmux && verified;
 
+    internal static (bool RemoteFirst, bool LocalFallback) ResolveTmuxScrollbarRouting(
+        SessionProfile profile, bool localVerified, SessionRecoveryEntry? recovery)
+        => (ShouldUseRemoteTmuxScrollback(recovery), ShouldUseLocalTmuxScrollback(profile, localVerified));
+
     private bool UsesRemoteTmuxScrollback => ShouldUseRemoteTmuxScrollback(startupRecovery);
     private bool UsesLocalTmuxScrollback => ShouldUseLocalTmuxScrollback(Profile, localTmuxVerified);
     private bool UsesTmuxScrollback => UsesRemoteTmuxScrollback || UsesLocalTmuxScrollback;
@@ -3229,11 +3234,13 @@ public partial class TerminalPane : UserControl
             SshWasActive = true,
             RemoteTmuxManaged = true
         };
+        var nested = ResolveTmuxScrollbarRouting(local, true, remote);
         return ShouldUseLocalTmuxScrollback(local, true)
             && !ShouldUseLocalTmuxScrollback(local, false)
             && !ShouldUseLocalTmuxScrollback(ordinary, true)
             && ShouldUseRemoteTmuxScrollback(remote)
-            && !ShouldUseRemoteTmuxScrollback(null);
+            && !ShouldUseRemoteTmuxScrollback(null)
+            && nested is { RemoteFirst: true, LocalFallback: true };
     }
 
     private void QueueTmuxScrollbarRefresh(bool immediate = false)
@@ -3325,18 +3332,37 @@ public partial class TerminalPane : UserControl
 
     private async Task<RemoteTmuxScrollbackState> ProbeTmuxScrollbackAsync()
     {
-        if (UsesLocalTmuxScrollback)
-            return await RemoteTmuxScrollback.ProbeLocalAsync(Profile.Id, Profile.LocalTmuxDistribution);
-        if (startupRecovery is null) return default;
-        var client = GetOrCreateTmuxScrollbackClient();
-        return client is null
-            ? await RemoteTmuxScrollback.ProbeAsync(startupRecovery)
-            : await client.ProbeAsync();
+        // A persistent SSH terminal can be nested inside the optional local WSL
+        // tmux wrapper. In that case the outer tmux only sees a full-screen SSH
+        // client and usually reports zero history; the scrollback the user can
+        // actually see belongs to the remote tmux. Probe the inner/remote owner
+        // first, then fall back to the local wrapper if the SSH probe is
+        // temporarily unavailable.
+        var route = ResolveTmuxScrollbarRouting(Profile, localTmuxVerified, startupRecovery);
+        if (route.RemoteFirst && startupRecovery is not null)
+        {
+            var client = GetOrCreateTmuxScrollbackClient();
+            var remote = client is null
+                ? await RemoteTmuxScrollback.ProbeAsync(startupRecovery)
+                : await client.ProbeAsync();
+            if (remote.Succeeded)
+            {
+                tmuxScrollbackUsesRemote = true;
+                return remote;
+            }
+        }
+        if (route.LocalFallback)
+        {
+            var local = await RemoteTmuxScrollback.ProbeLocalAsync(Profile.Id, Profile.LocalTmuxDistribution);
+            if (local.Succeeded) tmuxScrollbackUsesRemote = false;
+            return local;
+        }
+        return default;
     }
 
     private async Task<RemoteTmuxScrollbackState> ScrollAndProbeTmuxAsync(int scrollPosition)
     {
-        if (UsesLocalTmuxScrollback)
+        if (!tmuxScrollbackUsesRemote && UsesLocalTmuxScrollback)
             return await RemoteTmuxScrollback.ScrollAndProbeLocalAsync(Profile.Id, Profile.LocalTmuxDistribution, scrollPosition);
         if (startupRecovery is null) return default;
         var client = GetOrCreateTmuxScrollbackClient();
