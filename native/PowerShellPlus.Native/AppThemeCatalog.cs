@@ -197,8 +197,10 @@ internal static class AppThemeCatalog
     }
 
     internal static TerminalTheme CreateTerminalTheme(TerminalTheme source, string? id)
+        => CreateTerminalTheme(source, Resolve(id));
+
+    internal static TerminalTheme CreateTerminalTheme(TerminalTheme source, AppThemeDefinition theme)
     {
-        var theme = Resolve(id);
         return new TerminalTheme
         {
             DefaultBackground = EasyTerminalControl.ColorToVal(Parse(theme.TerminalBackground)),

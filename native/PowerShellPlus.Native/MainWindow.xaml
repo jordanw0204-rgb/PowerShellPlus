@@ -322,12 +322,6 @@
                         <ComboBoxItem Content="Diagonal"/><ComboBoxItem Content="Horizontal"/><ComboBoxItem Content="Vertical"/><ComboBoxItem Content="Reverse diagonal"/>
                       </ComboBox>
                     </Grid>
-                    <TextBlock Text="LIVE PREVIEW" Foreground="{DynamicResource Muted}" FontSize="8" FontWeight="Bold" Margin="0,12,0,5"/>
-                    <Border x:Name="ThemeEditorPreview" Height="62" CornerRadius="8" BorderBrush="{DynamicResource BorderEmphasis}" BorderThickness="1" Padding="9">
-                      <Border x:Name="ThemeEditorPreviewSurface" CornerRadius="6" Padding="8" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
-                        <StackPanel><Border x:Name="ThemeEditorPreviewAccent" Width="42" Height="4" CornerRadius="2" HorizontalAlignment="Left"/><TextBlock x:Name="ThemeEditorPreviewText" Text="PowerShellPlus  ›  custom theme" FontFamily="Cascadia Mono" FontSize="10" Margin="0,8,0,0"/></StackPanel>
-                      </Border>
-                    </Border>
                     <TextBlock x:Name="CustomThemeValidationText" Foreground="{DynamicResource Danger}" FontSize="9" TextWrapping="Wrap" Margin="0,7,0,0" Visibility="Collapsed"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0"><Button Content="Cancel" MinWidth="72" Margin="0,0,7,0" Click="CancelCustomThemeClick"/><Button Content="Save theme" MinWidth="88" Background="{DynamicResource BorderStrong}" Click="SaveCustomThemeClick"/></StackPanel>
                   </StackPanel>
@@ -626,7 +620,8 @@
           <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,22,0,0"><Button Content="Cancel" Width="90" Margin="0,0,8,0" Click="CancelEditorClick"/><Button Content="Save" Width="90" Background="{DynamicResource BorderStrong}" Click="SaveEditorClick"/></StackPanel>
         </Grid>
       </Border>
-      <Grid x:Name="AccentColorPickerOverlay" Background="{DynamicResource OverlayDeep}" Visibility="Collapsed" Panel.ZIndex="8" MouseLeftButtonDown="AccentColorPickerBackdropMouseDown">
+    </Grid>
+      <Grid x:Name="AccentColorPickerOverlay" Grid.RowSpan="3" Background="{DynamicResource OverlayDeep}" Visibility="Collapsed" Panel.ZIndex="40" MouseLeftButtonDown="AccentColorPickerBackdropMouseDown">
         <Border x:Name="AccentColorPickerCard" Width="410" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="12" Padding="18"
                 HorizontalAlignment="Center" VerticalAlignment="Center" MouseLeftButtonDown="AccentColorPickerCardMouseDown">
           <Grid>
@@ -654,6 +649,5 @@
           </Grid>
         </Border>
       </Grid>
-    </Grid>
   </Grid>
 </Window>
