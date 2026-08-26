@@ -37,6 +37,7 @@ public partial class MainWindow : Window
         bool StartupSettled, bool StartupSucceeded, bool LocalTmuxVerified);
     private sealed record RecoveryPaneCapture(string SessionId, string WorkingDirectory, string Output, int? RootProcessId,
         bool StartupSettled, bool StartupSucceeded, bool LocalTmuxVerified);
+    private sealed record PendingAgentNotification(AgentKind Kind, AgentActivityState State, long Token, DateTime DueUtc);
     private const double WorkspaceSidebarWidth = 278;
     private readonly WindowsTerminalProfile terminalProfile;
     private readonly WorkspaceState state;
@@ -49,6 +50,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer workspaceSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer terminalTabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer terminalDragSessionHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer agentNotificationTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(200) };
+    private readonly Dictionary<string, PendingAgentNotification> pendingAgentNotifications = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> lastAgentNotificationTokens = new(StringComparer.Ordinal);
     private readonly bool automationMode;
     private readonly SessionRecoverySnapshot loadedRecovery;
     private System.Windows.Forms.NotifyIcon? trayIcon;
@@ -133,6 +137,7 @@ public partial class MainWindow : Window
         workspaceSessionHoverTimer.Tick += WorkspaceSessionHoverTimerTick;
         terminalTabHoverTimer.Tick += TerminalTabHoverTimerTick;
         terminalDragSessionHoverTimer.Tick += TerminalDragSessionHoverTimerTick;
+        agentNotificationTimer.Tick += AgentNotificationTimerTick;
         SnippetList.ItemsSource = state.Snippets;
         AutomationList.ItemsSource = state.Automations;
         InitializeAutomationTimeUi();
@@ -321,6 +326,8 @@ public partial class MainWindow : Window
         workspaceSessionHoverTimer.Stop();
         terminalTabHoverTimer.Stop();
         terminalDragSessionHoverTimer.Stop();
+        agentNotificationTimer.Stop();
+        pendingAgentNotifications.Clear();
         saveTimer.Stop();
         windowsTerminalDragMonitor?.Dispose();
         windowsTerminalDragMonitor = null;
@@ -389,15 +396,54 @@ public partial class MainWindow : Window
 
     private void PaneAgentActivityChanged(TerminalPane pane, AgentKind kind, AgentActivityState previous, AgentActivityState current)
     {
+        pendingAgentNotifications.Remove(pane.Profile.Id);
         if (!state.Settings.AgentNotificationsEnabled || !pane.Profile.AgentNotificationsEnabled
-            || !ShouldNotifyAgentTransition(kind, previous, current)) return;
-        ShowAgentNotification(pane.Profile, kind, current);
+            || !ShouldNotifyAgentTransition(kind, previous, current, pane.AgentCompletionConfirmedForNotification))
+        {
+            if (pendingAgentNotifications.Count == 0) agentNotificationTimer.Stop();
+            return;
+        }
+        pendingAgentNotifications[pane.Profile.Id] = new PendingAgentNotification(kind, current,
+            pane.AgentNotificationTokenForTest, DateTime.UtcNow + AgentNotificationStabilityDelay(current));
+        agentNotificationTimer.Start();
     }
 
-    internal static bool ShouldNotifyAgentTransition(AgentKind kind, AgentActivityState previous, AgentActivityState current)
+    internal static bool ShouldNotifyAgentTransition(AgentKind kind, AgentActivityState previous, AgentActivityState current,
+        bool completionConfirmed = true)
         => kind != AgentKind.Terminal
             && (current == AgentActivityState.Waiting && previous != AgentActivityState.Waiting
-                || current == AgentActivityState.Idle && previous == AgentActivityState.Working);
+                || current == AgentActivityState.Idle && previous == AgentActivityState.Working && completionConfirmed);
+
+    internal static TimeSpan AgentNotificationStabilityDelay(AgentActivityState state)
+        => state == AgentActivityState.Waiting ? TimeSpan.FromMilliseconds(650) : TimeSpan.FromSeconds(5);
+
+    internal static bool AgentNotificationCandidateMatches(AgentKind expectedKind, AgentActivityState expectedState, long expectedToken,
+        AgentKind currentKind, AgentActivityState currentState, long currentToken, bool completionConfirmed)
+        => expectedKind == currentKind && expectedState == currentState
+            && (expectedState != AgentActivityState.Idle || completionConfirmed)
+            && (expectedToken == 0 || expectedToken == currentToken);
+
+    private void AgentNotificationTimerTick(object? sender, EventArgs e)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var entry in pendingAgentNotifications.OrderBy(value => value.Value.DueUtc).ToArray())
+        {
+            var pending = entry.Value;
+            if (pending.DueUtc > now) break;
+            pendingAgentNotifications.Remove(entry.Key);
+            if (!panes.TryGetValue(entry.Key, out var pane)
+                || !state.Settings.AgentNotificationsEnabled || !pane.Profile.AgentNotificationsEnabled
+                || !AgentNotificationCandidateMatches(pending.Kind, pending.State, pending.Token,
+                    pane.DisplayedAgentKindForNotification, pane.AgentActivityStateForTest,
+                    pane.AgentNotificationTokenForTest, pane.AgentCompletionConfirmedForNotification)
+                || pending.Token != 0 && lastAgentNotificationTokens.TryGetValue(entry.Key, out var lastToken) && lastToken == pending.Token)
+                continue;
+            if (pending.Token != 0) lastAgentNotificationTokens[entry.Key] = pending.Token;
+            ShowAgentNotification(pane.Profile, pending.Kind, pending.State);
+            break;
+        }
+        if (pendingAgentNotifications.Count == 0) agentNotificationTimer.Stop();
+    }
 
     private void ShowAgentNotification(SessionProfile profile, AgentKind kind, AgentActivityState stateValue, bool test = false)
     {
@@ -3974,11 +4020,23 @@ public partial class MainWindow : Window
             var codexInteractivePromptsDriveWaiting = CodexOutputActivityTracker.StateTransitionsPassForTest();
             var hermesActivityTransitionsExact = HermesOutputActivityTracker.StateTransitionsPassForTest();
             var remoteCodexActivityProbeBounded = RemoteCodexActivityProbe.CommandIsReadOnlyAndBoundedForTest();
-            var agentNotificationsUseExactTransitions = ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Working, AgentActivityState.Idle)
+            var agentNotificationsUseExactTransitions = ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Working, AgentActivityState.Idle, true)
+                && TerminalPane.AgentCompletionEvidenceForTest()
+                && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Working, AgentActivityState.Idle, false)
                 && ShouldNotifyAgentTransition(AgentKind.Hermes, AgentActivityState.Working, AgentActivityState.Waiting)
                 && !ShouldNotifyAgentTransition(AgentKind.Terminal, AgentActivityState.Working, AgentActivityState.Idle)
                 && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Idle, AgentActivityState.Idle)
-                && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Waiting, AgentActivityState.Idle);
+                && !ShouldNotifyAgentTransition(AgentKind.Codex, AgentActivityState.Waiting, AgentActivityState.Idle)
+                && AgentNotificationStabilityDelay(AgentActivityState.Idle) >= TimeSpan.FromSeconds(5)
+                && AgentNotificationStabilityDelay(AgentActivityState.Waiting) >= TimeSpan.FromMilliseconds(500)
+                && AgentNotificationCandidateMatches(AgentKind.Codex, AgentActivityState.Idle, 42,
+                    AgentKind.Codex, AgentActivityState.Idle, 42, true)
+                && !AgentNotificationCandidateMatches(AgentKind.Codex, AgentActivityState.Idle, 42,
+                    AgentKind.Codex, AgentActivityState.Idle, 42, false)
+                && !AgentNotificationCandidateMatches(AgentKind.Codex, AgentActivityState.Idle, 42,
+                    AgentKind.Codex, AgentActivityState.Working, 42, true)
+                && !AgentNotificationCandidateMatches(AgentKind.Codex, AgentActivityState.Idle, 42,
+                    AgentKind.Codex, AgentActivityState.Idle, 43, true);
             var newTerminalPersistenceDefaults = randomColorProfile.AutoStart && randomColorProfile.UseLocalTmux && randomColorProfile.UseRemoteTmux
                 && randomColorProfile.AgentNotificationsEnabled
                 && SessionAutoStartEdit.Style == FindResource("ThemedCheckBox") as Style

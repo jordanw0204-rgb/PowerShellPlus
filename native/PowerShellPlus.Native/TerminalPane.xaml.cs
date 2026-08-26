@@ -242,9 +242,18 @@ internal sealed class HermesOutputActivityTracker
         @"(?:^|\n)\s*[❯>]\s*$|Welcome to Hermes Agent! Type your message|Resume this session with:",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private int state = (int)AgentActivityState.Idle;
+    private int completionConfirmed;
+    private long turnVersion;
 
     public AgentActivityState State => (AgentActivityState)Volatile.Read(ref state);
-    public void TurnSubmitted() => Volatile.Write(ref state, (int)AgentActivityState.Working);
+    public bool CompletionConfirmed => Volatile.Read(ref completionConfirmed) != 0;
+    public long NotificationToken => Interlocked.Read(ref turnVersion);
+    public void TurnSubmitted()
+    {
+        Interlocked.Increment(ref turnVersion);
+        Volatile.Write(ref completionConfirmed, 0);
+        Volatile.Write(ref state, (int)AgentActivityState.Working);
+    }
 
     public void RecordOutput(string data, bool meaningful)
     {
@@ -252,30 +261,36 @@ internal sealed class HermesOutputActivityTracker
         if (visible.Length == 0) return;
         if (WaitingPrompt.IsMatch(visible))
         {
+            Volatile.Write(ref completionConfirmed, 0);
             Volatile.Write(ref state, (int)AgentActivityState.Waiting);
             return;
         }
         if (ReadyPrompt.IsMatch(visible))
         {
+            Volatile.Write(ref completionConfirmed, 1);
             Volatile.Write(ref state, (int)AgentActivityState.Idle);
             return;
         }
         if (meaningful && State != AgentActivityState.Waiting)
+        {
+            if (State != AgentActivityState.Working) Interlocked.Increment(ref turnVersion);
+            Volatile.Write(ref completionConfirmed, 0);
             Volatile.Write(ref state, (int)AgentActivityState.Working);
+        }
     }
 
     internal static bool StateTransitionsPassForTest()
     {
         var tracker = new HermesOutputActivityTracker();
         tracker.TurnSubmitted();
-        if (tracker.State != AgentActivityState.Working) return false;
+        if (tracker.State != AgentActivityState.Working || tracker.CompletionConfirmed || tracker.NotificationToken != 1) return false;
         tracker.RecordOutput("Approval required\nonce / session / always / deny", true);
-        if (tracker.State != AgentActivityState.Waiting) return false;
+        if (tracker.State != AgentActivityState.Waiting || tracker.CompletionConfirmed) return false;
         tracker.TurnSubmitted();
         tracker.RecordOutput("streaming model response", true);
-        if (tracker.State != AgentActivityState.Working) return false;
+        if (tracker.State != AgentActivityState.Working || tracker.CompletionConfirmed || tracker.NotificationToken != 2) return false;
         tracker.RecordOutput("\n❯ ", true);
-        return tracker.State == AgentActivityState.Idle;
+        return tracker.State == AgentActivityState.Idle && tracker.CompletionConfirmed && tracker.NotificationToken == 2;
     }
 }
 
@@ -392,6 +407,9 @@ public partial class TerminalPane : UserControl
     private long terminalInternalMessageForwardCount;
     private long remoteImageIndicatorVersion;
     private AgentActivityState agentActivityState = AgentActivityState.Starting;
+    private bool agentCompletionConfirmed;
+    private long agentNotificationToken;
+    private long agentWorkingEvidenceToken;
     private readonly List<ComposerAttachment> composerAttachments = [];
     private readonly Dictionary<Border, Border> attachmentDropIndicators = [];
     private TerminalAppearance currentAppearance;
@@ -3621,7 +3639,15 @@ public partial class TerminalPane : UserControl
             }
             var next = ClassifyAgentActivity(detectedAgentKind, terminalRunning, codexActivity.State,
                 codexOutputActivity.State, hermesActivity.State);
-            SetAgentStatus(detectedAgentKind, next);
+            var notificationToken = detectedAgentKind switch
+            {
+                AgentKind.Codex when codexActivity.UpdatedUtc != default => codexActivity.UpdatedUtc.Ticks,
+                AgentKind.Hermes => hermesActivity.NotificationToken,
+                _ => 0
+            };
+            var completionConfirmed = HasConfirmedAgentCompletion(detectedAgentKind, next, codexActivity.State,
+                notificationToken, agentWorkingEvidenceToken, hermesActivity.CompletionConfirmed);
+            SetAgentStatus(detectedAgentKind, next, completionConfirmed, notificationToken);
         }
         catch { }
         finally
@@ -3671,8 +3697,21 @@ public partial class TerminalPane : UserControl
         return kind == AgentKind.Hermes ? hermesState : AgentActivityState.Idle;
     }
 
-    private void SetAgentStatus(AgentKind kind, AgentActivityState state)
+    private static bool HasConfirmedAgentCompletion(AgentKind kind, AgentActivityState state, CodexTurnActivityState codexState,
+        long notificationToken, long workingEvidenceToken, bool hermesCompletionConfirmed)
+        => state == AgentActivityState.Idle && kind switch
+        {
+            AgentKind.Codex => codexState == CodexTurnActivityState.Idle && notificationToken > workingEvidenceToken,
+            AgentKind.Hermes => hermesCompletionConfirmed,
+            _ => false
+        };
+
+    private void SetAgentStatus(AgentKind kind, AgentActivityState state, bool completionConfirmed = false, long notificationToken = 0)
     {
+        if (state == AgentActivityState.Working && notificationToken > 0)
+            agentWorkingEvidenceToken = notificationToken;
+        agentCompletionConfirmed = state == AgentActivityState.Idle && completionConfirmed;
+        agentNotificationToken = notificationToken;
         if (agentActivityState == state && displayedAgentKind == kind) return;
         var previousState = agentActivityState;
         detectedAgentKind = kind;
@@ -3774,6 +3813,9 @@ public partial class TerminalPane : UserControl
     }
 
     internal AgentActivityState AgentActivityStateForTest => agentActivityState;
+    internal bool AgentCompletionConfirmedForNotification => agentCompletionConfirmed;
+    internal long AgentNotificationTokenForTest => agentNotificationToken;
+    internal AgentKind DisplayedAgentKindForNotification => displayedAgentKind;
     internal string AgentStatusTextForTest => StateText.Text;
     internal Color AgentStatusColorForTest => AgentHead.BorderBrush is SolidColorBrush brush ? brush.Color : Colors.Transparent;
     internal bool AgentWorkingAnimationForTest => AgentStatusScale.HasAnimatedProperties;
@@ -3801,6 +3843,13 @@ public partial class TerminalPane : UserControl
             && ClassifyAgentActivity(AgentKind.Hermes, true, CodexTurnActivityState.Unknown, AgentActivityState.Idle, AgentActivityState.Idle) == AgentActivityState.Idle
             && ClassifyAgentActivity(AgentKind.Terminal, true, CodexTurnActivityState.Working, AgentActivityState.Waiting, AgentActivityState.Working) == AgentActivityState.Idle
             && ClassifyAgentActivity(AgentKind.Terminal, false, CodexTurnActivityState.Working, AgentActivityState.Waiting, AgentActivityState.Working) == AgentActivityState.Stopped;
+    internal static bool AgentCompletionEvidenceForTest()
+        => HasConfirmedAgentCompletion(AgentKind.Codex, AgentActivityState.Idle, CodexTurnActivityState.Idle, 43, 42, false)
+            && !HasConfirmedAgentCompletion(AgentKind.Codex, AgentActivityState.Idle, CodexTurnActivityState.Idle, 42, 42, false)
+            && !HasConfirmedAgentCompletion(AgentKind.Codex, AgentActivityState.Working, CodexTurnActivityState.Working, 43, 42, false)
+            && HasConfirmedAgentCompletion(AgentKind.Hermes, AgentActivityState.Idle, CodexTurnActivityState.Unknown, 2, 2, true)
+            && !HasConfirmedAgentCompletion(AgentKind.Hermes, AgentActivityState.Idle, CodexTurnActivityState.Unknown, 2, 2, false)
+            && !HasConfirmedAgentCompletion(AgentKind.Terminal, AgentActivityState.Idle, CodexTurnActivityState.Idle, 43, 42, true);
     internal bool ComposerChromeStaysCompactForTest => QuickAccessButton.VerticalAlignment == VerticalAlignment.Bottom
         && QueueCommandButton.VerticalAlignment == VerticalAlignment.Bottom
         && RunCommandButton.VerticalAlignment == VerticalAlignment.Bottom
