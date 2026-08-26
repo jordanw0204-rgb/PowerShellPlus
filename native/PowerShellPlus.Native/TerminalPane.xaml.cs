@@ -348,6 +348,9 @@ public partial class TerminalPane : UserControl
     private bool? sendButtonShowsAll;
     private char configuredCursorStyleCode;
     private long remoteOutputEventCount;
+    private long lastTerminalOutputTicks;
+    private long lastComposerInsertWriteTicks;
+    private long lastComposerSubmitWriteTicks;
     private int remoteColumns = 120;
     private int remoteRows = 32;
     private string remoteFontFace = "Cascadia Mono";
@@ -1070,16 +1073,22 @@ public partial class TerminalPane : UserControl
                     terminalActivity.RecordInput(now);
                     if (detectedAgentKind == AgentKind.Codex) codexOutputActivity.UserResponded(now);
                     if (detectedAgentKind == AgentKind.Hermes) hermesActivity.TurnSubmitted();
+                    Interlocked.Exchange(ref lastComposerSubmitWriteTicks, 0);
+                    Interlocked.Exchange(ref lastComposerInsertWriteTicks, DateTime.UtcNow.Ticks);
                     Terminal.ConPTYTerm.WriteToTerm(bracketedPasteMode.FormatSubmission(command));
                     if (pressEnterAfterInsert)
                     {
-                        // Some full-screen agents accept a bracketed paste into
-                        // their editor without submitting it. A separate Enter is
-                        // intentionally delayed so it cannot become part of the
-                        // bracketed-paste payload itself.
-                        await Task.Delay(35);
+                        // ConPTY writes are asynchronous from the full-screen
+                        // application's input loop. Wait for the pasted text and
+                        // its redraw to settle before sending the distinct Enter;
+                        // otherwise Codex/Hermes can discard it while still
+                        // processing the bracketed-paste terminator.
+                        await WaitForComposerInsertReadyAsync(command);
                         if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
+                        {
                             Terminal.ConPTYTerm.WriteToTerm("\r");
+                            Interlocked.Exchange(ref lastComposerSubmitWriteTicks, DateTime.UtcNow.Ticks);
+                        }
                     }
                     Terminal.Focus();
                     return true;
@@ -1092,6 +1101,22 @@ public partial class TerminalPane : UserControl
             await Task.Delay(100);
         }
         return false;
+    }
+
+    private async Task WaitForComposerInsertReadyAsync(string command)
+    {
+        var startedUtc = DateTime.UtcNow;
+        var byteCount = Encoding.UTF8.GetByteCount(command);
+        var minimumDelay = TimeSpan.FromMilliseconds(180 + Math.Min(420, byteCount / 128));
+        var quietPeriod = TimeSpan.FromMilliseconds(120);
+        var deadlineUtc = startedUtc + minimumDelay + TimeSpan.FromMilliseconds(900);
+        await Task.Delay(minimumDelay);
+        while (DateTime.UtcNow < deadlineUtc)
+        {
+            var lastOutputTicks = Interlocked.Read(ref lastTerminalOutputTicks);
+            if (lastOutputTicks <= startedUtc.Ticks || DateTime.UtcNow.Ticks - lastOutputTicks >= quietPeriod.Ticks) return;
+            await Task.Delay(25);
+        }
     }
 
     public async Task<bool> RunAutomationAsync(AutomationRule automation)
@@ -2561,6 +2586,17 @@ public partial class TerminalPane : UserControl
         return item is { IsCheckable: true } && (item.IsChecked == true) == Profile.PressEnterAfterComposerSend
             && item.ToolTip?.ToString()?.Contains("separate Enter", StringComparison.OrdinalIgnoreCase) == true;
     }
+    public TimeSpan ComposerAutomaticEnterDelayForTest
+    {
+        get
+        {
+            var insertTicks = Interlocked.Read(ref lastComposerInsertWriteTicks);
+            var submitTicks = Interlocked.Read(ref lastComposerSubmitWriteTicks);
+            return insertTicks > 0 && submitTicks >= insertTicks
+                ? TimeSpan.FromTicks(submitTicks - insertTicks)
+                : TimeSpan.Zero;
+        }
+    }
     public void SetPressEnterAfterComposerSendForTest(bool enabled)
     {
         Profile.PressEnterAfterComposerSend = enabled;
@@ -3443,6 +3479,7 @@ public partial class TerminalPane : UserControl
     private void CaptureTerminalOutput(object? sender, TerminalOutputEventArgs args)
     {
         Interlocked.Increment(ref remoteOutputEventCount);
+        Interlocked.Exchange(ref lastTerminalOutputTicks, DateTime.UtcNow.Ticks);
         bracketedPasteMode.RecordOutput(args.Data);
         QueueScrollbarRefreshFromOutput();
         CaptureWorkingDirectory(args.Data);
