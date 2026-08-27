@@ -4360,6 +4360,24 @@ public partial class MainWindow : Window
             activationTarget.ClearComposerAttachmentsForTest();
             try { File.Delete(historyAttachmentFixture); } catch { }
             try { File.Delete(staleHistoryAttachmentFixture); } catch { }
+            var managedHistoryDirectory = Path.Combine(WorkspaceStore.DirectoryPath, "composer-attachments",
+                SessionRecoveryStore.SafeSessionId(activationTarget.Profile.Id));
+            Directory.CreateDirectory(managedHistoryDirectory);
+            var managedHistoryAttachment = Path.Combine(managedHistoryDirectory, "history-image-retained.png");
+            File.WriteAllBytes(managedHistoryAttachment, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+            activationTarget.SetCommandInputForTest("inspect ");
+            _ = activationTarget.AddTemporaryComposerAttachmentForTest(managedHistoryAttachment, true);
+            var managedHistoryCommand = activationTarget.CommandInputTextForTest;
+            activationTarget.AddCommandHistoryForTest(managedHistoryCommand);
+            activationTarget.ClearComposerAttachmentsForTest();
+            var temporaryHistoryAttachmentRetained = File.Exists(managedHistoryAttachment);
+            activationTarget.RestoreLatestCommandHistoryForTest();
+            var temporaryHistoryAttachmentsRehydrate = temporaryHistoryAttachmentRetained
+                && activationTarget.ComposerAttachmentCountForTest == 1
+                && activationTarget.AttachmentStripVisibleForTest
+                && activationTarget.ComposerTokensMatchCanonicalPathsForTest;
+            activationTarget.ClearComposerAttachmentsForTest();
+            var composerSendRequiresAcknowledgement = TerminalPane.ComposerDeliveryRequiresAcknowledgementForTest();
             var composerSendSettingsMenuReady = activationTarget.RunCommandSettingsMenuReadyForTest();
             var originalPressEnterAfterSend = activationTarget.Profile.PressEnterAfterComposerSend;
             activationTarget.SetPressEnterAfterComposerSendForTest(true);
@@ -4378,12 +4396,14 @@ public partial class MainWindow : Window
             var composerSendBehaviorPersists = persistedHistoryProfile.PressEnterAfterComposerSend;
             activationTarget.SetPressEnterAfterComposerSendForTest(originalPressEnterAfterSend);
             var commandHistoryIsPerTerminal = panes[added[1].Id].Profile.CommandHistory.Count == 0;
+            activationTarget.SetCommandInputForTest(string.Empty);
             var historyCountBeforeClear = activationTarget.CommandHistoryCountForTest;
             var clearHistoryRequiresConfirmation = !activationTarget.ClearCommandHistoryForTest(false)
                 && activationTarget.CommandHistoryCountForTest == historyCountBeforeClear;
             var clearHistoryButtonReady = activationTarget.ClearCommandHistoryButtonReadyForTest;
             var clearHistoryWorks = activationTarget.ClearCommandHistoryForTest(true)
                 && activationTarget.CommandHistoryVisibleItemCountForTest == 0;
+            var temporaryHistoryAttachmentsCleaned = !File.Exists(managedHistoryAttachment);
             WorkspaceStore.Save(state);
             var clearHistoryPersists = WorkspaceStore.Load(terminalProfile).Sessions
                 .First(value => value.Id == activationTarget.Profile.Id).CommandHistory.Count == 0;
@@ -4753,8 +4773,10 @@ public partial class MainWindow : Window
                 && rendererVtStreamTransparent && remoteVtStreamTransparent
                 && shiftModifierRoutesAll && sendAllVisualFeedback && modifierCanBeDisabled && modifierCanBeRemapped && sendAllSettingsPersist && commandReachedAllPanes
                 && commandHistoryRecordsSentCommands && commandHistoryRelativeTimesWork && commandHistoryPanelAdapts && commandHistoryButtonIsFrameless
-                && commandHistoryRestoresInput && historyAttachmentsRehydrate && commandHistoryPersists && commandHistoryIsPerTerminal
+                && commandHistoryRestoresInput && historyAttachmentsRehydrate && temporaryHistoryAttachmentsRehydrate
+                && temporaryHistoryAttachmentRetained && temporaryHistoryAttachmentsCleaned && commandHistoryPersists && commandHistoryIsPerTerminal
                 && composerSendSettingsMenuReady && composerSendBehaviorPersists && composerAutomaticEnterSubmits && shiftClickQuickCreatesTerminal && automaticTerminalColorsWork
+                && composerSendRequiresAcknowledgement
                 && clearHistoryRequiresConfirmation && clearHistoryButtonReady && clearHistoryWorks && clearHistoryPersists
                 && ctrlUDeletesToLineStart && ctrlKDeletesToLineEnd && ctrlJAddsLine && shiftEnterAddsLine
                 && arrowKeysNavigateComposerLines && composerStateWorkDebounced && composerStateDebouncesSustainedTyping && composerTypingLatencyBounded;
@@ -4808,7 +4830,7 @@ public partial class MainWindow : Window
             File.AppendAllText(reportPath, $"\nStartupLoadingScreenReady={startupLoadingScreenReady}");
             File.AppendAllText(reportPath, $"\nInactiveTerminalsStartEagerly={inactiveTerminalsStartEagerly}\nStartupFailureOffersRetry={startupFailureOffersRetry}\nStartupManualRetryWorks={startupManualRetryWorks}");
             File.AppendAllText(reportPath, $"\nSidebarCardsUseSingleFrame={sidebarCardsUseSingleFrame}\nSidebarCardHoverStylesReady={sidebarCardHoverStylesReady}\nSidebarCardSelectionVisible={sidebarCardSelectionVisible}\nWorkspaceCardMenuReliable={workspaceCardMenuReliable}\nTerminalCardMenuReliable={terminalCardMenuReliable}\nTabContextMenusWork={tabContextMenusWork}");
-            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nComposerAutomaticEnterSubmits={composerAutomaticEnterSubmits}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
+            File.AppendAllText(reportPath, $"\nCommandHistoryRecordsSentCommands={commandHistoryRecordsSentCommands}\nCommandHistoryRelativeTimesWork={commandHistoryRelativeTimesWork}\nCommandHistoryPanelAdapts={commandHistoryPanelAdapts}\nCommandHistoryButtonIsFrameless={commandHistoryButtonIsFrameless}\nCommandHistoryRestoresInput={commandHistoryRestoresInput}\nHistoryAttachmentsRehydrate={historyAttachmentsRehydrate}\nTemporaryHistoryAttachmentRetained={temporaryHistoryAttachmentRetained}\nTemporaryHistoryAttachmentsRehydrate={temporaryHistoryAttachmentsRehydrate}\nTemporaryHistoryAttachmentsCleaned={temporaryHistoryAttachmentsCleaned}\nCommandHistoryPersists={commandHistoryPersists}\nCommandHistoryIsPerTerminal={commandHistoryIsPerTerminal}\nComposerSendSettingsMenuReady={composerSendSettingsMenuReady}\nComposerSendBehaviorPersists={composerSendBehaviorPersists}\nComposerAutomaticEnterSubmits={composerAutomaticEnterSubmits}\nComposerSendRequiresAcknowledgement={composerSendRequiresAcknowledgement}\nShiftClickQuickCreatesTerminal={shiftClickQuickCreatesTerminal}\nAutomaticTerminalColorsWork={automaticTerminalColorsWork}\nClearHistoryRequiresConfirmation={clearHistoryRequiresConfirmation}\nClearHistoryButtonReady={clearHistoryButtonReady}\nClearHistoryWorks={clearHistoryWorks}\nClearHistoryPersists={clearHistoryPersists}");
             File.AppendAllText(reportPath, $"\nCtrlUDeletesToLineStart={ctrlUDeletesToLineStart}\nCtrlKDeletesToLineEnd={ctrlKDeletesToLineEnd}\nCtrlJAddsLine={ctrlJAddsLine}\nShiftEnterAddsLine={shiftEnterAddsLine}\nArrowKeysNavigateComposerLines={arrowKeysNavigateComposerLines}\nComposerStateWorkDebounced={composerStateWorkDebounced}\nComposerFlushBaseline={composerFlushBaseline}\nComposerFlushAfterBurst={composerFlushAfterBurst}\nComposerFlushAfterIdle={composerFlushAfterIdle}\nComposerStateDebouncesSustainedTyping={composerStateDebouncesSustainedTyping}\nSustainedFlushBaseline={sustainedTypingFlushBaseline}\nSustainedFlushAfterBurst={sustainedFlushAfterBurst}\nSustainedFlushAfterIdle={sustainedFlushAfterIdle}\nComposerTypingLatencyBounded={composerTypingLatencyBounded}\nComposerBurstMilliseconds={composerBurstTimer.Elapsed.TotalMilliseconds:F1}\nRealTypingMilliseconds={realTyping.Elapsed.TotalMilliseconds:F1}\nCanonicalExtractionsDuringTyping={realTyping.ExtractionsDuringTyping}\nQueuedTypingMilliseconds={queuedTyping.Total.TotalMilliseconds:F1}\nQueuedTypingP50DispatchMilliseconds={queuedTyping.P50DispatchMilliseconds:F2}\nQueuedTypingP95DispatchMilliseconds={queuedTyping.P95DispatchMilliseconds:F2}\nQueuedTypingMaxDispatchMilliseconds={queuedTyping.MaximumDispatchMilliseconds:F2}\nQueuedTypingP95EditMilliseconds={queuedTyping.P95EditMilliseconds:F2}\nQueuedTypingMaxEditMilliseconds={queuedTyping.MaximumEditMilliseconds:F2}\nQueuedTypingLayoutUpdates={queuedTyping.LayoutUpdates}\nHumanTypingMilliseconds={humanTyping.Total.TotalMilliseconds:F1}\nHumanTypingP50DispatchMilliseconds={humanTyping.P50DispatchMilliseconds:F2}\nHumanTypingP95DispatchMilliseconds={humanTyping.P95DispatchMilliseconds:F2}\nHumanTypingMaxDispatchMilliseconds={humanTyping.MaximumDispatchMilliseconds:F2}\nHumanTypingP95EditMilliseconds={humanTyping.P95EditMilliseconds:F2}\nHumanTypingMaxEditMilliseconds={humanTyping.MaximumEditMilliseconds:F2}\nHumanTypingLayoutUpdates={humanTyping.LayoutUpdates}");
             File.AppendAllText(reportPath, $"\nAgedTypingMilliseconds={agedTyping.Total.TotalMilliseconds:F1}\nAgedTypingP50DispatchMilliseconds={agedTyping.P50DispatchMilliseconds:F2}\nAgedTypingP95DispatchMilliseconds={agedTyping.P95DispatchMilliseconds:F2}\nAgedTypingMaxDispatchMilliseconds={agedTyping.MaximumDispatchMilliseconds:F2}\nAgedTypingP95EditMilliseconds={agedTyping.P95EditMilliseconds:F2}\nAgedTypingMaxEditMilliseconds={agedTyping.MaximumEditMilliseconds:F2}\nAgedTypingLayoutUpdates={agedTyping.LayoutUpdates}\nComposerCanUndoAfterAging={activationTarget.ComposerCanUndoForTest}\nComposerUndoLimit={activationTarget.ComposerUndoLimitForTest}");
             File.AppendAllText(reportPath, $"\nHumanTypingSlowOperations={humanTyping.SlowOperations}\nAgedTypingSlowOperations={agedTyping.SlowOperations}\nSaveConcurrentTypingSlowOperations={saveConcurrentTyping.SlowOperations}");

@@ -1087,6 +1087,9 @@ public partial class TerminalPane : UserControl
             {
                 if (Terminal.ConPTYTerm?.TermProcIsStarted == true)
                 {
+                    AttachTerminalOutputFilter();
+                    var terminalProcess = Terminal.ConPTYTerm.Process;
+                    var outputVersionBeforeWrite = Interlocked.Read(ref remoteOutputEventCount);
                     var now = DateTime.UtcNow;
                     terminalActivity.RecordInput(now);
                     if (detectedAgentKind == AgentKind.Codex) codexOutputActivity.UserResponded(now);
@@ -1108,6 +1111,7 @@ public partial class TerminalPane : UserControl
                             Interlocked.Exchange(ref lastComposerSubmitWriteTicks, DateTime.UtcNow.Ticks);
                         }
                     }
+                    if (!await WaitForComposerDeliveryAsync(terminalProcess, outputVersionBeforeWrite)) return false;
                     Terminal.Focus();
                     return true;
                 }
@@ -1120,6 +1124,40 @@ public partial class TerminalPane : UserControl
         }
         return false;
     }
+
+    private async Task<bool> WaitForComposerDeliveryAsync(object? expectedProcess, long outputVersionBeforeWrite)
+    {
+        // WriteToTerm writes to ConPTY's input pipe but does not provide an
+        // application-consumption receipt. Do not clear the composer until this
+        // exact terminal process produces a corresponding output/redraw event.
+        // This also catches a process that exits between TermProcIsStarted and
+        // the asynchronous pipe write.
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            var sameProcess = false;
+            var processRunning = false;
+            try
+            {
+                var current = Terminal.ConPTYTerm?.Process;
+                sameProcess = expectedProcess is not null && current is not null && ReferenceEquals(current, expectedProcess);
+                processRunning = sameProcess && !current!.HasExited && Terminal.ConPTYTerm?.TermProcIsStarted == true;
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException or SystemException)
+            {
+                return false;
+            }
+            if (!sameProcess || !processRunning) return false;
+            if (HasComposerDeliveryEvidence(outputVersionBeforeWrite, Interlocked.Read(ref remoteOutputEventCount),
+                    sameProcess, processRunning)) return true;
+            await Task.Delay(25);
+        }
+        return false;
+    }
+
+    private static bool HasComposerDeliveryEvidence(long beforeOutputVersion, long currentOutputVersion,
+        bool sameProcess, bool processRunning)
+        => sameProcess && processRunning && currentOutputVersion > beforeOutputVersion;
 
     private async Task WaitForComposerInsertReadyAsync(string command)
     {
@@ -1185,8 +1223,11 @@ public partial class TerminalPane : UserControl
         Profile.CommandHistoryTimestampsUtc.Add(DateTime.UtcNow);
         if (Profile.CommandHistory.Count > MaximumCommandHistory)
         {
-            Profile.CommandHistory.RemoveRange(0, Profile.CommandHistory.Count - MaximumCommandHistory);
-            Profile.CommandHistoryTimestampsUtc.RemoveRange(0, Profile.CommandHistoryTimestampsUtc.Count - MaximumCommandHistory);
+            var removeCount = Profile.CommandHistory.Count - MaximumCommandHistory;
+            var retiredCommands = Profile.CommandHistory.Take(removeCount).ToArray();
+            Profile.CommandHistory.RemoveRange(0, removeCount);
+            Profile.CommandHistoryTimestampsUtc.RemoveRange(0, removeCount);
+            DeleteUnreferencedManagedAttachments(retiredCommands);
         }
         RefreshCommandHistoryList();
     }
@@ -1207,10 +1248,38 @@ public partial class TerminalPane : UserControl
 
     private void ClearCommandHistory()
     {
+        var retiredCommands = Profile.CommandHistory.ToArray();
         Profile.CommandHistory.Clear();
         Profile.CommandHistoryTimestampsUtc.Clear();
+        DeleteUnreferencedManagedAttachments(retiredCommands);
         RefreshCommandHistoryList();
         commandStateChanged();
+    }
+
+    private bool IsAttachmentReferencedByHistory(string path)
+        => Profile.CommandHistory.Any(command => command.Contains(path, StringComparison.OrdinalIgnoreCase));
+
+    private bool IsManagedComposerAttachment(string path)
+    {
+        try
+        {
+            var directory = Path.GetFullPath(Path.Combine(WorkspaceStore.DirectoryPath, "composer-attachments",
+                SessionRecoveryStore.SafeSessionId(Profile.Id))) + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(path).StartsWith(directory, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    private void DeleteUnreferencedManagedAttachments(IEnumerable<string> retiredCommands)
+    {
+        foreach (var path in retiredCommands.SelectMany(DiscoverExistingLocalFiles)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!IsManagedComposerAttachment(path) || IsAttachmentReferencedByHistory(path)
+                || composerAttachments.Any(value => value.LocalPath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                || CommandInput.Text.Contains(path, StringComparison.OrdinalIgnoreCase)) continue;
+            try { File.Delete(path); } catch { }
+        }
     }
 
     private void NormalizeCommandHistoryTimestamps()
@@ -1282,7 +1351,12 @@ public partial class TerminalPane : UserControl
                     : (int?)null;
             var preparedCommand = await PrepareComposerCommandAsync(command, referencedAttachments);
             if (preparedCommand is null) return false;
-            if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendComposerCommandAsync(preparedCommand))) return false;
+            if (!await (sendToAll ? sendAllCommand(preparedCommand) : SendComposerCommandAsync(preparedCommand)))
+            {
+                ShowRemoteImageStatus("Message not delivered",
+                    "The terminal did not acknowledge the input. Your message was kept so you can retry safely.", false, true);
+                return false;
+            }
             RecordCommandHistory(command);
             if (queuedIndex is int index) Profile.PendingCommands.RemoveAt(index);
             RemoveComposerAttachments(referencedAttachments);
@@ -1331,7 +1405,7 @@ public partial class TerminalPane : UserControl
         foreach (var attachment in attachments.ToArray())
         {
             composerAttachments.Remove(attachment);
-            if (attachment.IsTemporary)
+            if (attachment.IsTemporary && !IsAttachmentReferencedByHistory(attachment.LocalPath))
             {
                 try { File.Delete(attachment.LocalPath); } catch { }
             }
@@ -4169,6 +4243,13 @@ public partial class TerminalPane : UserControl
     }
     internal bool AddComposerAttachmentForTest(string path, bool isImage)
         => AddComposerAttachment(path, isImage, false, true);
+    internal bool AddTemporaryComposerAttachmentForTest(string path, bool isImage)
+        => AddComposerAttachment(path, isImage, true, true);
+    internal static bool ComposerDeliveryRequiresAcknowledgementForTest()
+        => HasComposerDeliveryEvidence(10, 11, true, true)
+            && !HasComposerDeliveryEvidence(10, 10, true, true)
+            && !HasComposerDeliveryEvidence(10, 11, false, true)
+            && !HasComposerDeliveryEvidence(10, 11, true, false);
     internal bool DropComposerFileForTest(string path)
     {
         var data = new DataObject();
