@@ -145,7 +145,7 @@ public partial class App : Application
 
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
     {
-        if (MainWindow is MainWindow window) window.PrepareForShutdown();
+        if (MainWindow is MainWindow window) window.PrepareForSystemShutdown();
         base.OnSessionEnding(e);
     }
 

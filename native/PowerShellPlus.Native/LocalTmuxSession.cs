@@ -400,11 +400,7 @@ internal static class LocalTmuxSession
     }
 
     private static void AtomicWrite(string path, string contents, Encoding encoding)
-    {
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, contents, encoding);
-        File.Move(temporary, path, true);
-    }
+        => AtomicFileStore.WriteAllText(path, contents, encoding, skipIfUnchanged: true);
 
     private static string QuotePosix(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
     private readonly record struct WslCommandResult(bool Started, int ExitCode, string Output, string Message);

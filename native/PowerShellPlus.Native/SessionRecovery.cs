@@ -186,9 +186,16 @@ public static class SessionRecoveryStore
     public static SessionRecoverySnapshot Load(string? directoryPath = null)
     {
         var snapshotPath = Path.Combine(directoryPath ?? DirectoryPath, "recovery.json");
+        var primary = TryLoad(snapshotPath);
+        if (primary is not null) return primary;
+        return TryLoad(snapshotPath + ".bak") ?? new SessionRecoverySnapshot();
+    }
+
+    private static SessionRecoverySnapshot? TryLoad(string snapshotPath)
+    {
         try
         {
-            if (!File.Exists(snapshotPath)) return new SessionRecoverySnapshot();
+            if (!File.Exists(snapshotPath)) return null;
             var value = JsonSerializer.Deserialize<SessionRecoverySnapshot>(File.ReadAllText(snapshotPath), JsonOptions);
             if (value is not null && value.Version is >= 1 and <= 11)
             {
@@ -207,7 +214,7 @@ public static class SessionRecoveryStore
             }
         }
         catch { }
-        return new SessionRecoverySnapshot();
+        return null;
     }
 
     public static void Save(SessionRecoverySnapshot snapshot, string? directoryPath = null)
@@ -216,9 +223,8 @@ public static class SessionRecoveryStore
         var snapshotPath = Path.Combine(directory, "recovery.json");
         Directory.CreateDirectory(directory);
         snapshot.CapturedUtc = DateTime.UtcNow;
-        var temporary = snapshotPath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot, JsonOptions));
-        File.Move(temporary, snapshotPath, true);
+        AtomicFileStore.WriteAllText(snapshotPath, JsonSerializer.Serialize(snapshot, JsonOptions),
+            new UTF8Encoding(false), snapshotPath + ".bak", durable: true);
     }
 
     public static string? SaveTranscript(string sessionId, string output, string? directoryPath = null)
@@ -230,9 +236,7 @@ public static class SessionRecoveryStore
         var fileName = safeId + ".txt";
         var value = output.Length <= MaximumTranscriptCharacters ? output : output[^MaximumTranscriptCharacters..];
         var path = Path.Combine(directory, fileName);
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, value);
-        File.Move(temporary, path, true);
+        AtomicFileStore.WriteAllText(path, value, new UTF8Encoding(false));
         return fileName;
     }
 
@@ -266,6 +270,27 @@ public static class SessionRecoveryStore
             foreach (var path in Directory.EnumerateFiles(DirectoryPath, "*.txt", SearchOption.TopDirectoryOnly)) File.Delete(path);
         }
         catch { }
+    }
+
+    internal static bool BackupFallbackContractPassesForTest()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "PowerShellPlus-recovery-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var first = new SessionRecoverySnapshot();
+            first.Sessions["first"] = new SessionRecoveryEntry { SessionId = "first", WorkingDirectory = "C:\\first" };
+            Save(first, directory);
+            var second = new SessionRecoverySnapshot();
+            second.Sessions["second"] = new SessionRecoveryEntry { SessionId = "second", WorkingDirectory = "C:\\second" };
+            Save(second, directory);
+            File.WriteAllText(Path.Combine(directory, "recovery.json"), "{not-json");
+            var recovered = Load(directory);
+            return recovered.Sessions.ContainsKey("first") && !recovered.Sessions.ContainsKey("second");
+        }
+        finally
+        {
+            try { Directory.Delete(directory, true); } catch { }
+        }
     }
 
     internal static string SafeSessionId(string value)

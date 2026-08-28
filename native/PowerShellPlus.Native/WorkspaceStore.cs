@@ -16,122 +16,116 @@ public static class WorkspaceStore
 
     internal static string LoadApplicationTheme()
     {
-        try
+        foreach (var candidate in new[] { FilePath, FilePath + ".bak" })
         {
-            if (!File.Exists(FilePath))
+            try
             {
-                AppThemeCatalog.ConfigureCustomThemes([]);
-                return AppThemeCatalog.DefaultThemeId;
+                if (!File.Exists(candidate)) continue;
+                using var document = JsonDocument.Parse(File.ReadAllText(candidate));
+                if (!document.RootElement.TryGetProperty(nameof(WorkspaceState.Settings), out var settings)
+                    || !settings.TryGetProperty(nameof(WorkspaceSettings.ApplicationTheme), out var theme)) continue;
+                var customThemes = settings.TryGetProperty(nameof(WorkspaceSettings.CustomThemes), out var customThemeElement)
+                    ? JsonSerializer.Deserialize<List<CustomAppThemeState>>(customThemeElement.GetRawText(), JsonOptions) ?? []
+                    : [];
+                AppThemeCatalog.ConfigureCustomThemes(customThemes);
+                return AppThemeCatalog.Normalize(theme.GetString());
             }
-            using var document = JsonDocument.Parse(File.ReadAllText(FilePath));
-            if (!document.RootElement.TryGetProperty(nameof(WorkspaceState.Settings), out var settings)
-                || !settings.TryGetProperty(nameof(WorkspaceSettings.ApplicationTheme), out var theme))
-            {
-                AppThemeCatalog.ConfigureCustomThemes([]);
-                return AppThemeCatalog.DefaultThemeId;
-            }
-            var customThemes = settings.TryGetProperty(nameof(WorkspaceSettings.CustomThemes), out var customThemeElement)
-                ? JsonSerializer.Deserialize<List<CustomAppThemeState>>(customThemeElement.GetRawText(), JsonOptions) ?? []
-                : [];
-            AppThemeCatalog.ConfigureCustomThemes(customThemes);
-            return AppThemeCatalog.Normalize(theme.GetString());
+            catch { }
         }
-        catch
-        {
-            AppThemeCatalog.ConfigureCustomThemes([]);
-            return AppThemeCatalog.DefaultThemeId;
-        }
+        AppThemeCatalog.ConfigureCustomThemes([]);
+        return AppThemeCatalog.DefaultThemeId;
     }
 
     public static WorkspaceState Load(WindowsTerminalProfile terminalProfile)
     {
-        try
+        foreach (var candidate in new[] { FilePath, FilePath + ".bak" })
         {
-            if (File.Exists(FilePath))
+            try
             {
-                var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(FilePath), JsonOptions);
-            if (loaded is not null && loaded.Version is >= 3 and <= 8)
-            {
-                var upgradedFromLegacy = loaded.Version <= 6;
-                loaded.Version = 8;
-                loaded.Settings ??= new WorkspaceSettings();
-                loaded.Settings.CustomThemes ??= [];
-                loaded.Settings.CustomThemes = loaded.Settings.CustomThemes
-                    .Select(AppThemeCatalog.NormalizeCustomTheme)
-                    .GroupBy(value => value.Id, StringComparer.OrdinalIgnoreCase)
-                    .Select(group => group.First())
-                    .Take(32)
-                    .ToList();
-                AppThemeCatalog.ConfigureCustomThemes(loaded.Settings.CustomThemes);
-                loaded.Settings.ApplicationTheme = AppThemeCatalog.Normalize(loaded.Settings.ApplicationTheme);
-                if (loaded.Settings.NotificationSound is not ("System" or "Custom" or "Silent"))
-                    loaded.Settings.NotificationSound = "System";
-                if (string.IsNullOrWhiteSpace(loaded.Settings.CustomNotificationSoundPath))
-                    loaded.Settings.CustomNotificationSoundPath = null;
+                if (!File.Exists(candidate)) continue;
+                var loaded = JsonSerializer.Deserialize<WorkspaceState>(File.ReadAllText(candidate), JsonOptions);
+                if (loaded is not null && loaded.Version is >= 3 and <= 8)
+                {
+                    var upgradedFromLegacy = loaded.Version <= 6;
+                    loaded.Version = 8;
+                    loaded.Settings ??= new WorkspaceSettings();
+                    loaded.Settings.CustomThemes ??= [];
+                    loaded.Settings.CustomThemes = loaded.Settings.CustomThemes
+                        .Select(AppThemeCatalog.NormalizeCustomTheme)
+                        .GroupBy(value => value.Id, StringComparer.OrdinalIgnoreCase)
+                        .Select(group => group.First())
+                        .Take(32)
+                        .ToList();
+                    AppThemeCatalog.ConfigureCustomThemes(loaded.Settings.CustomThemes);
+                    loaded.Settings.ApplicationTheme = AppThemeCatalog.Normalize(loaded.Settings.ApplicationTheme);
+                    if (loaded.Settings.NotificationSound is not ("System" or "Custom" or "Silent"))
+                        loaded.Settings.NotificationSound = "System";
+                    if (string.IsNullOrWhiteSpace(loaded.Settings.CustomNotificationSoundPath))
+                        loaded.Settings.CustomNotificationSoundPath = null;
                     if (string.Equals(loaded.Settings.SendToAllModifier, "Ctrl", StringComparison.OrdinalIgnoreCase)) loaded.Settings.SendToAllModifier = "Shift";
-                loaded.LayoutSizes ??= [];
-                loaded.Automations ??= [];
-                foreach (var automation in loaded.Automations)
-                {
-                    if (string.IsNullOrWhiteSpace(automation.Id)) automation.Id = Guid.NewGuid().ToString("N");
-                    automation.Name = string.IsNullOrWhiteSpace(automation.Name) ? "Automation" : automation.Name;
-                    automation.Command ??= string.Empty;
-                    automation.TargetSessionId = string.IsNullOrWhiteSpace(automation.TargetSessionId) ? "*" : automation.TargetSessionId;
-                    if (automation.ScheduleType is not (AutomationRule.NoSchedule or "Interval" or "Daily" or "Once"))
-                        automation.ScheduleType = AutomationRule.NoSchedule;
-                }
-                var automationIds = loaded.Automations.Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
-                foreach (var session in loaded.Sessions)
-                {
-                    session.AccentColor = WorkspaceAccentPalette.Normalize(session.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
-                    session.TerminalFontSize = NormalizeFontSize(session.TerminalFontSize, 6, 36);
-                    session.CommandFontSize = NormalizeFontSize(session.CommandFontSize, 8, 28);
-                    session.CommandDraft ??= string.Empty;
-                    session.ComposerAttachments ??= [];
-                    session.ComposerAttachments = session.ComposerAttachments
-                        .Where(value => value is not null && !string.IsNullOrWhiteSpace(value.LocalPath))
-                        .Take(10)
-                        .ToList();
-                    session.PendingCommands ??= [];
-                    session.CommandHistory ??= [];
-                    session.CommandHistory = session.CommandHistory
-                        .Where(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 32_768)
-                        .TakeLast(100)
-                        .ToList();
-                    session.CommandHistoryTimestampsUtc ??= [];
-                    session.CommandHistoryTimestampsUtc = session.CommandHistoryTimestampsUtc.TakeLast(session.CommandHistory.Count).ToList();
-                    if (session.CommandHistoryTimestampsUtc.Count < session.CommandHistory.Count)
+                    loaded.LayoutSizes ??= [];
+                    loaded.Automations ??= [];
+                    foreach (var automation in loaded.Automations)
                     {
-                        var legacyCount = session.CommandHistory.Count - session.CommandHistoryTimestampsUtc.Count;
-                        session.CommandHistoryTimestampsUtc.InsertRange(0, Enumerable.Repeat(DateTime.MinValue, legacyCount));
+                        if (string.IsNullOrWhiteSpace(automation.Id)) automation.Id = Guid.NewGuid().ToString("N");
+                        automation.Name = string.IsNullOrWhiteSpace(automation.Name) ? "Automation" : automation.Name;
+                        automation.Command ??= string.Empty;
+                        automation.TargetSessionId = string.IsNullOrWhiteSpace(automation.TargetSessionId) ? "*" : automation.TargetSessionId;
+                        if (automation.ScheduleType is not (AutomationRule.NoSchedule or "Interval" or "Daily" or "Once"))
+                            automation.ScheduleType = AutomationRule.NoSchedule;
                     }
-                    session.LiveWorkingDirectory ??= string.Empty;
-                    session.AutomationBindings ??= [];
-                    session.AutomationBindings = session.AutomationBindings
-                        .Where(value => value is not null && automationIds.Contains(value.AutomationId))
-                        .GroupBy(value => value.AutomationId, StringComparer.Ordinal)
-                        .Select(value => value.First())
-                        .ToList();
-                }
-                loaded.TerminalSessions ??= [];
-                if (loaded.TerminalSessions.Count == 0)
-                {
-                    loaded.TerminalSessions.Add(new TerminalSession
+                    var automationIds = loaded.Automations.Select(value => value.Id).ToHashSet(StringComparer.Ordinal);
+                    foreach (var session in loaded.Sessions)
                     {
-                        Name = "Session 1",
-                        Layout = string.IsNullOrWhiteSpace(loaded.Layout) ? "Grid" : loaded.Layout,
-                        TerminalIds = loaded.Sessions.Select(value => value.Id).ToList(),
-                        ActiveTerminalId = loaded.ActiveSessionId,
-                        LayoutSizes = loaded.LayoutSizes ?? []
-                    });
-                }
-                NormalizeTerminalSessions(loaded);
-                if (upgradedFromLegacy) loaded.ActiveTerminalSessionId = loaded.TerminalSessions[0].Id;
-                return loaded;
+                        session.AccentColor = WorkspaceAccentPalette.Normalize(session.AccentColor, WorkspaceAccentPalette.DefaultTerminal);
+                        session.TerminalFontSize = NormalizeFontSize(session.TerminalFontSize, 6, 36);
+                        session.CommandFontSize = NormalizeFontSize(session.CommandFontSize, 8, 28);
+                        session.CommandDraft ??= string.Empty;
+                        session.ComposerAttachments ??= [];
+                        session.ComposerAttachments = session.ComposerAttachments
+                            .Where(value => value is not null && !string.IsNullOrWhiteSpace(value.LocalPath))
+                            .Take(10)
+                            .ToList();
+                        session.PendingCommands ??= [];
+                        session.CommandHistory ??= [];
+                        session.CommandHistory = session.CommandHistory
+                            .Where(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 32_768)
+                            .TakeLast(100)
+                            .ToList();
+                        session.CommandHistoryTimestampsUtc ??= [];
+                        session.CommandHistoryTimestampsUtc = session.CommandHistoryTimestampsUtc.TakeLast(session.CommandHistory.Count).ToList();
+                        if (session.CommandHistoryTimestampsUtc.Count < session.CommandHistory.Count)
+                        {
+                            var legacyCount = session.CommandHistory.Count - session.CommandHistoryTimestampsUtc.Count;
+                            session.CommandHistoryTimestampsUtc.InsertRange(0, Enumerable.Repeat(DateTime.MinValue, legacyCount));
+                        }
+                        session.LiveWorkingDirectory ??= string.Empty;
+                        session.AutomationBindings ??= [];
+                        session.AutomationBindings = session.AutomationBindings
+                            .Where(value => value is not null && automationIds.Contains(value.AutomationId))
+                            .GroupBy(value => value.AutomationId, StringComparer.Ordinal)
+                            .Select(value => value.First())
+                            .ToList();
+                    }
+                    loaded.TerminalSessions ??= [];
+                    if (loaded.TerminalSessions.Count == 0)
+                    {
+                        loaded.TerminalSessions.Add(new TerminalSession
+                        {
+                            Name = "Session 1",
+                            Layout = string.IsNullOrWhiteSpace(loaded.Layout) ? "Grid" : loaded.Layout,
+                            TerminalIds = loaded.Sessions.Select(value => value.Id).ToList(),
+                            ActiveTerminalId = loaded.ActiveSessionId,
+                            LayoutSizes = loaded.LayoutSizes ?? []
+                        });
+                    }
+                    NormalizeTerminalSessions(loaded);
+                    if (upgradedFromLegacy) loaded.ActiveTerminalSessionId = loaded.TerminalSessions[0].Id;
+                    return loaded;
                 }
             }
+            catch { }
         }
-        catch { }
 
         AppThemeCatalog.ConfigureCustomThemes([]);
         var state = new WorkspaceState();
@@ -302,6 +296,55 @@ public static class WorkspaceStore
         {
             DirectoryOverride = originalDirectory;
             AppThemeCatalog.ConfigureCustomThemes(originalCustomThemes);
+            try { Directory.Delete(directory, true); } catch { }
+        }
+    }
+
+    internal static bool VerifyBackupFallbackForTest(WindowsTerminalProfile terminalProfile, string directory)
+    {
+        var originalDirectory = DirectoryOverride;
+        try
+        {
+            DirectoryOverride = directory;
+            Directory.CreateDirectory(directory);
+            var preservedTerminal = new SessionProfile { Name = "Preserved terminal" };
+            var preserved = new WorkspaceState
+            {
+                Sessions = [preservedTerminal],
+                ActiveSessionId = preservedTerminal.Id,
+                TerminalSessions = [new TerminalSession
+                {
+                    Name = "Preserved session",
+                    TerminalIds = [preservedTerminal.Id],
+                    ActiveTerminalId = preservedTerminal.Id
+                }]
+            };
+            preserved.ActiveTerminalSessionId = preserved.TerminalSessions[0].Id;
+            Save(preserved);
+
+            var replacementTerminal = new SessionProfile { Name = "Replacement terminal" };
+            var replacement = new WorkspaceState
+            {
+                Sessions = [replacementTerminal],
+                ActiveSessionId = replacementTerminal.Id,
+                TerminalSessions = [new TerminalSession
+                {
+                    Name = "Replacement session",
+                    TerminalIds = [replacementTerminal.Id],
+                    ActiveTerminalId = replacementTerminal.Id
+                }]
+            };
+            replacement.ActiveTerminalSessionId = replacement.TerminalSessions[0].Id;
+            Save(replacement);
+
+            File.WriteAllText(FilePath, "{corrupted-after-power-loss");
+            var recovered = Load(terminalProfile);
+            return recovered.Sessions is [{ Name: "Preserved terminal" }]
+                && recovered.TerminalSessions is [{ Name: "Preserved session" }];
+        }
+        finally
+        {
+            DirectoryOverride = originalDirectory;
             try { Directory.Delete(directory, true); } catch { }
         }
     }

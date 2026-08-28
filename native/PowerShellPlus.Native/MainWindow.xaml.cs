@@ -295,6 +295,17 @@ public partial class MainWindow : Window
 
     public void PrepareForShutdown() => explicitShutdown = true;
 
+    public void PrepareForSystemShutdown()
+    {
+        explicitShutdown = true;
+        recoveryTimer.Stop();
+        // Windows can terminate a GUI process only seconds after session-end
+        // notification. Persist the plain workspace and the latest recovery
+        // transcript synchronously while the terminal HWNDs are still valid.
+        CaptureRecoverySnapshot();
+        SaveNow();
+    }
+
     private void WindowClosing(object? sender, CancelEventArgs e)
     {
         if (!automationMode && !explicitShutdown && state.Settings.KeepSessionsRunningInTray)
@@ -823,8 +834,13 @@ public partial class MainWindow : Window
     private void CaptureRecoverySnapshot()
     {
         if (automationMode || !state.Settings.RestoreSessionsAfterRestart || shutdownComplete) return;
-        CaptureRecoverySnapshotCore(MaterializeRecoveryPaneCaptures(CollectRecoveryPaneSources()), state.Settings.SaveTerminalTranscripts);
-        RefreshTmuxTerminalIndicators(SessionRecoveryStore.Load());
+        if (System.Threading.Interlocked.CompareExchange(ref recoveryCaptureInProgress, 1, 0) != 0) return;
+        try
+        {
+            CaptureRecoverySnapshotCore(MaterializeRecoveryPaneCaptures(CollectRecoveryPaneSources()), state.Settings.SaveTerminalTranscripts);
+            RefreshTmuxTerminalIndicators(SessionRecoveryStore.Load());
+        }
+        finally { System.Threading.Interlocked.Exchange(ref recoveryCaptureInProgress, 0); }
     }
 
     private async Task CaptureRecoverySnapshotAsync()
@@ -2899,6 +2915,10 @@ public partial class MainWindow : Window
             var transitionCopy = previousRecovery.CopyForTransition();
             transitionCopy.SshConnectionArguments[0] = "changed@example.test";
             var transitionRecoveryCopiesArrays = previousRecovery.SshConnectionArguments[0] == "ubuntu@example.test";
+            var atomicArtifactWrites = AtomicFileStore.ContentionContractPassesForTest();
+            var recoveryBackupFallback = SessionRecoveryStore.BackupFallbackContractPassesForTest();
+            var workspaceBackupFallback = WorkspaceStore.VerifyBackupFallbackForTest(terminalProfile,
+                Path.Combine(Path.GetTempPath(), "PowerShellPlus-workspace-backup-" + Guid.NewGuid().ToString("N")));
             var localTransitionProfile = new SessionProfile
             {
                 Id = "local-transition-fixture",
@@ -2928,6 +2948,7 @@ public partial class MainWindow : Window
 
             var success = inactiveTerminalsStartEagerly && warmupHostContract && failureOffersRetry && manualRetryWorks
                 && recoveredSshHandshakeContract && unsettledRecoveryRetained && transitionRecoveryCopiesArrays
+                && atomicArtifactWrites && recoveryBackupFallback && workspaceBackupFallback
                 && localTmuxTransitionKeepsExactCodex && localTmuxPersistence.Passed;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
             File.WriteAllText(reportPath,
@@ -2936,6 +2957,7 @@ public partial class MainWindow : Window
                 + $"FailureOffersRetry={failureOffersRetry}\nManualRetryWorks={manualRetryWorks}\n"
                 + $"RecoveredSshHandshakeContract={recoveredSshHandshakeContract}\n"
                 + $"UnsettledRecoveryRetained={unsettledRecoveryRetained}\nTransitionRecoveryCopiesArrays={transitionRecoveryCopiesArrays}\n"
+                + $"AtomicArtifactWrites={atomicArtifactWrites}\nRecoveryBackupFallback={recoveryBackupFallback}\nWorkspaceBackupFallback={workspaceBackupFallback}\n"
                 + $"LocalTmuxTransitionKeepsExactCodex={localTmuxTransitionKeepsExactCodex}\n"
                 + $"LocalTmuxAvailable={localTmuxPersistence.Available}\nLocalTmuxPersistence={localTmuxPersistence.Passed}\nLocalTmuxDiagnostic={localTmuxPersistence.Diagnostic}\n"
                 + $"QueuedTerminals={results.Length}\nAttempts={string.Join(',', fixtures.Select(profile => panes[profile.Id].StartupAttemptCountForTest))}");
@@ -3533,12 +3555,12 @@ public partial class MainWindow : Window
                 var timeoutOutput = await outputTask + await errorTask;
                 var timeoutMarker = SshLaunchStore.Load(profile.Id, timeoutFixtureRoot);
                 var restoreNotice = timeoutOutput.Contains("[PowerShellPlus] Restoring SSH session", StringComparison.Ordinal);
-                var fallbackWarning = timeoutOutput.Contains("Automatic recovery could not connect", StringComparison.Ordinal);
+                var duplicateWarningSuppressed = !timeoutOutput.Contains("Automatic recovery could not connect", StringComparison.Ordinal);
                 var interactiveFallback = timeoutOutput.Contains("PSPLUS_SSH_RECOVERY_FALLBACK_OK", StringComparison.Ordinal);
                 var failedMarker = timeoutMarker?.IsFailedRecovery == true;
                 sshBannerTimeoutFallsBackInteractive = timeoutProcess.ExitCode == 0
-                    && restoreNotice && fallbackWarning && interactiveFallback && failedMarker;
-                sshBannerDiagnostic = $"exit={timeoutProcess.ExitCode}; restore={restoreNotice}; warning={fallbackWarning}; interactive={interactiveFallback}; marker={failedMarker}";
+                    && restoreNotice && duplicateWarningSuppressed && interactiveFallback && failedMarker;
+                sshBannerDiagnostic = $"exit={timeoutProcess.ExitCode}; restore={restoreNotice}; duplicateWarningSuppressed={duplicateWarningSuppressed}; interactive={interactiveFallback}; marker={failedMarker}";
             }
         }
         catch (Exception exception)

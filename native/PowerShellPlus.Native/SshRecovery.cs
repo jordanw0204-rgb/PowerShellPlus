@@ -380,15 +380,17 @@ public static class SshRecovery
         return true;
     }
 
-    public static string? BuildPowerShellResumeCommand(SessionRecoveryEntry? recovery)
+    public static string? BuildPowerShellResumeCommand(SessionRecoveryEntry? recovery, bool reportFailure = true)
     {
         var plan = BuildResumePlan(recovery);
         if (plan is null) return null;
         var invocation = "& ssh " + string.Join(" ", plan.Arguments.Select(QuotePowerShell));
-        return $"Write-Host '[PowerShellPlus] Restoring {plan.Description}...' -ForegroundColor Cyan; "
+        var command = $"Write-Host '[PowerShellPlus] Restoring {plan.Description}...' -ForegroundColor Cyan; "
             + "$global:__PowerShellPlusSshRecoveryActive = $true; "
-            + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}; "
-            + "if ($LASTEXITCODE -ne 0) { Write-Warning '[PowerShellPlus] Automatic recovery could not connect. The saved session was kept; click the pane restart button to retry. This PowerShell prompt remains interactive.' }";
+            + $"try {{ {invocation} }} finally {{ $global:__PowerShellPlusSshRecoveryActive = $false }}";
+        if (!reportFailure) return command;
+        return command
+            + "; if ($LASTEXITCODE -ne 0) { Write-Warning '[PowerShellPlus] Automatic recovery could not connect. The saved session was kept; click the pane restart button to retry. This PowerShell prompt remains interactive.' }";
     }
 
     public static SshResumePlan? BuildResumePlan(SessionRecoveryEntry? recovery)

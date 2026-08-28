@@ -320,6 +320,7 @@ public partial class TerminalPane : UserControl
     private const int MaximumRecoveryOutputCharacters = 512_000;
     private const int RecoveryOutputTrimThreshold = 576_000;
     private const int MaximumComposerAttachments = 10;
+    private const int MaximumAutomaticSshRecoveryAttempts = 4;
     private const int MinimumTerminalFontSize = 6;
     private const int MaximumTerminalFontSize = 36;
     private const int MinimumComposerFontSize = 8;
@@ -624,11 +625,12 @@ public partial class TerminalPane : UserControl
     internal Task<bool> StartupReady => startupReady.Task;
     internal bool HasStartupAttemptOverrideForTest => startupAttemptOverrideForTest is not null;
 
-    internal async Task<bool> EnsureTerminalStartupAsync(bool manualRetry = false)
+    internal async Task<bool> EnsureTerminalStartupAsync(bool manualRetry = false, bool automaticSshRetry = false)
     {
         await startupGate.WaitAsync();
         try
         {
+            var retryRequested = manualRetry || automaticSshRetry;
             if (Profile.IsRemoteDetached)
             {
                 initialStartupFinished = true;
@@ -639,11 +641,11 @@ public partial class TerminalPane : UserControl
             if (Profile.UseLocalTmux && !await PrepareLocalTmuxBackendAsync())
             {
                 CompleteTerminalStartup(false);
-                ShowStartupFailure("Local tmux could not start", startupDiagnostic);
+                if (!automaticSshRetry) ShowStartupFailure("Local tmux could not start", startupDiagnostic);
                 return false;
             }
-            if (!manualRetry && initialStartupFinished) return initialStartupSucceeded;
-            if (!manualRetry && TerminalProcessIsRunning())
+            if (!retryRequested && initialStartupFinished) return initialStartupSucceeded;
+            if (!retryRequested && TerminalProcessIsRunning())
             {
                 var verified = !Profile.UseLocalTmux || await VerifyStartedBackendAsync();
                 if (verified)
@@ -653,12 +655,13 @@ public partial class TerminalPane : UserControl
                 }
             }
 
-            if (manualRetry)
+            if (retryRequested)
             {
                 terminalStartupBeganUtc = DateTime.UtcNow;
                 Interlocked.Exchange(ref lastRemoteDirectoryMarkerTicks, 0);
-                recoveredSshWatchStarted = false;
-                SetStartupRetryingState("Retrying terminal recovery…");
+                recoveredSshWatchStarted = automaticSshRetry;
+                if (manualRetry) SetStartupRetryingState("Retrying terminal recovery…");
+                else SetAutomaticSshRetryingState();
             }
             else SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
             Exception? lastException = null;
@@ -675,7 +678,7 @@ public partial class TerminalPane : UserControl
                     }
                     else
                     {
-                        if (manualRetry || attempt > 1) await PrepareFreshTerminalForStartupAsync();
+                        if (retryRequested || attempt > 1) await PrepareFreshTerminalForStartupAsync();
                         started = await StartCurrentTerminalAsync();
                     }
                     if (started && startupAttemptOverrideForTest is null && Profile.UseLocalTmux)
@@ -700,8 +703,9 @@ public partial class TerminalPane : UserControl
             }
 
             CompleteTerminalStartup(false);
-            ShowStartupFailure("Terminal recovery failed",
-                lastException?.GetBaseException().Message ?? "The saved terminal did not become ready after three attempts.");
+            if (!automaticSshRetry)
+                ShowStartupFailure("Terminal recovery failed",
+                    lastException?.GetBaseException().Message ?? "The saved terminal did not become ready after three attempts.");
             return false;
         }
         finally
@@ -850,28 +854,68 @@ public partial class TerminalPane : UserControl
 
     private async Task WatchRecoveredSshStartupAsync(DateTime startedUtc)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(32);
-        while (DateTime.UtcNow < deadline && initialStartupSucceeded)
+        string finalTitle = "SSH recovery timed out";
+        string finalDetail = "PowerShellPlus did not receive a remote shell handshake.";
+        for (var recoveryAttempt = 1; recoveryAttempt <= MaximumAutomaticSshRecoveryAttempts; recoveryAttempt++)
         {
-            await Task.Delay(500);
-            var marker = SshLaunchStore.Load(Profile.Id);
-            switch (EvaluateRecoveredSshStartup(
-                        Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc,
-                        IsPersistedSshShellAlive(marker)))
+            var deadline = DateTime.UtcNow.AddSeconds(32);
+            var backendProbeAttempted = false;
+            while (DateTime.UtcNow < deadline)
             {
-                case RecoveredSshStartupState.Ready:
-                    return;
-                case RecoveredSshStartupState.Failed:
-                    await Dispatcher.InvokeAsync(() => MarkRecoveredSshStartupFailed(
-                        "SSH recovery could not connect",
-                        "The saved SSH/tmux session is still available. Check the network or credentials, then retry this terminal."));
-                    return;
+                await Task.Delay(500);
+                var marker = SshLaunchStore.Load(Profile.Id);
+                var currentShellAlive = IsCurrentRecoverySshShellAlive(marker, startedUtc);
+                var backendConfirmed = false;
+                if (!backendProbeAttempted && currentShellAlive && startupRecovery?.RemoteTmuxManaged == true
+                    && DateTime.UtcNow >= startedUtc.AddSeconds(3))
+                {
+                    backendProbeAttempted = true;
+                    var probe = await RemoteTmuxSession.ProbeAsync(startupRecovery);
+                    backendConfirmed = probe.CommandSucceeded && probe.SessionExists;
+                }
+                switch (EvaluateRecoveredSshStartup(
+                            Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc,
+                            IsPersistedSshShellAlive(marker), backendConfirmed))
+                {
+                    case RecoveredSshStartupState.Ready:
+                        return;
+                    case RecoveredSshStartupState.Failed:
+                        finalTitle = "SSH recovery could not connect";
+                        finalDetail = "The SSH client exited before reaching the saved tmux session.";
+                        deadline = DateTime.MinValue;
+                        break;
+                }
             }
+
+            if (recoveryAttempt == MaximumAutomaticSshRecoveryAttempts) break;
+            await Task.Delay(AutomaticSshRecoveryDelay(recoveryAttempt));
+            if (!await RetryRecoveredSshCommandAsync())
+                _ = await EnsureTerminalStartupAsync(automaticSshRetry: true);
+            startedUtc = terminalStartupBeganUtc;
         }
-        if (!initialStartupSucceeded) return;
+
         await Dispatcher.InvokeAsync(() => MarkRecoveredSshStartupFailed(
-            "SSH recovery timed out",
-            "PowerShellPlus did not receive a remote shell handshake. The saved tmux session remains available; check the connection, then retry."));
+            finalTitle,
+            $"{finalDetail} PowerShellPlus retried {MaximumAutomaticSshRecoveryAttempts} times without closing the saved tmux session. Check the network or credentials, then use Retry."));
+    }
+
+    private static TimeSpan AutomaticSshRecoveryDelay(int completedAttempts)
+        => TimeSpan.FromSeconds(Math.Min(16, 2 << Math.Clamp(completedAttempts - 1, 0, 3)));
+
+    private async Task<bool> RetryRecoveredSshCommandAsync()
+    {
+        var resumeCommand = SshRecovery.BuildPowerShellResumeCommand(startupRecovery, reportFailure: false);
+        if (resumeCommand is null || Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
+        terminalStartupBeganUtc = DateTime.UtcNow;
+        Interlocked.Exchange(ref lastRemoteDirectoryMarkerTicks, 0);
+        SetAutomaticSshRetryingState();
+        // An SSH connect can still own stdin after its timeout window. Interrupt
+        // only that foreground client; remote tmux owns the actual workload and
+        // remains alive. Reissuing inside the existing PowerShell also avoids
+        // reattaching the same local tmux shell without rerunning recovery.
+        Terminal.ConPTYTerm.WriteToTerm("\x03");
+        await Task.Delay(180);
+        return await SendCommandAsync(resumeCommand, false);
     }
 
     private void MarkRecoveredSshStartupFailed(string title, string detail)
@@ -883,8 +927,9 @@ public partial class TerminalPane : UserControl
 
     private static RecoveredSshStartupState EvaluateRecoveredSshStartup(
         long remoteDirectoryMarkerTicks, SshLaunchMarker? marker, DateTime startedUtc,
-        bool persistedShellAlive = false)
+        bool persistedShellAlive = false, bool remoteBackendConfirmed = false)
     {
+        if (remoteBackendConfirmed) return RecoveredSshStartupState.Ready;
         if (remoteDirectoryMarkerTicks >= startedUtc.AddSeconds(-2).Ticks)
             return RecoveredSshStartupState.Ready;
         if (marker?.RecoveryAttempt == true && marker.StartedUtc >= startedUtc.AddSeconds(-2) && marker.IsFailedRecovery)
@@ -914,6 +959,17 @@ public partial class TerminalPane : UserControl
                 PersistentSessionRequested: true,
                 IsActive: true
             }) return false;
+        return IsSshWrapperShellAlive(marker);
+    }
+
+    private static bool IsCurrentRecoverySshShellAlive(SshLaunchMarker? marker, DateTime startedUtc)
+        => marker is { RecoveryAttempt: true, IsActive: true }
+            && marker.StartedUtc >= startedUtc.AddSeconds(-2)
+            && IsSshWrapperShellAlive(marker);
+
+    private static bool IsSshWrapperShellAlive(SshLaunchMarker? marker)
+    {
+        if (marker?.ShellProcessId is not > 0) return false;
         try
         {
             using var process = Process.GetProcessById(marker.ShellProcessId.Value);
@@ -931,6 +987,13 @@ public partial class TerminalPane : UserControl
         StartupFailureDetail.Text = "PowerShellPlus is restoring the saved shell and its persistent session.";
         StartupRetryButton.IsEnabled = false;
         StartupRetryButton.Content = "Retrying…";
+        SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
+    }
+
+    private void SetAutomaticSshRetryingState()
+    {
+        HideStartupFailure();
+        TerminalSurfaceGrid.Visibility = Visibility.Visible;
         SetAgentStatus(detectedAgentKind, AgentActivityState.Starting);
     }
 
@@ -1009,7 +1072,10 @@ public partial class TerminalPane : UserControl
             && EvaluateRecoveredSshStartup(0, failed, startedUtc) == RecoveredSshStartupState.Failed
             && EvaluateRecoveredSshStartup(startedUtc.AddSeconds(1).Ticks, active, startedUtc) == RecoveredSshStartupState.Ready
             && EvaluateRecoveredSshStartup(0, persisted, startedUtc) == RecoveredSshStartupState.Waiting
-            && EvaluateRecoveredSshStartup(0, persisted, startedUtc, true) == RecoveredSshStartupState.Ready;
+            && EvaluateRecoveredSshStartup(0, persisted, startedUtc, true) == RecoveredSshStartupState.Ready
+            && EvaluateRecoveredSshStartup(0, active, startedUtc, false, true) == RecoveredSshStartupState.Ready
+            && AutomaticSshRecoveryDelay(1) == TimeSpan.FromSeconds(2)
+            && AutomaticSshRecoveryDelay(4) == TimeSpan.FromSeconds(16);
     }
 
     private void ApplyAccent()
@@ -4520,7 +4586,9 @@ public partial class TerminalPane : UserControl
     private static string BuildDirectCommandLine(SessionProfile profile, SessionRecoveryEntry? recovery, bool skipPowerShellProfile = false)
     {
         var command = Environment.ExpandEnvironmentVariables(profile.CommandLine.Trim());
-        var sshResumeCommand = SshRecovery.BuildPowerShellResumeCommand(recovery);
+        // Pane recovery owns retry and error presentation. Do not print one
+        // PowerShell warning for every automatic connection attempt.
+        var sshResumeCommand = SshRecovery.BuildPowerShellResumeCommand(recovery, reportFailure: false);
         var resumeSsh = sshResumeCommand is not null;
         var resumeCodex = recovery?.CodexWasActive == true && !resumeSsh;
         var startupDirectory = (resumeCodex || resumeSsh) && !string.IsNullOrWhiteSpace(recovery?.WorkingDirectory) && Directory.Exists(recovery.WorkingDirectory)
