@@ -54,9 +54,8 @@ public static class SshLaunchStore
         var directory = directoryPath ?? DirectoryPath;
         Directory.CreateDirectory(directory);
         var path = MarkerPath(marker.PaneId, directory);
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(marker, JsonOptions));
-        File.Move(temporary, path, true);
+        AtomicFileStore.WriteAllText(path, JsonSerializer.Serialize(marker, JsonOptions),
+            new UTF8Encoding(false));
     }
 
     public static string BuildPowerShellWrapper(string paneId, string? directoryPath = null, bool usePersistentSession = true)

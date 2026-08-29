@@ -865,8 +865,10 @@ public partial class TerminalPane : UserControl
                 await Task.Delay(500);
                 var marker = SshLaunchStore.Load(Profile.Id);
                 var currentShellAlive = IsCurrentRecoverySshShellAlive(marker, startedUtc);
+                var persistedShellAlive = IsPersistedSshShellAlive(marker, startedUtc);
                 var backendConfirmed = false;
-                if (!backendProbeAttempted && currentShellAlive && startupRecovery?.RemoteTmuxManaged == true
+                if (!backendProbeAttempted && (currentShellAlive || persistedShellAlive)
+                    && startupRecovery?.RemoteTmuxManaged == true
                     && DateTime.UtcNow >= startedUtc.AddSeconds(3))
                 {
                     backendProbeAttempted = true;
@@ -875,7 +877,7 @@ public partial class TerminalPane : UserControl
                 }
                 switch (EvaluateRecoveredSshStartup(
                             Interlocked.Read(ref lastRemoteDirectoryMarkerTicks), marker, startedUtc,
-                            IsPersistedSshShellAlive(marker), backendConfirmed))
+                            persistedShellAlive, backendConfirmed))
                 {
                     case RecoveredSshStartupState.Ready:
                         return;
@@ -889,8 +891,7 @@ public partial class TerminalPane : UserControl
 
             if (recoveryAttempt == MaximumAutomaticSshRecoveryAttempts) break;
             await Task.Delay(AutomaticSshRecoveryDelay(recoveryAttempt));
-            if (!await RetryRecoveredSshCommandAsync())
-                _ = await EnsureTerminalStartupAsync(automaticSshRetry: true);
+            _ = await RestartRecoveredSshTransportAsync();
             startedUtc = terminalStartupBeganUtc;
         }
 
@@ -902,20 +903,25 @@ public partial class TerminalPane : UserControl
     private static TimeSpan AutomaticSshRecoveryDelay(int completedAttempts)
         => TimeSpan.FromSeconds(Math.Min(16, 2 << Math.Clamp(completedAttempts - 1, 0, 3)));
 
-    private async Task<bool> RetryRecoveredSshCommandAsync()
+    private async Task<bool> RestartRecoveredSshTransportAsync()
     {
-        var resumeCommand = SshRecovery.BuildPowerShellResumeCommand(startupRecovery, reportFailure: false);
-        if (resumeCommand is null || Terminal.ConPTYTerm?.TermProcIsStarted != true) return false;
-        terminalStartupBeganUtc = DateTime.UtcNow;
-        Interlocked.Exchange(ref lastRemoteDirectoryMarkerTicks, 0);
-        SetAutomaticSshRetryingState();
-        // An SSH connect can still own stdin after its timeout window. Interrupt
-        // only that foreground client; remote tmux owns the actual workload and
-        // remains alive. Reissuing inside the existing PowerShell also avoids
-        // reattaching the same local tmux shell without rerunning recovery.
-        Terminal.ConPTYTerm.WriteToTerm("\x03");
-        await Task.Delay(180);
-        return await SendCommandAsync(resumeCommand, false);
+        // Never type a Windows recovery command into the visible terminal. If
+        // ssh still owns the PTY, Ctrl+C is forwarded to the remote program and
+        // the following text is interpreted by the remote shell. Rebuild the
+        // local transport out-of-band instead; the remote tmux session remains
+        // untouched and is reattached by the fresh ssh client.
+        if (Profile.UseLocalTmux)
+        {
+            var stopped = await LocalTmuxSession.KillAsync(Profile.Id, Profile.LocalTmuxDistribution);
+            if (!stopped.CommandSucceeded)
+            {
+                startupDiagnostic = stopped.Message;
+                return false;
+            }
+            localTmuxVerified = false;
+        }
+
+        return await EnsureTerminalStartupAsync(automaticSshRetry: true);
     }
 
     private void MarkRecoveredSshStartupFailed(string title, string detail)
@@ -942,7 +948,6 @@ public partial class TerminalPane : UserControl
         // attempt must still produce a marker or an explicit failure.
         if (persistedShellAlive && marker is
             {
-                RecoveryAttempt: false,
                 PersistentSessionRequested: true,
                 IsActive: true
             } && marker.StartedUtc < startedUtc.AddSeconds(-2))
@@ -950,17 +955,19 @@ public partial class TerminalPane : UserControl
         return RecoveredSshStartupState.Waiting;
     }
 
-    private static bool IsPersistedSshShellAlive(SshLaunchMarker? marker)
+    private static bool IsPersistedSshShellAlive(SshLaunchMarker? marker, DateTime startedUtc)
     {
-        if (marker is not
-            {
-                ShellProcessId: > 0,
-                RecoveryAttempt: false,
-                PersistentSessionRequested: true,
-                IsActive: true
-            }) return false;
+        if (!IsPersistedSshMarkerCandidate(marker, startedUtc)) return false;
         return IsSshWrapperShellAlive(marker);
     }
+
+    private static bool IsPersistedSshMarkerCandidate(SshLaunchMarker? marker, DateTime startedUtc)
+        => marker is
+            {
+                ShellProcessId: > 0,
+                PersistentSessionRequested: true,
+                IsActive: true
+            } && marker.StartedUtc < startedUtc.AddSeconds(-2);
 
     private static bool IsCurrentRecoverySshShellAlive(SshLaunchMarker? marker, DateTime startedUtc)
         => marker is { RecoveryAttempt: true, IsActive: true }
@@ -974,10 +981,15 @@ public partial class TerminalPane : UserControl
         {
             using var process = Process.GetProcessById(marker.ShellProcessId.Value);
             if (process.HasExited || process.ProcessName is not ("powershell" or "pwsh")) return false;
-            return (process.StartTime.ToUniversalTime() - marker.StartedUtc).Duration() < TimeSpan.FromMinutes(2);
+            return SshWrapperProcessMatchesMarker(process.StartTime.ToUniversalTime(), marker.StartedUtc);
         }
         catch { return false; }
     }
+
+    private static bool SshWrapperProcessMatchesMarker(DateTime processStartedUtc, DateTime markerStartedUtc)
+        // A wrapper may legitimately outlive the app by hours or days. PID reuse
+        // is detected by the replacement process starting after the saved marker.
+        => processStartedUtc <= markerStartedUtc.AddSeconds(2);
 
     private void SetStartupRetryingState(string message)
     {
@@ -1065,7 +1077,17 @@ public partial class TerminalPane : UserControl
         {
             PaneId = "persisted-fixture",
             StartedUtc = startedUtc.AddMinutes(-5),
+            ShellProcessId = 1001,
             ConnectionArguments = ["ubuntu@example.com"],
+            PersistentSessionRequested = true
+        };
+        var persistedRecovery = new SshLaunchMarker
+        {
+            PaneId = "persisted-recovery-fixture",
+            StartedUtc = startedUtc.AddHours(-8),
+            ShellProcessId = 1002,
+            ConnectionArguments = ["ubuntu@example.com"],
+            RecoveryAttempt = true,
             PersistentSessionRequested = true
         };
         return EvaluateRecoveredSshStartup(0, active, startedUtc) == RecoveredSshStartupState.Waiting
@@ -1073,7 +1095,13 @@ public partial class TerminalPane : UserControl
             && EvaluateRecoveredSshStartup(startedUtc.AddSeconds(1).Ticks, active, startedUtc) == RecoveredSshStartupState.Ready
             && EvaluateRecoveredSshStartup(0, persisted, startedUtc) == RecoveredSshStartupState.Waiting
             && EvaluateRecoveredSshStartup(0, persisted, startedUtc, true) == RecoveredSshStartupState.Ready
+            && EvaluateRecoveredSshStartup(0, persistedRecovery, startedUtc, true) == RecoveredSshStartupState.Ready
             && EvaluateRecoveredSshStartup(0, active, startedUtc, false, true) == RecoveredSshStartupState.Ready
+            && IsPersistedSshMarkerCandidate(persisted, startedUtc)
+            && IsPersistedSshMarkerCandidate(persistedRecovery, startedUtc)
+            && !IsPersistedSshMarkerCandidate(active, startedUtc)
+            && SshWrapperProcessMatchesMarker(startedUtc.AddDays(-2), startedUtc.AddHours(-8))
+            && !SshWrapperProcessMatchesMarker(startedUtc.AddSeconds(5), startedUtc)
             && AutomaticSshRecoveryDelay(1) == TimeSpan.FromSeconds(2)
             && AutomaticSshRecoveryDelay(4) == TimeSpan.FromSeconds(16);
     }
